@@ -50,6 +50,9 @@ class LocalRunStore:
             results_json=results_json,
         )
 
+    def export_path(self, run_id: str, filename: str) -> Path:
+        return self.exports_dir / run_id / filename
+
     def _ensure_schema(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as connection:
@@ -96,9 +99,17 @@ def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
 
 
 def _write_metric_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    fieldnames = sorted({key for row in rows for key in row.keys()})
+    fieldnames = _ordered_fieldnames(rows)
     with path.open("w", newline="", encoding="utf-8") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
+
+def _ordered_fieldnames(rows: list[dict[str, Any]]) -> list[str]:
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row.keys():
+            if key not in fieldnames:
+                fieldnames.append(key)
+    return fieldnames

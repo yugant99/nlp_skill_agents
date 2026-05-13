@@ -44,6 +44,10 @@
     @apply mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-[#253735] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#344b47] disabled:cursor-not-allowed disabled:opacity-60;
   }
 
+  .export-link {
+    @apply inline-flex items-center gap-2 rounded-md border border-[#cfc8b8] bg-[#f7f4ea] px-3 py-2 text-sm font-semibold text-[#253735] transition hover:border-[#47615d] hover:bg-[#ece8dc];
+  }
+
   .error-text {
     @apply mt-3 rounded-md border border-[#e0aaa1] bg-[#fff0ee] px-3 py-2 text-sm text-[#8a2d24];
   }
@@ -56,4 +60,3 @@
     @apply max-w-[260px] overflow-hidden text-ellipsis whitespace-nowrap px-3 py-2 text-[#2b2925];
   }
 }
-

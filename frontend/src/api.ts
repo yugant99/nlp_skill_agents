@@ -2,6 +2,10 @@ import type { MetricId, RunResponse, SkillPack } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
+export function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
+
 export async function loadSkillPack(): Promise<SkillPack> {
   const response = await fetch(`${API_BASE}/api/skill-packs/default`);
   if (!response.ok) {
@@ -37,4 +41,3 @@ export async function createAnalysisRun(params: {
   }
   return response.json();
 }
-

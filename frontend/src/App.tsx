@@ -5,11 +5,12 @@ import {
   FlaskConical,
   Loader2,
   Play,
+  Download,
   ShieldCheck,
   TableProperties
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { createAnalysisRun, loadSkillPack } from "./api";
+import { apiUrl, createAnalysisRun, loadSkillPack } from "./api";
 import type { MetricId, MetricResult, RunResponse, SkillPack } from "./types";
 
 const metricLabels: Record<MetricId, string> = {
@@ -175,7 +176,14 @@ export function App() {
             </Panel>
 
             {run?.results.map((result) => (
-              <MetricTable key={result.metric_id} result={result} />
+              <MetricTable
+                key={result.metric_id}
+                result={result}
+                downloadUrl={
+                  run.exports.find((item) => item.metric_id === result.metric_id)
+                    ?.download_url
+                }
+              />
             ))}
           </section>
         </section>
@@ -225,10 +233,24 @@ function EmptyState() {
   );
 }
 
-function MetricTable({ result }: { result: MetricResult }) {
+function MetricTable({
+  result,
+  downloadUrl
+}: {
+  result: MetricResult;
+  downloadUrl?: string;
+}) {
   const columns = Array.from(new Set(result.rows.flatMap((row) => Object.keys(row))));
   return (
     <Panel title={result.label} icon={<TableProperties size={18} />}>
+      {downloadUrl ? (
+        <div className="mb-3 flex justify-end">
+          <a className="export-link" href={apiUrl(downloadUrl)}>
+            <Download size={16} />
+            CSV
+          </a>
+        </div>
+      ) : null}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[680px] border-collapse text-left text-sm">
           <thead>
@@ -266,4 +288,3 @@ function formatCell(value: unknown): string {
   }
   return String(value);
 }
-

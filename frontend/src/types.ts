@@ -17,6 +17,7 @@ export type RunResponse = {
     export_dir: string;
     results_json: string;
   };
+  exports: ExportLink[];
 };
 
 export type SkillPack = {
@@ -28,3 +29,8 @@ export type SkillPack = {
   disfluency_tokens: string[];
 };
 
+export type ExportLink = {
+  metric_id: MetricId;
+  filename: string;
+  download_url: string;
+};

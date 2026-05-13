@@ -9,6 +9,7 @@ from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from backend.analysis.pipeline import execute_analysis
 from backend.analysis.transcripts import StudyConfig, extract_transcript_text
@@ -67,6 +68,20 @@ async def create_run(
     return _run_response(run, stored)
 
 
+@app.get("/api/runs/{run_id}/exports/{filename}")
+def download_export(run_id: str, filename: str) -> FileResponse:
+    if "/" in filename or "\\" in filename or filename.startswith("."):
+        raise HTTPException(status_code=404, detail="Export not found")
+    export_path = LocalRunStore(_local_data_root()).export_path(run_id, filename)
+    if not export_path.exists() or export_path.suffix != ".csv":
+        raise HTTPException(status_code=404, detail="Export not found")
+    return FileResponse(
+        export_path,
+        media_type="text/csv",
+        filename=filename,
+    )
+
+
 def _study_config_from_json(config_json: str) -> StudyConfig:
     payload = json.loads(config_json)
     return StudyConfig(
@@ -90,6 +105,14 @@ def _run_response(run, stored: StoredRun) -> dict:
             "export_dir": str(stored.export_dir),
             "results_json": str(stored.results_json),
         },
+        "exports": [
+            {
+                "metric_id": result.metric_id,
+                "filename": f"{result.metric_id}.csv",
+                "download_url": f"/api/runs/{run.run_id}/exports/{result.metric_id}.csv",
+            }
+            for result in run.results
+        ],
     }
 
 
@@ -99,4 +122,3 @@ def _local_data_root() -> Path:
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
-

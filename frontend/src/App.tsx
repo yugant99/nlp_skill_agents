@@ -1,0 +1,269 @@
+import {
+  Activity,
+  Database,
+  FileText,
+  FlaskConical,
+  Loader2,
+  Play,
+  ShieldCheck,
+  TableProperties
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { createAnalysisRun, loadSkillPack } from "./api";
+import type { MetricId, MetricResult, RunResponse, SkillPack } from "./types";
+
+const metricLabels: Record<MetricId, string> = {
+  base_metrics: "Base metrics",
+  lexical_metrics: "Lexical metrics",
+  disfluency_metrics: "Disfluencies"
+};
+
+export function App() {
+  const [skillPack, setSkillPack] = useState<SkillPack | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [participantId, setParticipantId] = useState("vr001");
+  const [selectedMetrics, setSelectedMetrics] = useState<MetricId[]>([
+    "base_metrics",
+    "lexical_metrics",
+    "disfluency_metrics"
+  ]);
+  const [disfluencyText, setDisfluencyText] = useState("");
+  const [run, setRun] = useState<RunResponse | null>(null);
+  const [error, setError] = useState("");
+  const [isRunning, setIsRunning] = useState(false);
+
+  useEffect(() => {
+    loadSkillPack()
+      .then((pack) => {
+        setSkillPack(pack);
+        setDisfluencyText(pack.disfluency_tokens.join(", "));
+      })
+      .catch((err: Error) => setError(err.message));
+  }, []);
+
+  const disfluencyTokens = useMemo(
+    () =>
+      disfluencyText
+        .split(",")
+        .map((token) => token.trim().toLowerCase())
+        .filter(Boolean),
+    [disfluencyText]
+  );
+
+  async function runAnalysis() {
+    if (!file) {
+      setError("Upload a DOCX or TXT transcript first.");
+      return;
+    }
+    setError("");
+    setIsRunning(true);
+    try {
+      const response = await createAnalysisRun({
+        file,
+        participantId,
+        selectedMetrics,
+        disfluencyTokens
+      });
+      setRun(response);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Analysis failed");
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
+  function toggleMetric(metric: MetricId) {
+    setSelectedMetrics((current) =>
+      current.includes(metric)
+        ? current.filter((item) => item !== metric)
+        : [...current, metric]
+    );
+  }
+
+  return (
+    <main className="min-h-screen bg-[#f6f5ef] text-[#171717]">
+      <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-5 lg:px-8">
+        <header className="grid gap-5 border-b border-[#d9d4c5] pb-5 lg:grid-cols-[1fr_360px]">
+          <div>
+            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-[#47615d]">
+              <FlaskConical size={18} />
+              Local transcript skill runner
+            </div>
+            <h1 className="max-w-4xl text-4xl font-semibold tracking-normal text-[#111] md:text-5xl">
+              NLP Skill Agents
+            </h1>
+            <p className="mt-3 max-w-3xl text-base leading-7 text-[#4c4a44]">
+              Upload one transcript, choose deterministic research skills, and
+              generate local tables ready for dashboard composition.
+            </p>
+          </div>
+          <div className="grid grid-cols-3 gap-2 self-end">
+            <StatusTile icon={<ShieldCheck size={18} />} label="Local" value="No cloud I/O" />
+            <StatusTile icon={<Database size={18} />} label="Store" value="SQLite + files" />
+            <StatusTile icon={<Activity size={18} />} label="Skills" value="3 demo metrics" />
+          </div>
+        </header>
+
+        <section className="grid gap-5 lg:grid-cols-[380px_1fr]">
+          <aside className="space-y-4">
+            <Panel title="1. Intake" icon={<FileText size={18} />}>
+              <label className="dropzone">
+                <input
+                  className="sr-only"
+                  type="file"
+                  accept=".txt,.docx"
+                  onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                />
+                <span className="text-sm font-semibold">Choose DOCX or TXT</span>
+                <span className="mt-2 block text-sm text-[#676157]">
+                  {file ? file.name : "One transcript per run for v1"}
+                </span>
+              </label>
+              <label className="field-label">
+                Participant ID
+                <input
+                  className="field-input"
+                  value={participantId}
+                  onChange={(event) => setParticipantId(event.target.value)}
+                  placeholder="vr001"
+                />
+              </label>
+            </Panel>
+
+            <Panel title="2. Skills" icon={<TableProperties size={18} />}>
+              <div className="space-y-2">
+                {(skillPack?.metrics ?? selectedMetrics).map((metric) => (
+                  <label key={metric} className="metric-toggle">
+                    <input
+                      type="checkbox"
+                      checked={selectedMetrics.includes(metric)}
+                      onChange={() => toggleMetric(metric)}
+                    />
+                    <span>{metricLabels[metric]}</span>
+                  </label>
+                ))}
+              </div>
+              <label className="field-label">
+                Disfluency inventory
+                <textarea
+                  className="field-input min-h-24 resize-y"
+                  value={disfluencyText}
+                  onChange={(event) => setDisfluencyText(event.target.value)}
+                />
+              </label>
+              <button className="run-button" disabled={isRunning} onClick={runAnalysis}>
+                {isRunning ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
+                Run local analysis
+              </button>
+              {error ? <p className="error-text">{error}</p> : null}
+            </Panel>
+          </aside>
+
+          <section className="space-y-4">
+            <Panel title="3. Run Output" icon={<Database size={18} />}>
+              {run ? (
+                <div className="grid gap-3 md:grid-cols-3">
+                  <OutputFact label="Run ID" value={run.run_id.slice(0, 12)} />
+                  <OutputFact label="Transcript" value={run.source_filename} />
+                  <OutputFact label="Turns" value={String(run.turn_count)} />
+                  <OutputFact label="JSON" value={run.stored.results_json} wide />
+                  <OutputFact label="Exports" value={run.stored.export_dir} wide />
+                </div>
+              ) : (
+                <EmptyState />
+              )}
+            </Panel>
+
+            {run?.results.map((result) => (
+              <MetricTable key={result.metric_id} result={result} />
+            ))}
+          </section>
+        </section>
+      </div>
+    </main>
+  );
+}
+
+function Panel(props: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-4 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
+      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-[#2f413f]">
+        {props.icon}
+        {props.title}
+      </div>
+      {props.children}
+    </section>
+  );
+}
+
+function StatusTile(props: { icon: React.ReactNode; label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+      <div className="flex items-center gap-2 text-[#47615d]">{props.icon}</div>
+      <div className="mt-2 text-xs uppercase text-[#756f64]">{props.label}</div>
+      <div className="mt-1 text-sm font-semibold">{props.value}</div>
+    </div>
+  );
+}
+
+function OutputFact(props: { label: string; value: string; wide?: boolean }) {
+  return (
+    <div className={props.wide ? "md:col-span-3" : ""}>
+      <div className="text-xs uppercase text-[#756f64]">{props.label}</div>
+      <div className="mt-1 overflow-hidden text-ellipsis whitespace-nowrap rounded bg-[#f3f0e7] px-2 py-1 font-mono text-xs">
+        {props.value}
+      </div>
+    </div>
+  );
+}
+
+function EmptyState() {
+  return (
+    <div className="flex min-h-40 items-center justify-center rounded-md border border-dashed border-[#c7c0af] bg-[#faf8f1] text-sm text-[#676157]">
+      Analysis results will appear here after a local run.
+    </div>
+  );
+}
+
+function MetricTable({ result }: { result: MetricResult }) {
+  const columns = Array.from(new Set(result.rows.flatMap((row) => Object.keys(row))));
+  return (
+    <Panel title={result.label} icon={<TableProperties size={18} />}>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[680px] border-collapse text-left text-sm">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th key={column} className="table-head">
+                  {column.replaceAll("_", " ")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {result.rows.map((row, index) => (
+              <tr key={index} className="border-t border-[#e4ded0]">
+                {columns.map((column) => (
+                  <td key={column} className="table-cell">
+                    {formatCell(row[column])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Panel>
+  );
+}
+
+function formatCell(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.join(", ");
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value);
+}
+

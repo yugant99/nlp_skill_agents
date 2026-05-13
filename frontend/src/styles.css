@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    margin: 0;
+    font-family:
+      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+      sans-serif;
+  }
+
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .dropzone {
+    @apply block cursor-pointer rounded-md border border-dashed border-[#9d9a8f] bg-[#f7f4ea] px-4 py-5 text-center transition hover:border-[#47615d] hover:bg-[#f0eee4];
+  }
+
+  .field-label {
+    @apply mt-4 block text-sm font-medium text-[#3e3b35];
+  }
+
+  .field-input {
+    @apply mt-2 w-full rounded-md border border-[#cfc8b8] bg-white px-3 py-2 text-sm outline-none transition focus:border-[#47615d] focus:ring-2 focus:ring-[#47615d]/20;
+  }
+
+  .metric-toggle {
+    @apply flex cursor-pointer items-center justify-between rounded-md border border-[#d9d4c5] bg-[#faf8f1] px-3 py-2 text-sm font-medium;
+  }
+
+  .metric-toggle input {
+    @apply h-4 w-4 accent-[#47615d];
+  }
+
+  .run-button {
+    @apply mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-[#253735] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#344b47] disabled:cursor-not-allowed disabled:opacity-60;
+  }
+
+  .error-text {
+    @apply mt-3 rounded-md border border-[#e0aaa1] bg-[#fff0ee] px-3 py-2 text-sm text-[#8a2d24];
+  }
+
+  .table-head {
+    @apply bg-[#f3f0e7] px-3 py-2 text-xs font-semibold uppercase text-[#5f594f];
+  }
+
+  .table-cell {
+    @apply max-w-[260px] overflow-hidden text-ellipsis whitespace-nowrap px-3 py-2 text-[#2b2925];
+  }
+}
+

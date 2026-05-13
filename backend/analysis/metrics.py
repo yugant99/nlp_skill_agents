@@ -59,6 +59,23 @@ def calculate_base_metrics(transcript: Transcript) -> MetricResult:
     )
 
 
+def calculate_lexical_metrics(transcript: Transcript) -> MetricResult:
+    disfluency_tokens = set(transcript.config.disfluency_tokens) or DEFAULT_DISFLUENCY_TOKENS
+    rows = [
+        _lexical_row_for_role(transcript.turns, "caregiver", disfluency_tokens),
+        _lexical_row_for_role(transcript.turns, "participant", disfluency_tokens),
+    ]
+    total_tokens = _tokens_for_turns(transcript.turns, disfluency_tokens)
+    return MetricResult(
+        metric_id="lexical_metrics",
+        label="Lexical Metrics",
+        rows=[
+            *rows,
+            _lexical_row_from_tokens("total", total_tokens),
+        ],
+    )
+
+
 def _base_row_for_role(
     turns: list[Turn],
     role: str,
@@ -78,6 +95,37 @@ def _base_row_for_role(
         "nonverbal_cues": sum(len(_extract_nonverbals(turn.text)) for turn in role_turns),
         "words_per_turn": round(clean_words / turn_count, 2) if turn_count else 0.0,
     }
+
+
+def _lexical_row_for_role(
+    turns: list[Turn],
+    role: str,
+    disfluency_tokens: set[str],
+) -> dict[str, Any]:
+    role_turns = [turn for turn in turns if turn.role == role]
+    return _lexical_row_from_tokens(role, _tokens_for_turns(role_turns, disfluency_tokens))
+
+
+def _lexical_row_from_tokens(speaker: str, tokens: list[str]) -> dict[str, Any]:
+    token_count = len(tokens)
+    unique_count = len(set(tokens))
+    lexical_tokens = [token for token in tokens if token not in _FUNCTION_WORDS]
+    return {
+        "speaker": speaker,
+        "tokens": token_count,
+        "unique_tokens": unique_count,
+        "type_token_ratio": round(unique_count / token_count, 3) if token_count else 0.0,
+        "lexical_density": round(len(lexical_tokens) / token_count, 3)
+        if token_count
+        else 0.0,
+    }
+
+
+def _tokens_for_turns(turns: list[Turn], disfluency_tokens: set[str]) -> list[str]:
+    tokens: list[str] = []
+    for turn in turns:
+        tokens.extend(_word_tokens(_clean_text(turn.text), disfluency_tokens))
+    return tokens
 
 
 def _clean_text(text: str) -> str:
@@ -106,3 +154,36 @@ def _count_sentences(text: str) -> int:
         return 0
     return len([part for part in re.split(r"[.!?]+", clean_text) if part.strip()])
 
+
+_FUNCTION_WORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "but",
+    "by",
+    "for",
+    "from",
+    "he",
+    "her",
+    "him",
+    "i",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "she",
+    "that",
+    "the",
+    "they",
+    "this",
+    "to",
+    "we",
+    "with",
+    "you",
+}

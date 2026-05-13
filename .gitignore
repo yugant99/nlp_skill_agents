@@ -16,3 +16,5 @@ local_data/
 .env
 .env.*
 !.env.example
+.playwright-cli/
+output/

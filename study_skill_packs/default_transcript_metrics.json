@@ -1,0 +1,28 @@
+{
+  "id": "default_transcript_metrics",
+  "name": "Default Transcript Metrics",
+  "version": "0.1.0",
+  "description": "Base, lexical, and disfluency metrics for one DOCX/TXT transcript.",
+  "metrics": ["base_metrics", "lexical_metrics", "disfluency_metrics"],
+  "speaker_roles": {
+    "caregiver": "Caregiver",
+    "participant": "Participant"
+  },
+  "disfluency_tokens": [
+    "hm",
+    "huh",
+    "um",
+    "uh",
+    "eh",
+    "mhm",
+    "oh",
+    "hmm",
+    "umm",
+    "uhh",
+    "ehh",
+    "ah",
+    "mm",
+    "em"
+  ]
+}
+

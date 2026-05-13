@@ -76,6 +76,34 @@ def calculate_lexical_metrics(transcript: Transcript) -> MetricResult:
     )
 
 
+def calculate_disfluency_metrics(transcript: Transcript) -> MetricResult:
+    disfluency_tokens = set(transcript.config.disfluency_tokens) or DEFAULT_DISFLUENCY_TOKENS
+    rows = [
+        _disfluency_row_for_role(transcript.turns, "caregiver", disfluency_tokens),
+        _disfluency_row_for_role(transcript.turns, "participant", disfluency_tokens),
+    ]
+    total_words = sum(row["total_words"] for row in rows)
+    total_count = sum(row["disfluency_count"] for row in rows)
+    return MetricResult(
+        metric_id="disfluency_metrics",
+        label="Disfluency Metrics",
+        rows=[
+            *rows,
+            {
+                "speaker": "total",
+                "disfluency_count": total_count,
+                "total_words": total_words,
+                "disfluency_rate": round(total_count / total_words, 3)
+                if total_words
+                else 0.0,
+                "examples": _unique_examples(
+                    example for row in rows for example in row["examples"]
+                ),
+            },
+        ],
+    )
+
+
 def _base_row_for_role(
     turns: list[Turn],
     role: str,
@@ -104,6 +132,31 @@ def _lexical_row_for_role(
 ) -> dict[str, Any]:
     role_turns = [turn for turn in turns if turn.role == role]
     return _lexical_row_from_tokens(role, _tokens_for_turns(role_turns, disfluency_tokens))
+
+
+def _disfluency_row_for_role(
+    turns: list[Turn],
+    role: str,
+    disfluency_tokens: set[str],
+) -> dict[str, Any]:
+    role_turns = [turn for turn in turns if turn.role == role]
+    all_tokens: list[str] = []
+    matches: list[str] = []
+    normalized_disfluencies = {token.lower() for token in disfluency_tokens}
+    for turn in role_turns:
+        tokens = _word_tokens(_remove_nonverbals(turn.text), set())
+        all_tokens.extend(tokens)
+        matches.extend(token for token in tokens if token in normalized_disfluencies)
+    total_words = len(all_tokens)
+    return {
+        "speaker": role,
+        "disfluency_count": len(matches),
+        "total_words": total_words,
+        "disfluency_rate": round(len(matches) / total_words, 3)
+        if total_words
+        else 0.0,
+        "examples": _unique_examples(matches),
+    }
 
 
 def _lexical_row_from_tokens(speaker: str, tokens: list[str]) -> dict[str, Any]:
@@ -146,6 +199,17 @@ def _word_tokens(text: str, disfluency_tokens: set[str]) -> list[str]:
         return tokens
     normalized_disfluencies = {token.lower() for token in disfluency_tokens}
     return [token for token in tokens if token not in normalized_disfluencies]
+
+
+def _unique_examples(values) -> list[str]:
+    seen: set[str] = set()
+    examples: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        examples.append(value)
+    return examples
 
 
 def _count_sentences(text: str) -> int:

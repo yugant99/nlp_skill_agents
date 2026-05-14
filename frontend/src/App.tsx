@@ -49,6 +49,8 @@ const orderedMetrics: MetricId[] = [
   "disfluency_metrics"
 ];
 
+const DEFAULT_OPENROUTER_MODEL = "openai/gpt-oss-120b";
+
 export function App() {
   const [skillPack, setSkillPack] = useState<SkillPack | null>(null);
   const [skillPackPayload, setSkillPackPayload] = useState<unknown | null>(null);
@@ -63,6 +65,8 @@ export function App() {
     "Split pain into acute and chronic pain, and add sleep disruption."
   );
   const [appliedChanges, setAppliedChanges] = useState<string[]>([]);
+  const [authoringEngine, setAuthoringEngine] = useState<"local" | "openrouter">("local");
+  const [authoringModel, setAuthoringModel] = useState(DEFAULT_OPENROUTER_MODEL);
   const [inputMode, setInputMode] = useState<"file" | "paste">("file");
   const [file, setFile] = useState<File | null>(null);
   const [pastedTranscript, setPastedTranscript] = useState("");
@@ -197,7 +201,9 @@ export function App() {
       setSkillPackStatus("Drafting skill pack from study brief...");
       const draft = await draftSkillPack({
         brief: studyBrief,
-        name: draftName.trim() || undefined
+        name: draftName.trim() || undefined,
+        authoringEngine,
+        model: authoringEngine === "openrouter" ? authoringModel : undefined
       });
       activateSkillPack(draft.skill_pack, draft.payload);
       setSkillPackJson(JSON.stringify(draft.payload, null, 2));
@@ -224,7 +230,9 @@ export function App() {
       setSkillPackStatus("Refining active skill pack...");
       const refined = await refineSkillPack({
         payload: skillPackPayload,
-        instruction: refinementInstruction
+        instruction: refinementInstruction,
+        authoringEngine,
+        model: authoringEngine === "openrouter" ? authoringModel : undefined
       });
       activateSkillPack(refined.skill_pack, refined.payload);
       setSkillPackJson(JSON.stringify(refined.payload, null, 2));
@@ -434,6 +442,43 @@ export function App() {
 
             <Panel title="2. Skill Pack Studio" icon={<Sparkles size={18} />}>
               <div className="studio-block">
+                <div className="engine-switch" aria-label="Skill authoring engine">
+                  <button
+                    className={
+                      authoringEngine === "local"
+                        ? "mode-button mode-button-active"
+                        : "mode-button"
+                    }
+                    type="button"
+                    onClick={() => setAuthoringEngine("local")}
+                  >
+                    Local rules
+                  </button>
+                  <button
+                    className={
+                      authoringEngine === "openrouter"
+                        ? "mode-button mode-button-active"
+                        : "mode-button"
+                    }
+                    type="button"
+                    onClick={() => setAuthoringEngine("openrouter")}
+                  >
+                    OpenRouter
+                  </button>
+                </div>
+                {authoringEngine === "openrouter" ? (
+                  <label className="field-label mt-3">
+                    Model
+                    <input
+                      className="field-input"
+                      value={authoringModel}
+                      onChange={(event) => setAuthoringModel(event.target.value)}
+                    />
+                    <span className="field-helper">
+                      Only study briefs, refinement instructions, and skill-pack schemas are sent.
+                    </span>
+                  </label>
+                ) : null}
                 <label className="field-label mt-0">
                   Study brief
                   <textarea

@@ -66,13 +66,20 @@ export async function validateSkillPackText(params: {
 export async function draftSkillPack(params: {
   brief: string;
   name?: string;
+  authoringEngine?: string;
+  model?: string;
 }): Promise<SkillPackDraftResponse> {
   const response = await fetch(`${API_BASE}/api/skill-packs/draft`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(params)
+    body: JSON.stringify({
+      brief: params.brief,
+      name: params.name,
+      authoring_engine: params.authoringEngine ?? "local",
+      model: params.model
+    })
   });
   if (!response.ok) {
     const message = await response.text();
@@ -84,13 +91,20 @@ export async function draftSkillPack(params: {
 export async function refineSkillPack(params: {
   payload: unknown;
   instruction: string;
+  authoringEngine?: string;
+  model?: string;
 }): Promise<SkillPackRefineResponse> {
   const response = await fetch(`${API_BASE}/api/skill-packs/refine`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify(params)
+    body: JSON.stringify({
+      payload: params.payload,
+      instruction: params.instruction,
+      authoring_engine: params.authoringEngine ?? "local",
+      model: params.model
+    })
   });
   if (!response.ok) {
     const message = await response.text();

@@ -51,6 +51,10 @@ export type SkillPackDraftResponse = {
   payload: SkillPack;
   skill_pack: SkillPackSummary;
   warnings: string[];
+  authoring?: {
+    engine: string;
+    model: string;
+  };
 };
 
 export type SkillPackRefineResponse = SkillPackDraftResponse & {

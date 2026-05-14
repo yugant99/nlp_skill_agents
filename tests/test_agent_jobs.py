@@ -35,11 +35,28 @@ def test_create_metric_plugin_build_job_from_request(tmp_path: Path) -> None:
     assert job.status == "queued"
     assert job.source_request_id == "empathy_response_metric"
     assert job.branch_name == "codex/plugin-empathy-response-metric"
+    assert job.runbook_path.endswith(
+        "agent_jobs/build_empathy_response_metric/runbook.md"
+    )
     assert "backend/analysis/metrics.py" in job.allowed_files
     assert ".venv/bin/pytest tests/test_metric_plugins.py -q" in job.verification_commands
 
     saved = json.loads((tmp_path / "agent_jobs" / f"{job.id}.json").read_text())
     assert saved["prompt_path"].endswith("implementation_prompt.md")
+    assert saved["runbook_path"].endswith(
+        "agent_jobs/build_empathy_response_metric/runbook.md"
+    )
+
+    runbook_path = tmp_path / "agent_jobs" / job.id / "runbook.md"
+    runbook = runbook_path.read_text(encoding="utf-8")
+    assert "# Agent Job Runbook: build_empathy_response_metric" in runbook
+    assert (
+        "git worktree add ../nlp_skill_agents-build_empathy_response_metric "
+        "-b codex/plugin-empathy-response-metric"
+    ) in runbook
+    assert str(tmp_path / "plugin_requests" / request.id / "implementation_prompt.md") in runbook
+    assert "backend/analysis/metrics.py" in runbook
+    assert ".venv/bin/pytest tests/test_metric_plugins.py -q" in runbook
 
 
 def test_agent_job_api_creates_and_lists_build_jobs(tmp_path: Path, monkeypatch) -> None:
@@ -64,6 +81,9 @@ def test_agent_job_api_creates_and_lists_build_jobs(tmp_path: Path, monkeypatch)
     payload = create_response.json()
     assert payload["job"]["id"] == "build_repair_sequence_metric"
     assert payload["job"]["status"] == "queued"
+    assert payload["job"]["runbook_path"].endswith(
+        "agent_jobs/build_repair_sequence_metric/runbook.md"
+    )
     assert payload["artifact_path"].endswith("agent_jobs/build_repair_sequence_metric.json")
 
     list_response = client.get("/api/agent-jobs")

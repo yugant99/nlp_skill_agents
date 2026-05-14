@@ -41,6 +41,7 @@ export type AgentJob = {
   source_request_id: string;
   branch_name: string;
   prompt_path: string;
+  runbook_path: string;
   allowed_files: string[];
   verification_commands: string[];
   created_at: string;

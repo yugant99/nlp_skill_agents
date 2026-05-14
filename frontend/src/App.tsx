@@ -395,7 +395,7 @@ export function App() {
       setError("");
       const response = await createPluginBuildJob(requestId);
       setPluginJobStatus(
-        `Queued build job: ${response.job.id} -> ${response.job.branch_name}`
+        `Queued build job: ${response.job.id} -> ${response.job.runbook_path}`
       );
       setAgentJobs(await listAgentJobs());
     } catch (err) {
@@ -929,6 +929,9 @@ function PluginCatalog({
                 </div>
                 <div className="mt-1 truncate font-mono text-xs text-[#756f64]">
                   {job.branch_name}
+                </div>
+                <div className="mt-1 truncate font-mono text-xs text-[#756f64]">
+                  {job.runbook_path}
                 </div>
               </div>
               <span className="plugin-pill">{job.status}</span>

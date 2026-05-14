@@ -61,3 +61,24 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
         ).fetchall()
     assert db_rows == [(stored.run_id, "vr008.txt", 3)]
 
+
+def test_local_store_lists_recent_runs_newest_first(tmp_path: Path) -> None:
+    store = LocalRunStore(tmp_path)
+    first = execute_analysis(
+        "vr030_c: First.\nvr030_p: One.",
+        StudyConfig(participant_id="vr030", selected_metrics=["base_metrics"]),
+        source_filename="first.txt",
+    )
+    second = execute_analysis(
+        "vr031_c: Second.\nvr031_p: Two.",
+        StudyConfig(participant_id="vr031", selected_metrics=["base_metrics"]),
+        source_filename="second.txt",
+    )
+    store.persist_run(first)
+    store.persist_run(second)
+
+    rows = store.list_runs()
+
+    assert [row["source_filename"] for row in rows] == ["second.txt", "first.txt"]
+    assert rows[0]["metric_count"] == 1
+    assert rows[0]["results_json"].endswith("results.json")

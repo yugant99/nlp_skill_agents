@@ -53,6 +53,31 @@ class LocalRunStore:
     def export_path(self, run_id: str, filename: str) -> Path:
         return self.exports_dir / run_id / filename
 
+    def list_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        self._ensure_schema()
+        with sqlite3.connect(self.db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                select run_id, source_filename, created_at, metric_count
+                from analysis_runs
+                order by created_at desc
+                limit ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "run_id": row["run_id"],
+                "source_filename": row["source_filename"],
+                "created_at": row["created_at"],
+                "metric_count": row["metric_count"],
+                "results_json": str(self.runs_dir / row["run_id"] / "results.json"),
+                "export_dir": str(self.exports_dir / row["run_id"]),
+            }
+            for row in rows
+        ]
+
     def _ensure_schema(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as connection:

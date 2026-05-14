@@ -123,6 +123,38 @@ def test_download_export_rejects_path_traversal(tmp_path, monkeypatch) -> None:
     assert response.status_code == 404
 
 
+def test_list_runs_returns_recent_local_runs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    for filename, participant in [("one.txt", "vr040"), ("two.txt", "vr041")]:
+        client.post(
+            "/api/runs",
+            data={
+                "config": json.dumps(
+                    {
+                        "participant_id": participant,
+                        "selected_metrics": ["base_metrics"],
+                    }
+                )
+            },
+            files={
+                "file": (
+                    filename,
+                    f"{participant}_c: Hello.\n{participant}_p: Hi.".encode(),
+                    "text/plain",
+                )
+            },
+        )
+
+    response = client.get("/api/runs")
+
+    assert response.status_code == 200
+    assert [row["source_filename"] for row in response.json()["runs"]] == [
+        "two.txt",
+        "one.txt",
+    ]
+
+
 def test_create_run_surfaces_diagnostic_warnings(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)

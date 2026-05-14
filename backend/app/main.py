@@ -69,6 +69,11 @@ async def create_run(
     return _run_response(run, stored)
 
 
+@app.get("/api/runs")
+def list_runs() -> dict:
+    return {"runs": LocalRunStore(_local_data_root()).list_runs()}
+
+
 @app.get("/api/runs/{run_id}/exports/{filename}")
 def download_export(run_id: str, filename: str) -> FileResponse:
     if "/" in filename or "\\" in filename or filename.startswith("."):

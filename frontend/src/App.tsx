@@ -16,15 +16,19 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
   apiUrl,
+  addStudySkillPackVersion,
   createAnalysisRun,
   createPluginBuildJob,
   createPluginRequest,
+  createStudy,
+  createStudyTextBatch,
   createTextAnalysisRun,
   draftSkillPack,
   listAgentJobs,
   listMetricPlugins,
   listPluginRequests,
   listRuns,
+  listStudies,
   loadSkillPack,
   refineSkillPack,
   updateAgentJobStatus,
@@ -38,7 +42,9 @@ import type {
   PluginRequest,
   RunHistoryItem,
   RunResponse,
-  SkillPack
+  SkillPack,
+  StudyBatchResponse,
+  StudyWorkspace
 } from "./types";
 import type { MetricPlugin } from "./types";
 
@@ -118,6 +124,18 @@ export function App() {
   const [pluginRequestExpected, setPluginRequestExpected] = useState(
     "Count the caregiver turn as one empathy response."
   );
+  const [studies, setStudies] = useState<StudyWorkspace[]>([]);
+  const [studyName, setStudyName] = useState("Demo Healthcare Batch");
+  const [studyDescription, setStudyDescription] = useState(
+    "Three-transcript demo workspace for aggregate prompting and care-plan metrics."
+  );
+  const [batchTranscriptText, setBatchTranscriptText] = useState(
+    "one.txt\nCG: How did walking feel today?\nP: It hurt after lunch.\n---\n" +
+      "two.txt\nCG: Did medication help last night?\nP: Yes, I slept better.\n---\n" +
+      "three.txt\nCG: I will call the clinic tomorrow.\nP: Thank you."
+  );
+  const [studyBatch, setStudyBatch] = useState<StudyBatchResponse | null>(null);
+  const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
@@ -142,6 +160,9 @@ export function App() {
     listAgentJobs()
       .then(setAgentJobs)
       .catch(() => setAgentJobs([]));
+    listStudies()
+      .then(setStudies)
+      .catch(() => setStudies([]));
   }, []);
 
   const disfluencyTokens = useMemo(
@@ -418,6 +439,35 @@ export function App() {
     } catch (err) {
       setPluginJobStatus("");
       setError(err instanceof Error ? err.message : "Could not update agent job");
+    }
+  }
+
+  async function runStudyWorkspaceBatch() {
+    if (!skillPackPayload) {
+      setError("Activate a skill pack before running a study batch.");
+      return;
+    }
+    try {
+      setError("");
+      const transcripts = parseBatchTranscripts(batchTranscriptText);
+      const study = await createStudy({
+        name: studyName,
+        description: studyDescription
+      });
+      const version = await addStudySkillPackVersion(study.id, skillPackPayload);
+      const batch = await createStudyTextBatch({
+        studyId: study.id,
+        skillPackVersionId: version.version_id,
+        transcripts
+      });
+      setStudyBatch(batch);
+      setStudyWorkspaceStatus(
+        `Batch complete: ${batch.batch.run_count} run(s), ${batch.batch.failure_count} failure(s)`
+      );
+      setStudies(await listStudies());
+    } catch (err) {
+      setStudyWorkspaceStatus("");
+      setError(err instanceof Error ? err.message : "Could not run study batch");
     }
   }
 
@@ -750,6 +800,18 @@ export function App() {
                 }
               />
             ))}
+            <StudyWorkspacePanel
+              studies={studies}
+              studyName={studyName}
+              studyDescription={studyDescription}
+              batchTranscriptText={batchTranscriptText}
+              batch={studyBatch}
+              status={studyWorkspaceStatus}
+              onStudyNameChange={setStudyName}
+              onStudyDescriptionChange={setStudyDescription}
+              onBatchTranscriptTextChange={setBatchTranscriptText}
+              onRunBatch={runStudyWorkspaceBatch}
+            />
             <RecentRunsPanel runs={runHistory} />
           </section>
         </section>
@@ -786,6 +848,101 @@ function RecentRunsPanel({ runs }: { runs: RunHistoryItem[] }) {
       ) : (
         <div className="text-sm text-[#676157]">No local runs recorded yet.</div>
       )}
+    </Panel>
+  );
+}
+
+function StudyWorkspacePanel({
+  studies,
+  studyName,
+  studyDescription,
+  batchTranscriptText,
+  batch,
+  status,
+  onStudyNameChange,
+  onStudyDescriptionChange,
+  onBatchTranscriptTextChange,
+  onRunBatch
+}: {
+  studies: StudyWorkspace[];
+  studyName: string;
+  studyDescription: string;
+  batchTranscriptText: string;
+  batch: StudyBatchResponse | null;
+  status: string;
+  onStudyNameChange: (value: string) => void;
+  onStudyDescriptionChange: (value: string) => void;
+  onBatchTranscriptTextChange: (value: string) => void;
+  onRunBatch: () => void;
+}) {
+  return (
+    <Panel title="5. Study Workspace" icon={<Database size={18} />}>
+      <div className="grid gap-4 lg:grid-cols-[1fr_1.2fr]">
+        <div className="space-y-3">
+          <label className="field-label mt-0">
+            Study name
+            <input
+              className="field-input"
+              value={studyName}
+              onChange={(event) => onStudyNameChange(event.target.value)}
+            />
+          </label>
+          <label className="field-label">
+            Description
+            <textarea
+              className="field-input min-h-20 resize-y"
+              value={studyDescription}
+              onChange={(event) => onStudyDescriptionChange(event.target.value)}
+            />
+          </label>
+          {studies.length ? (
+            <div className="recent-runs-list">
+              {studies.slice(0, 3).map((study) => (
+                <div key={study.id} className="recent-run-row">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-[#171717]">
+                      {study.name}
+                    </div>
+                    <div className="mt-1 truncate font-mono text-xs text-[#756f64]">
+                      {study.id}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <div className="space-y-3">
+          <label className="field-label mt-0">
+            Batch transcripts
+            <textarea
+              className="field-input min-h-44 resize-y font-mono text-xs"
+              value={batchTranscriptText}
+              onChange={(event) => onBatchTranscriptTextChange(event.target.value)}
+            />
+            <span className="field-helper">
+              Separate files with `---`; first line of each block is the filename.
+            </span>
+          </label>
+          <button className="secondary-button" type="button" onClick={onRunBatch}>
+            <Play size={16} />
+            Run study batch
+          </button>
+          {status ? <p className="success-text">{status}</p> : null}
+          {batch ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              <OutputFact label="Batch" value={batch.batch.batch_id.slice(0, 18)} />
+              <OutputFact label="Runs" value={String(batch.batch.run_count)} />
+              <OutputFact label="Aggregate JSON" value={batch.aggregate_results_json} wide />
+              <OutputFact
+                label="Exports"
+                value={batch.exports.map((item) => item.filename).join(", ")}
+                wide
+              />
+            </div>
+          ) : null}
+        </div>
+      </div>
     </Panel>
   );
 }
@@ -1153,6 +1310,28 @@ function formatCell(value: unknown): string {
 
 function metricLabel(metricId: string): string {
   return metricLabels[metricId] ?? metricId.replaceAll("_", " ");
+}
+
+function parseBatchTranscripts(
+  value: string
+): { source_filename: string; content: string }[] {
+  const transcripts = value
+    .split(/\n---+\n/g)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block, index) => {
+      const [filenameLine, ...contentLines] = block.split("\n");
+      const sourceFilename = filenameLine.trim() || `transcript_${index + 1}.txt`;
+      return {
+        source_filename: sourceFilename,
+        content: contentLines.join("\n").trim()
+      };
+    })
+    .filter((item) => item.content);
+  if (!transcripts.length) {
+    throw new Error("Add at least one transcript block with a filename and content.");
+  }
+  return transcripts;
 }
 
 function metricDescription(metricId: string): string {

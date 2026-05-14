@@ -52,6 +52,44 @@ export type AgentJobResponse = {
   artifact_path: string;
 };
 
+export type StudyWorkspace = {
+  id: string;
+  name: string;
+  description: string;
+  created_at: string;
+};
+
+export type StudySkillPackVersion = {
+  study_id: string;
+  version_id: string;
+  artifact_path: string;
+  created_at: string;
+  skill_pack: {
+    id: string;
+    name: string;
+    version: string;
+    metrics: MetricId[];
+  };
+};
+
+export type StudyBatchResponse = {
+  batch: {
+    study_id: string;
+    batch_id: string;
+    skill_pack_version_id: string;
+    run_count: number;
+    failure_count: number;
+    aggregate_dir: string;
+    created_at: string;
+  };
+  aggregate_results_json: string;
+  exports: {
+    metric_id: string;
+    filename: string;
+    path: string;
+  }[];
+};
+
 export type RunResponse = {
   run_id: string;
   source_filename: string;

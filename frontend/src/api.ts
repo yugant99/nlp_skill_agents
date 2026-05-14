@@ -10,7 +10,10 @@ import type {
   SkillPack,
   SkillPackDraftResponse,
   SkillPackRefineResponse,
-  SkillPackSummary
+  SkillPackSummary,
+  StudyBatchResponse,
+  StudySkillPackVersion,
+  StudyWorkspace
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
@@ -108,6 +111,75 @@ export async function updateAgentJobStatus(
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || "Could not update agent job");
+  }
+  return response.json();
+}
+
+export async function createStudy(params: {
+  name: string;
+  description: string;
+}): Promise<StudyWorkspace> {
+  const response = await fetch(`${API_BASE}/api/studies`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(params)
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not create study");
+  }
+  const payload = (await response.json()) as { study: StudyWorkspace };
+  return payload.study;
+}
+
+export async function listStudies(): Promise<StudyWorkspace[]> {
+  const response = await fetch(`${API_BASE}/api/studies`);
+  if (!response.ok) {
+    throw new Error("Could not load studies");
+  }
+  const payload = (await response.json()) as { studies: StudyWorkspace[] };
+  return payload.studies;
+}
+
+export async function addStudySkillPackVersion(
+  studyId: string,
+  payload: unknown
+): Promise<StudySkillPackVersion> {
+  const response = await fetch(`${API_BASE}/api/studies/${studyId}/skill-pack-versions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not save study skill-pack version");
+  }
+  const body = (await response.json()) as { version: StudySkillPackVersion };
+  return body.version;
+}
+
+export async function createStudyTextBatch(params: {
+  studyId: string;
+  skillPackVersionId: string;
+  transcripts: { source_filename: string; content: string }[];
+}): Promise<StudyBatchResponse> {
+  const response = await fetch(`${API_BASE}/api/studies/${params.studyId}/batches/text`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      skill_pack_version_id: params.skillPackVersionId,
+      transcripts: params.transcripts
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not run study batch");
   }
   return response.json();
 }

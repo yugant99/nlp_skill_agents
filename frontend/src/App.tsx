@@ -17,9 +17,11 @@ import { useEffect, useMemo, useState } from "react";
 import {
   apiUrl,
   createAnalysisRun,
+  createPluginBuildJob,
   createPluginRequest,
   createTextAnalysisRun,
   draftSkillPack,
+  listAgentJobs,
   listMetricPlugins,
   listPluginRequests,
   listRuns,
@@ -29,6 +31,7 @@ import {
   validateSkillPackText
 } from "./api";
 import type {
+  AgentJob,
   MetricId,
   MetricResult,
   PluginRequest,
@@ -94,7 +97,9 @@ export function App() {
   const [runHistory, setRunHistory] = useState<RunHistoryItem[]>([]);
   const [metricPlugins, setMetricPlugins] = useState<MetricPlugin[]>([]);
   const [pluginRequests, setPluginRequests] = useState<PluginRequest[]>([]);
+  const [agentJobs, setAgentJobs] = useState<AgentJob[]>([]);
   const [pluginRequestStatus, setPluginRequestStatus] = useState("");
+  const [pluginJobStatus, setPluginJobStatus] = useState("");
   const [pluginRequestTitle, setPluginRequestTitle] = useState("Empathy Response Metric");
   const [pluginRequestQuestion, setPluginRequestQuestion] = useState(
     "Count caregiver turns that acknowledge participant distress or difficulty."
@@ -129,6 +134,9 @@ export function App() {
     listPluginRequests()
       .then(setPluginRequests)
       .catch(() => setPluginRequests([]));
+    listAgentJobs()
+      .then(setAgentJobs)
+      .catch(() => setAgentJobs([]));
   }, []);
 
   const disfluencyTokens = useMemo(
@@ -375,9 +383,24 @@ export function App() {
         `Saved request: ${response.request.id} -> ${response.implementation_prompt_path}`
       );
       setPluginRequests(await listPluginRequests());
+      setAgentJobs(await listAgentJobs());
     } catch (err) {
       setPluginRequestStatus("");
       setError(err instanceof Error ? err.message : "Could not save plugin request");
+    }
+  }
+
+  async function queuePluginBuildJob(requestId: string) {
+    try {
+      setError("");
+      const response = await createPluginBuildJob(requestId);
+      setPluginJobStatus(
+        `Queued build job: ${response.job.id} -> ${response.job.branch_name}`
+      );
+      setAgentJobs(await listAgentJobs());
+    } catch (err) {
+      setPluginJobStatus("");
+      setError(err instanceof Error ? err.message : "Could not queue build job");
     }
   }
 
@@ -654,18 +677,21 @@ export function App() {
                 plugins={metricPlugins}
                 activeMetrics={selectedMetrics}
                 requests={pluginRequests}
+                jobs={agentJobs}
                 requestTitle={pluginRequestTitle}
                 requestQuestion={pluginRequestQuestion}
                 requestColumns={pluginRequestColumns}
                 requestExample={pluginRequestExample}
                 requestExpected={pluginRequestExpected}
                 requestStatus={pluginRequestStatus}
+                jobStatus={pluginJobStatus}
                 onRequestTitleChange={setPluginRequestTitle}
                 onRequestQuestionChange={setPluginRequestQuestion}
                 onRequestColumnsChange={setPluginRequestColumns}
                 onRequestExampleChange={setPluginRequestExample}
                 onRequestExpectedChange={setPluginRequestExpected}
                 onSubmitRequest={submitPluginRequest}
+                onQueueBuildJob={queuePluginBuildJob}
               />
               {error ? <p className="error-text">{error}</p> : null}
             </Panel>
@@ -750,34 +776,40 @@ function PluginCatalog({
   plugins,
   activeMetrics,
   requests,
+  jobs,
   requestTitle,
   requestQuestion,
   requestColumns,
   requestExample,
   requestExpected,
   requestStatus,
+  jobStatus,
   onRequestTitleChange,
   onRequestQuestionChange,
   onRequestColumnsChange,
   onRequestExampleChange,
   onRequestExpectedChange,
-  onSubmitRequest
+  onSubmitRequest,
+  onQueueBuildJob
 }: {
   plugins: MetricPlugin[];
   activeMetrics: MetricId[];
   requests: PluginRequest[];
+  jobs: AgentJob[];
   requestTitle: string;
   requestQuestion: string;
   requestColumns: string;
   requestExample: string;
   requestExpected: string;
   requestStatus: string;
+  jobStatus: string;
   onRequestTitleChange: (value: string) => void;
   onRequestQuestionChange: (value: string) => void;
   onRequestColumnsChange: (value: string) => void;
   onRequestExampleChange: (value: string) => void;
   onRequestExpectedChange: (value: string) => void;
   onSubmitRequest: () => void;
+  onQueueBuildJob: (requestId: string) => void;
 }) {
   if (!plugins.length) {
     return null;
@@ -872,7 +904,34 @@ function PluginCatalog({
                   {request.requested_metric_id}
                 </div>
               </div>
-              <span className="plugin-pill-muted">{request.status}</span>
+              <button
+                className="json-upload-button"
+                type="button"
+                onClick={() => onQueueBuildJob(request.id)}
+              >
+                Queue job
+              </button>
+            </div>
+          ))}
+          {jobStatus ? <p className="success-text">{jobStatus}</p> : null}
+        </div>
+      ) : null}
+      {jobs.length ? (
+        <div className="mt-3 space-y-2">
+          <div className="text-xs font-semibold uppercase text-[#47615d]">
+            Agent jobs
+          </div>
+          {jobs.slice(0, 3).map((job) => (
+            <div key={job.id} className="plugin-row">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-[#171717]">
+                  {job.id}
+                </div>
+                <div className="mt-1 truncate font-mono text-xs text-[#756f64]">
+                  {job.branch_name}
+                </div>
+              </div>
+              <span className="plugin-pill">{job.status}</span>
             </div>
           ))}
         </div>

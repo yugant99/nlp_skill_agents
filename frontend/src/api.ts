@@ -1,4 +1,6 @@
 import type {
+  AgentJob,
+  AgentJobResponse,
   MetricId,
   MetricPlugin,
   PluginRequest,
@@ -70,6 +72,26 @@ export async function listPluginRequests(): Promise<PluginRequest[]> {
   }
   const payload = (await response.json()) as { requests: PluginRequest[] };
   return payload.requests;
+}
+
+export async function createPluginBuildJob(requestId: string): Promise<AgentJobResponse> {
+  const response = await fetch(`${API_BASE}/api/plugin-requests/${requestId}/build-job`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not create plugin build job");
+  }
+  return response.json();
+}
+
+export async function listAgentJobs(): Promise<AgentJob[]> {
+  const response = await fetch(`${API_BASE}/api/agent-jobs`);
+  if (!response.ok) {
+    throw new Error("Could not load agent jobs");
+  }
+  const payload = (await response.json()) as { jobs: AgentJob[] };
+  return payload.jobs;
 }
 
 export async function validateSkillPack(payload: unknown): Promise<SkillPackSummary> {

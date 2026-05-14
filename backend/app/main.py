@@ -28,9 +28,15 @@ from backend.analysis.skill_packs import (
     parse_skill_pack_document,
 )
 from backend.analysis.transcripts import StudyConfig, extract_transcript_text
+from backend.extensions.agent_jobs import (
+    AgentJobStore,
+    agent_job_to_payload,
+    create_metric_plugin_build_job,
+)
 from backend.extensions.plugin_requests import (
     PluginRequestStore,
     create_plugin_request,
+    plugin_request_from_payload,
     plugin_request_to_payload,
 )
 from backend.llm.openrouter import OpenRouterError
@@ -119,6 +125,38 @@ def list_metric_plugin_requests() -> dict:
         "requests": [
             plugin_request_to_payload(request)
             for request in PluginRequestStore(_local_data_root()).list_requests()
+        ]
+    }
+
+
+@app.post("/api/plugin-requests/{request_id}/build-job")
+def create_metric_plugin_build_job_endpoint(request_id: str) -> dict:
+    request_store = PluginRequestStore(_local_data_root())
+    request_path = request_store.requests_dir / f"{request_id}.json"
+    if not request_path.exists():
+        raise HTTPException(status_code=404, detail="Plugin request not found")
+    plugin_request = plugin_request_from_payload(
+        json.loads(request_path.read_text(encoding="utf-8"))
+    )
+    prompt_path = request_store.requests_dir / request_id / "implementation_prompt.md"
+    job_store = AgentJobStore(_local_data_root())
+    job = create_metric_plugin_build_job(
+        plugin_request,
+        prompt_path=prompt_path,
+        store=job_store,
+    )
+    return {
+        "job": agent_job_to_payload(job),
+        "artifact_path": str(job_store.jobs_dir / f"{job.id}.json"),
+    }
+
+
+@app.get("/api/agent-jobs")
+def list_agent_jobs() -> dict:
+    return {
+        "jobs": [
+            agent_job_to_payload(job)
+            for job in AgentJobStore(_local_data_root()).list_jobs()
         ]
     }
 

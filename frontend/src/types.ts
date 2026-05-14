@@ -34,6 +34,23 @@ export type PluginRequestResponse = {
   implementation_prompt_path: string;
 };
 
+export type AgentJob = {
+  id: string;
+  job_type: string;
+  status: string;
+  source_request_id: string;
+  branch_name: string;
+  prompt_path: string;
+  allowed_files: string[];
+  verification_commands: string[];
+  created_at: string;
+};
+
+export type AgentJobResponse = {
+  job: AgentJob;
+  artifact_path: string;
+};
+
 export type RunResponse = {
   run_id: string;
   source_filename: string;

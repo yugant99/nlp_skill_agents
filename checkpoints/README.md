@@ -25,6 +25,7 @@ Each checkpoint should record:
 - [2026-05-13 V3 metric plugin foundation](2026-05-13-v3-metric-plugin-foundation.md)
 - [2026-05-13 V3 plugin request artifacts](2026-05-13-v3-plugin-request-artifacts.md)
 - [2026-05-13 V3 implementation packets](2026-05-13-v3-implementation-packets.md)
+- [2026-05-13 V3 build job artifacts](2026-05-13-v3-build-job-artifacts.md)
 
 ## Completion Bar
 

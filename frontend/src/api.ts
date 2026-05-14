@@ -47,6 +47,40 @@ export async function createAnalysisRun(params: {
   return response.json();
 }
 
+export async function createTextAnalysisRun(params: {
+  content: string;
+  sourceFilename: string;
+  participantId: string;
+  speakerPrefixes: {
+    caregiver: string;
+    participant: string;
+  };
+  selectedMetrics: MetricId[];
+  disfluencyTokens: string[];
+}): Promise<RunResponse> {
+  const response = await fetch(`${API_BASE}/api/runs/text`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      source_filename: params.sourceFilename,
+      content: params.content,
+      config: {
+        participant_id: params.participantId,
+        speaker_prefixes: params.speakerPrefixes,
+        selected_metrics: params.selectedMetrics,
+        disfluency_tokens: params.disfluencyTokens
+      }
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Text analysis run failed");
+  }
+  return response.json();
+}
+
 export async function listRuns(): Promise<RunHistoryItem[]> {
   const response = await fetch(`${API_BASE}/api/runs`);
   if (!response.ok) {

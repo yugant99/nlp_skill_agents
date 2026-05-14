@@ -24,6 +24,18 @@
     @apply block cursor-pointer rounded-md border border-dashed border-[#9d9a8f] bg-[#f7f4ea] px-4 py-5 text-center transition hover:border-[#47615d] hover:bg-[#f0eee4];
   }
 
+  .mode-switch {
+    @apply mb-3 grid grid-cols-2 rounded-md border border-[#cfc8b8] bg-[#f3f0e7] p-1;
+  }
+
+  .mode-button {
+    @apply rounded px-3 py-2 text-sm font-semibold text-[#5f594f] transition hover:bg-white/70;
+  }
+
+  .mode-button-active {
+    @apply bg-white text-[#253735] shadow-[0_1px_0_rgba(0,0,0,0.05)];
+  }
+
   .loaded-file {
     @apply flex items-center gap-3 rounded-md border border-[#b7c2b5] bg-white px-3 py-3 text-left shadow-[inset_0_0_0_1px_rgba(71,97,93,0.08)];
   }

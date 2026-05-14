@@ -12,7 +12,13 @@ import {
   TableProperties
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { apiUrl, createAnalysisRun, listRuns, loadSkillPack } from "./api";
+import {
+  apiUrl,
+  createAnalysisRun,
+  createTextAnalysisRun,
+  listRuns,
+  loadSkillPack
+} from "./api";
 import type { MetricId, MetricResult, RunHistoryItem, RunResponse, SkillPack } from "./types";
 
 const metricLabels: Record<MetricId, string> = {
@@ -35,7 +41,9 @@ const orderedMetrics: MetricId[] = [
 
 export function App() {
   const [skillPack, setSkillPack] = useState<SkillPack | null>(null);
+  const [inputMode, setInputMode] = useState<"file" | "paste">("file");
   const [file, setFile] = useState<File | null>(null);
+  const [pastedTranscript, setPastedTranscript] = useState("");
   const [participantId, setParticipantId] = useState("vr001");
   const [caregiverPrefix, setCaregiverPrefix] = useState("vr001_c");
   const [participantPrefix, setParticipantPrefix] = useState("vr001_p");
@@ -72,23 +80,38 @@ export function App() {
   );
 
   async function runAnalysis() {
-    if (!file) {
+    if (inputMode === "file" && !file) {
       setError("Upload a DOCX or TXT transcript first.");
+      return;
+    }
+    if (inputMode === "paste" && !pastedTranscript.trim()) {
+      setError("Paste transcript text first.");
       return;
     }
     setError("");
     setIsRunning(true);
     try {
-      const response = await createAnalysisRun({
-        file,
-        participantId,
-        speakerPrefixes: {
-          caregiver: caregiverPrefix,
-          participant: participantPrefix
-        },
-        selectedMetrics,
-        disfluencyTokens
-      });
+      const speakerPrefixes = {
+        caregiver: caregiverPrefix,
+        participant: participantPrefix
+      };
+      const response =
+        inputMode === "file"
+          ? await createAnalysisRun({
+              file: file as File,
+              participantId,
+              speakerPrefixes,
+              selectedMetrics,
+              disfluencyTokens
+            })
+          : await createTextAnalysisRun({
+              content: pastedTranscript,
+              sourceFilename: `${participantId || "pasted"}_pasted_transcript.txt`,
+              participantId,
+              speakerPrefixes,
+              selectedMetrics,
+              disfluencyTokens
+            });
       setRun(response);
       setRunHistory(await listRuns());
     } catch (err) {
@@ -139,39 +162,67 @@ export function App() {
         <section className="grid gap-5 lg:grid-cols-[380px_1fr]">
           <aside className="space-y-4">
             <Panel title="1. Intake" icon={<FileText size={18} />}>
-              <label className="dropzone">
-                <input
-                  className="sr-only"
-                  type="file"
-                  accept=".txt,.docx"
-                  onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-                />
-                {file ? (
-                  <span className="loaded-file">
-                    <span className="loaded-file-icon">
-                      <FileCheck2 size={18} />
-                    </span>
-                    <span className="min-w-0">
-                      <span className="block text-xs font-semibold uppercase text-[#47615d]">
-                        Demo transcript loaded
+              <div className="mode-switch" aria-label="Transcript input mode">
+                <button
+                  className={inputMode === "file" ? "mode-button mode-button-active" : "mode-button"}
+                  type="button"
+                  onClick={() => setInputMode("file")}
+                >
+                  File
+                </button>
+                <button
+                  className={inputMode === "paste" ? "mode-button mode-button-active" : "mode-button"}
+                  type="button"
+                  onClick={() => setInputMode("paste")}
+                >
+                  Paste
+                </button>
+              </div>
+              {inputMode === "file" ? (
+                <label className="dropzone">
+                  <input
+                    className="sr-only"
+                    type="file"
+                    accept=".txt,.docx"
+                    onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+                  />
+                  {file ? (
+                    <span className="loaded-file">
+                      <span className="loaded-file-icon">
+                        <FileCheck2 size={18} />
                       </span>
-                      <span className="mt-1 block overflow-hidden text-ellipsis whitespace-nowrap text-sm font-semibold text-[#171717]">
-                        {file.name}
-                      </span>
-                      <span className="mt-1 block text-xs text-[#676157]">
-                        {(file.size / 1024).toFixed(1)} KB - click to replace
+                      <span className="min-w-0">
+                        <span className="block text-xs font-semibold uppercase text-[#47615d]">
+                          Demo transcript loaded
+                        </span>
+                        <span className="mt-1 block overflow-hidden text-ellipsis whitespace-nowrap text-sm font-semibold text-[#171717]">
+                          {file.name}
+                        </span>
+                        <span className="mt-1 block text-xs text-[#676157]">
+                          {(file.size / 1024).toFixed(1)} KB - click to replace
+                        </span>
                       </span>
                     </span>
-                  </span>
-                ) : (
-                  <>
-                    <span className="text-sm font-semibold">Choose DOCX or TXT</span>
-                    <span className="mt-2 block text-sm text-[#676157]">
-                      One transcript per run for v1
-                    </span>
-                  </>
-                )}
-              </label>
+                  ) : (
+                    <>
+                      <span className="text-sm font-semibold">Choose DOCX or TXT</span>
+                      <span className="mt-2 block text-sm text-[#676157]">
+                        One transcript per run for v1
+                      </span>
+                    </>
+                  )}
+                </label>
+              ) : (
+                <label className="field-label mt-0">
+                  Transcript text
+                  <textarea
+                    className="field-input min-h-36 resize-y font-mono text-xs"
+                    value={pastedTranscript}
+                    onChange={(event) => setPastedTranscript(event.target.value)}
+                    placeholder={"vr001_c: Um, look at this picture.\\nvr001_p: I remember that."}
+                  />
+                </label>
+              )}
               <label className="field-label">
                 Participant ID
                 <input

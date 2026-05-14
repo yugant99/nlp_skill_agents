@@ -12,6 +12,7 @@ from backend.analysis.metrics import (
     calculate_disfluency_metrics,
     calculate_interaction_dynamics_metrics,
     calculate_lexical_metrics,
+    calculate_question_type_metrics,
 )
 from backend.analysis.metric_plugins import (
     MetricPlugin,
@@ -134,6 +135,22 @@ def _register_builtin_metric_plugins() -> None:
                 "examples": "string[]",
             },
             calculate=calculate_care_plan_commitment_metrics,
+        ),
+        MetricPlugin(
+            id="question_type_metrics",
+            label="Question Type Metrics",
+            description="Open and yes/no question patterns by speaker.",
+            category="Question asking",
+            output_schema={
+                "speaker": "string",
+                "turns": "integer",
+                "question_turns": "integer",
+                "open_question_turns": "integer",
+                "yes_no_question_turns": "integer",
+                "question_rate": "number",
+                "examples": "string[]",
+            },
+            calculate=calculate_question_type_metrics,
         ),
     ]
     for plugin in plugins:

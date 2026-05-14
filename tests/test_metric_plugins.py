@@ -117,6 +117,55 @@ def test_care_plan_commitment_plugin_counts_future_care_actions() -> None:
     ]
 
 
+def test_question_type_plugin_separates_open_and_yes_no_prompts() -> None:
+    run = execute_analysis(
+        "CG: How did pain affect sleep?\n"
+        "P: It woke me up.\n"
+        "CG: Did medication help?\n"
+        "P: Can I take it at night?",
+        StudyConfig(
+            speaker_prefixes={"caregiver": ["CG"], "participant": ["P"]},
+            selected_metrics=["question_type_metrics"],
+        ),
+        source_filename="questions.txt",
+    )
+
+    assert run.results[0].metric_id == "question_type_metrics"
+    assert run.results[0].rows == [
+        {
+            "speaker": "caregiver",
+            "turns": 2,
+            "question_turns": 2,
+            "open_question_turns": 1,
+            "yes_no_question_turns": 1,
+            "question_rate": 1.0,
+            "examples": ["How did pain affect sleep?", "Did medication help?"],
+        },
+        {
+            "speaker": "participant",
+            "turns": 2,
+            "question_turns": 1,
+            "open_question_turns": 0,
+            "yes_no_question_turns": 1,
+            "question_rate": 0.5,
+            "examples": ["Can I take it at night?"],
+        },
+        {
+            "speaker": "total",
+            "turns": 4,
+            "question_turns": 3,
+            "open_question_turns": 1,
+            "yes_no_question_turns": 2,
+            "question_rate": 0.75,
+            "examples": [
+                "How did pain affect sleep?",
+                "Did medication help?",
+                "Can I take it at night?",
+            ],
+        },
+    ]
+
+
 def test_skill_pack_validation_accepts_metric_plugins() -> None:
     pack = parse_skill_pack(
         {
@@ -141,3 +190,4 @@ def test_metric_plugin_catalog_endpoint() -> None:
     plugin_ids = [plugin["id"] for plugin in response.json()["plugins"]]
     assert "interaction_dynamics_metrics" in plugin_ids
     assert "care_plan_commitment_metrics" in plugin_ids
+    assert "question_type_metrics" in plugin_ids

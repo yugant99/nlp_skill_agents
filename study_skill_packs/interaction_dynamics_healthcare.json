@@ -7,6 +7,7 @@
     "base_metrics",
     "interaction_dynamics_metrics",
     "care_plan_commitment_metrics",
+    "question_type_metrics",
     "concept_count_metrics"
   ],
   "speaker_roles": {

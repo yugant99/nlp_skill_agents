@@ -236,6 +236,37 @@ def calculate_care_plan_commitment_metrics(transcript: Transcript) -> MetricResu
     )
 
 
+def calculate_question_type_metrics(transcript: Transcript) -> MetricResult:
+    rows = [
+        _question_type_row_for_role(transcript.turns, role)
+        for role in _ordered_roles(transcript)
+    ]
+    total_turns = sum(row["turns"] for row in rows)
+    total_questions = sum(row["question_turns"] for row in rows)
+    return MetricResult(
+        metric_id="question_type_metrics",
+        label="Question Type Metrics",
+        rows=[
+            *rows,
+            {
+                "speaker": "total",
+                "turns": total_turns,
+                "question_turns": total_questions,
+                "open_question_turns": sum(row["open_question_turns"] for row in rows),
+                "yes_no_question_turns": sum(
+                    row["yes_no_question_turns"] for row in rows
+                ),
+                "question_rate": round(total_questions / total_turns, 3)
+                if total_turns
+                else 0.0,
+                "examples": _unique_examples(
+                    example for row in rows for example in row["examples"]
+                ),
+            },
+        ],
+    )
+
+
 def _base_row_for_role(
     turns: list[Turn],
     role: str,
@@ -287,6 +318,40 @@ def _care_plan_commitment_row_for_role(
 def _looks_like_care_plan_commitment(text: str) -> bool:
     normalized = _remove_nonverbals(text).lower()
     return any(pattern.search(normalized) for pattern in _CARE_PLAN_PATTERNS)
+
+
+def _question_type_row_for_role(
+    turns: list[Turn],
+    role: str,
+) -> dict[str, Any]:
+    role_turns = [turn for turn in turns if turn.role == role]
+    question_turns = [turn for turn in role_turns if "?" in turn.text]
+    open_questions = [
+        turn for turn in question_turns if _classify_question_type(turn.text) == "open"
+    ]
+    yes_no_questions = [
+        turn for turn in question_turns if _classify_question_type(turn.text) == "yes_no"
+    ]
+    return {
+        "speaker": role,
+        "turns": len(role_turns),
+        "question_turns": len(question_turns),
+        "open_question_turns": len(open_questions),
+        "yes_no_question_turns": len(yes_no_questions),
+        "question_rate": round(len(question_turns) / len(role_turns), 3)
+        if role_turns
+        else 0.0,
+        "examples": [turn.text.strip() for turn in question_turns[:5]],
+    }
+
+
+def _classify_question_type(text: str) -> str:
+    normalized = _remove_nonverbals(text).strip().lower()
+    if any(pattern.match(normalized) for pattern in _OPEN_QUESTION_PATTERNS):
+        return "open"
+    if any(pattern.match(normalized) for pattern in _YES_NO_QUESTION_PATTERNS):
+        return "yes_no"
+    return "other"
 
 
 def _interaction_row_for_role(
@@ -459,5 +524,19 @@ _CARE_PLAN_PATTERNS = [
     re.compile(
         r"\b(schedule|call|contact|refer|arrange|coordinate|review|order|send|"
         r"follow\s+up|check\s+in)\b"
+    ),
+]
+
+
+_OPEN_QUESTION_PATTERNS = [
+    re.compile(r"\b(what|when|where|who|whom|whose|why|how)\b"),
+    re.compile(r"\b(tell me|describe|walk me through)\b"),
+]
+
+
+_YES_NO_QUESTION_PATTERNS = [
+    re.compile(
+        r"\b(am|are|is|was|were|do|does|did|can|could|will|would|should|"
+        r"have|has|had)\b"
     ),
 ]

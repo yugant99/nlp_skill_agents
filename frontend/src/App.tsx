@@ -48,7 +48,8 @@ const metricLabels: Record<string, string> = {
   disfluency_metrics: "Disfluencies",
   concept_count_metrics: "Concept counts",
   cue_inventory_metrics: "Cue inventory",
-  care_plan_commitment_metrics: "Care plan commitments"
+  care_plan_commitment_metrics: "Care plan commitments",
+  question_type_metrics: "Question types"
 };
 
 const metricDescriptions: Record<string, string> = {
@@ -57,7 +58,8 @@ const metricDescriptions: Record<string, string> = {
   disfluency_metrics: "Speech markers",
   concept_count_metrics: "Research lexicon",
   cue_inventory_metrics: "Nonverbal coding",
-  care_plan_commitment_metrics: "Care coordination"
+  care_plan_commitment_metrics: "Care coordination",
+  question_type_metrics: "Prompting style"
 };
 
 const orderedMetrics: MetricId[] = [

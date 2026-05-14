@@ -4,6 +4,7 @@ import type {
   RunResponse,
   SkillPack,
   SkillPackDraftResponse,
+  SkillPackRefineResponse,
   SkillPackSummary
 } from "./types";
 
@@ -76,6 +77,24 @@ export async function draftSkillPack(params: {
   if (!response.ok) {
     const message = await response.text();
     throw new Error(message || "Skill pack draft failed");
+  }
+  return response.json();
+}
+
+export async function refineSkillPack(params: {
+  payload: unknown;
+  instruction: string;
+}): Promise<SkillPackRefineResponse> {
+  const response = await fetch(`${API_BASE}/api/skill-packs/refine`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(params)
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Skill pack refinement failed");
   }
   return response.json();
 }

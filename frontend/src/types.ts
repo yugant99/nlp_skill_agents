@@ -53,6 +53,10 @@ export type SkillPackDraftResponse = {
   warnings: string[];
 };
 
+export type SkillPackRefineResponse = SkillPackDraftResponse & {
+  applied_changes: string[];
+};
+
 export type SkillPackProvenance = {
   id: string;
   name: string;

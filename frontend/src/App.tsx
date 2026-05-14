@@ -21,6 +21,7 @@ import {
   draftSkillPack,
   listRuns,
   loadSkillPack,
+  refineSkillPack,
   validateSkillPack,
   validateSkillPackText
 } from "./api";
@@ -58,6 +59,10 @@ export function App() {
   );
   const [draftName, setDraftName] = useState("Caregiver Mobility Study");
   const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
+  const [refinementInstruction, setRefinementInstruction] = useState(
+    "Split pain into acute and chronic pain, and add sleep disruption."
+  );
+  const [appliedChanges, setAppliedChanges] = useState<string[]>([]);
   const [inputMode, setInputMode] = useState<"file" | "paste">("file");
   const [file, setFile] = useState<File | null>(null);
   const [pastedTranscript, setPastedTranscript] = useState("");
@@ -197,10 +202,38 @@ export function App() {
       activateSkillPack(draft.skill_pack, draft.payload);
       setSkillPackJson(JSON.stringify(draft.payload, null, 2));
       setDraftWarnings(draft.warnings);
+      setAppliedChanges([]);
       setSkillPackStatus(`Drafted: ${draft.skill_pack.name} v${draft.skill_pack.version}`);
     } catch (err) {
       setSkillPackStatus("");
       setError(err instanceof Error ? err.message : "Could not draft skill pack");
+    }
+  }
+
+  async function refineActiveSkillPack() {
+    if (!skillPackPayload) {
+      setError("Draft or load a skill pack before refining it.");
+      return;
+    }
+    if (!refinementInstruction.trim()) {
+      setError("Add a refinement instruction first.");
+      return;
+    }
+    try {
+      setError("");
+      setSkillPackStatus("Refining active skill pack...");
+      const refined = await refineSkillPack({
+        payload: skillPackPayload,
+        instruction: refinementInstruction
+      });
+      activateSkillPack(refined.skill_pack, refined.payload);
+      setSkillPackJson(JSON.stringify(refined.payload, null, 2));
+      setAppliedChanges(refined.applied_changes);
+      setDraftWarnings(refined.warnings);
+      setSkillPackStatus(`Refined: ${refined.skill_pack.name} v${refined.skill_pack.version}`);
+    } catch (err) {
+      setSkillPackStatus("");
+      setError(err instanceof Error ? err.message : "Could not refine skill pack");
     }
   }
 
@@ -218,6 +251,7 @@ export function App() {
       activateSkillPack(summary, payload);
       setSkillPackStatus(`Loaded ${file.name}`);
       setDraftWarnings([]);
+      setAppliedChanges([]);
       setError("");
     } catch (err) {
       setSkillPackStatus("");
@@ -420,6 +454,27 @@ export function App() {
                   <Sparkles size={16} />
                   Draft skill pack
                 </button>
+                <label className="field-label">
+                  Refinement request
+                  <textarea
+                    className="field-input min-h-20 resize-y"
+                    value={refinementInstruction}
+                    onChange={(event) => setRefinementInstruction(event.target.value)}
+                  />
+                </label>
+                <button className="secondary-button" type="button" onClick={refineActiveSkillPack}>
+                  <Sparkles size={16} />
+                  Refine active pack
+                </button>
+                {appliedChanges.length ? (
+                  <div className="applied-change-list">
+                    {appliedChanges.map((change) => (
+                      <span key={change} className="applied-change-pill">
+                        {change}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
                 {draftWarnings.length ? (
                   <div className="mt-3 space-y-2">
                     {draftWarnings.map((warning) => (

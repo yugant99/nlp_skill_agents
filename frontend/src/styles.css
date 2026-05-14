@@ -77,6 +77,14 @@
     @apply mb-4 rounded-md border border-[#d9d4c5] bg-[#f3f0e7]/70 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)];
   }
 
+  .applied-change-list {
+    @apply mt-3 flex flex-wrap gap-2;
+  }
+
+  .applied-change-pill {
+    @apply rounded border border-[#b7c2b5] bg-[#eef5ec] px-2 py-1 text-xs font-semibold text-[#2f5b50];
+  }
+
   .json-upload-button {
     @apply cursor-pointer rounded-md border border-[#cfc8b8] bg-white px-3 py-2 text-xs font-semibold uppercase text-[#253735] transition duration-200 hover:-translate-y-px hover:border-[#47615d] hover:bg-[#f3f0e7] active:translate-y-0;
   }

@@ -48,3 +48,13 @@ Before committing a skill pack:
 - Validate the pack through `POST /api/skill-packs/validate` or the UI.
 - Run a pasted transcript through the UI with the pack active.
 - Confirm concept and cue rows change when the pack definitions change.
+
+## OpenRouter-Assisted Authoring
+
+When using OpenRouter for V2 skill drafting or refinement:
+
+- Use `openai/gpt-oss-120b` as the default low-cost model.
+- Store the key in ignored `.env` as `OPENROUTER_API_KEY`.
+- Send only the study brief, current skill-pack schema, and refinement instruction.
+- Do not send transcript content unless a future workflow has explicit researcher approval.
+- Validate every generated pack before activation.

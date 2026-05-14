@@ -20,6 +20,16 @@ def test_is_openrouter_configured_reads_api_key(monkeypatch) -> None:
     assert is_openrouter_configured() is True
 
 
+def test_is_openrouter_configured_loads_local_dotenv(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("OPENROUTER_API_KEY=dotenv-key\n", encoding="utf-8")
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", False)
+
+    assert is_openrouter_configured() is True
+    assert os.environ["OPENROUTER_API_KEY"] == "dotenv-key"
+
+
 def test_complete_json_sends_model_and_parses_json(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     calls = []

@@ -4,6 +4,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -11,6 +12,7 @@ import httpx
 
 DEFAULT_OPENROUTER_MODEL = "openai/gpt-oss-120b"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+_DOTENV_LOADED = False
 
 
 class OpenRouterError(RuntimeError):
@@ -27,6 +29,7 @@ class OpenRouterConfig:
 
 
 def is_openrouter_configured() -> bool:
+    _load_local_dotenv_once()
     return bool(os.environ.get("OPENROUTER_API_KEY"))
 
 
@@ -51,6 +54,7 @@ def complete_json(
 
 
 def _config_from_env(model: str | None = None) -> OpenRouterConfig:
+    _load_local_dotenv_once()
     api_key = os.environ.get("OPENROUTER_API_KEY")
     if not api_key:
         raise OpenRouterError("OPENROUTER_API_KEY is not configured")
@@ -60,6 +64,39 @@ def _config_from_env(model: str | None = None) -> OpenRouterConfig:
         site_url=os.environ.get("OPENROUTER_SITE_URL", "http://127.0.0.1:5173"),
         app_name=os.environ.get("OPENROUTER_APP_NAME", "NLP Skill Agents"),
     )
+
+
+def _load_local_dotenv_once() -> None:
+    global _DOTENV_LOADED
+    if _DOTENV_LOADED:
+        return
+    for path in _candidate_dotenv_paths():
+        if path.exists():
+            _load_dotenv_file(path)
+    _DOTENV_LOADED = True
+
+
+def _candidate_dotenv_paths() -> list:
+    repo_root = Path(__file__).resolve().parents[2]
+    cwd = Path.cwd()
+    candidates = [cwd / ".env", repo_root / ".env"]
+    unique = []
+    for path in candidates:
+        if path not in unique:
+            unique.append(path)
+    return unique
+
+
+def _load_dotenv_file(path) -> None:
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _post_chat_completion(

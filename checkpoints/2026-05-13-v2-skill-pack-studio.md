@@ -19,8 +19,16 @@ Start V2 by making skill authoring agent-assisted: researchers can describe a st
   - study brief textarea
   - draft name input
   - draft skill pack action
+  - refinement request textarea
+  - refine active pack action
+  - applied-change pills
   - editable generated pack JSON
   - existing validate/run workflow
+- Deterministic refinement support for:
+  - adding known concepts
+  - removing known concepts
+  - adding/removing known cue categories
+  - splitting `pain` into `acute_pain` and `chronic_pain`
 - UI quality pass using installed taste/redesign guidance:
   - removed explicit Inter stack
   - added more intentional background treatment
@@ -33,6 +41,7 @@ Start V2 by making skill authoring agent-assisted: researchers can describe a st
 - Frontend: `npm run lint`
 - Frontend build: `npm run build`
 - UI: drafted `Caregiver Mobility Study`, ran pasted CG/P transcript, confirmed base, lexical, disfluency, concept-count, and cue-inventory tables rendered.
+- UI: refined `Caregiver Mobility Study`, confirmed `acute_pain`, `chronic_pain`, and `sleep` appeared in concept-count output.
 
 ## Git
 
@@ -42,4 +51,4 @@ Feature slices are committed and pushed to `master` after verification.
 
 - Drafter is deterministic and local; it is not yet using a local LLM.
 - Concepts are selected from a curated library, not inferred semantically.
-- Next V2 slice should support skill refinement requests such as splitting a concept or adding/removing cue categories.
+- Next V2 slice should support versioned skill-pack saves and side-by-side comparison.

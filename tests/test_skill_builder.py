@@ -235,6 +235,40 @@ def test_openrouter_draft_normalizes_metric_object_to_metric_ids(monkeypatch) ->
     ]
 
 
+def test_openrouter_draft_normalizes_invalid_speaker_roles(monkeypatch) -> None:
+    def fake_complete_json(system_prompt, user_prompt, model=None):
+        return {
+            "id": "demo",
+            "name": "Demo",
+            "version": "1.0.0",
+            "description": "Generated from brief.",
+            "metrics": ["concept_count_metrics"],
+            "speaker_roles": ["caregiver", "participant"],
+            "disfluency_tokens": ["um"],
+            "concept_lexicons": {"pain": ["pain"]},
+            "nonverbal_cues": {"pause": ["pause"]},
+        }
+
+    monkeypatch.setattr("backend.analysis.skill_builder.complete_json", fake_complete_json)
+
+    response = TestClient(app).post(
+        "/api/skill-packs/draft",
+        json={
+            "brief": "Caregiver participant pain study.",
+            "name": "Demo",
+            "authoring_engine": "openrouter",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["payload"]["speaker_roles"]["caregiver"]["prefixes"] == [
+        "CG",
+        "Caregiver",
+        "Interviewer",
+    ]
+
+
 def test_refine_skill_pack_endpoint_can_use_openrouter(monkeypatch) -> None:
     client = TestClient(app)
     payload = draft_skill_pack_from_brief(

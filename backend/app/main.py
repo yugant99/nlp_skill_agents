@@ -28,6 +28,7 @@ from backend.analysis.skill_packs import (
     parse_skill_pack_document,
 )
 from backend.analysis.transcripts import StudyConfig, extract_transcript_text
+from backend.llm.openrouter import OpenRouterError
 from backend.storage.local_store import LocalRunStore, StoredRun
 
 
@@ -101,17 +102,20 @@ def validate_skill_pack_text(request: SkillPackTextRequest) -> dict:
 
 @app.post("/api/skill-packs/draft")
 def draft_skill_pack(request: SkillPackDraftRequest) -> dict:
-    if request.authoring_engine == "openrouter":
-        draft = draft_skill_pack_with_openrouter(
-            request.brief,
-            request.name,
-            request.model,
-        )
-    elif request.authoring_engine == "local":
-        draft = draft_skill_pack_from_brief(request.brief, request.name)
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported authoring engine")
-    pack = parse_skill_pack(draft.payload)
+    try:
+        if request.authoring_engine == "openrouter":
+            draft = draft_skill_pack_with_openrouter(
+                request.brief,
+                request.name,
+                request.model,
+            )
+        elif request.authoring_engine == "local":
+            draft = draft_skill_pack_from_brief(request.brief, request.name)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported authoring engine")
+        pack = parse_skill_pack(draft.payload)
+    except (SkillPackValidationError, ValueError, OpenRouterError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "payload": draft.payload,
         "skill_pack": _skill_pack_summary(pack),
@@ -134,7 +138,7 @@ def refine_skill_pack_endpoint(request: SkillPackRefineRequest) -> dict:
         else:
             raise HTTPException(status_code=400, detail="Unsupported authoring engine")
         pack = parse_skill_pack(refined.payload)
-    except (SkillPackValidationError, ValueError) as exc:
+    except (SkillPackValidationError, ValueError, OpenRouterError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "payload": refined.payload,

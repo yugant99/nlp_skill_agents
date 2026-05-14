@@ -177,12 +177,21 @@ def _skill_authoring_system_prompt() -> str:
 def _normalize_llm_skill_pack_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = _deep_copy_payload(payload)
     name = str(normalized.get("name") or "Research Transcript Draft")
+    brief_hint = " ".join(
+        [
+            name,
+            str(normalized.get("description") or ""),
+        ]
+    ).lower()
     normalized["id"] = _slugify(name)
     normalized["name"] = name
     normalized["version"] = str(normalized.get("version") or "0.1.0")
     normalized["description"] = str(normalized.get("description") or "")
     normalized["metrics"] = _normalize_metric_ids(normalized.get("metrics"))
-    normalized["speaker_roles"] = normalized.get("speaker_roles") or _speaker_roles("")
+    normalized["speaker_roles"] = _normalize_speaker_roles(
+        normalized.get("speaker_roles"),
+        fallback_hint=brief_hint,
+    )
     normalized["disfluency_tokens"] = _normalize_string_list(
         normalized.get("disfluency_tokens"),
         fallback=["um", "uh", "hm", "hmm", "like"],
@@ -194,6 +203,28 @@ def _normalize_llm_skill_pack_payload(payload: dict[str, Any]) -> dict[str, Any]
         normalized.get("nonverbal_cues")
     )
     return normalized
+
+
+def _normalize_speaker_roles(value: Any, fallback_hint: str) -> dict[str, Any]:
+    if isinstance(value, dict):
+        roles: dict[str, Any] = {}
+        for raw_role, definition in value.items():
+            role = _slugify(str(raw_role))
+            if not role:
+                continue
+            if isinstance(definition, str) and definition.strip():
+                roles[role] = definition.strip()
+                continue
+            if not isinstance(definition, dict):
+                continue
+            label = str(definition.get("label") or role.replace("_", " ").title())
+            prefixes = _normalize_string_list(definition.get("prefixes"))
+            roles[role] = {"label": label}
+            if prefixes:
+                roles[role]["prefixes"] = prefixes
+        if roles:
+            return roles
+    return _speaker_roles(fallback_hint)
 
 
 def _normalize_metric_ids(value: Any) -> list[str]:

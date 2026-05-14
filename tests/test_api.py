@@ -245,3 +245,23 @@ def test_create_run_from_text_payload(tmp_path, monkeypatch) -> None:
     assert payload["source_filename"] == "pasted_transcript.txt"
     assert payload["turn_count"] == 2
     assert payload["results"][1]["rows"][-1]["disfluency_count"] == 1
+
+
+def test_create_run_rejects_unknown_metric_with_400(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs/text",
+        json={
+            "source_filename": "bad_metric.txt",
+            "content": "vr060_c: Hello.\nvr060_p: Hi.",
+            "config": {
+                "participant_id": "vr060",
+                "selected_metrics": ["not_a_metric"],
+            },
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Unknown metric skill: not_a_metric"

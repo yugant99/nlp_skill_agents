@@ -67,7 +67,7 @@ async def create_run(
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    run = execute_analysis(
+    run = _execute_or_400(
         content,
         parsed_config,
         source_filename=file.filename or "transcript",
@@ -78,7 +78,7 @@ async def create_run(
 
 @app.post("/api/runs/text")
 def create_text_run(request: TextRunRequest) -> dict:
-    run = execute_analysis(
+    run = _execute_or_400(
         request.content,
         _study_config_from_payload(request.config),
         source_filename=request.source_filename,
@@ -108,6 +108,13 @@ def download_export(run_id: str, filename: str) -> FileResponse:
 
 def _study_config_from_json(config_json: str) -> StudyConfig:
     return _study_config_from_payload(json.loads(config_json))
+
+
+def _execute_or_400(content: str, config: StudyConfig, source_filename: str):
+    try:
+        return execute_analysis(content, config, source_filename)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _study_config_from_payload(payload: dict) -> StudyConfig:

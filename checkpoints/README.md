@@ -36,6 +36,7 @@ Each checkpoint should record:
 - [2026-05-14 V5 agent job evidence](2026-05-14-v5-agent-job-evidence.md)
 - [2026-05-14 V6 reproducibility bundles](2026-05-14-v6-reproducibility-bundles.md)
 - [2026-05-14 V6 audit log](2026-05-14-v6-audit-log.md)
+- [2026-05-14 V6 approved library](2026-05-14-v6-approved-library.md)
 
 ## Completion Bar
 

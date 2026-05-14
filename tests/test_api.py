@@ -486,3 +486,35 @@ def test_study_workspace_batch_api_creates_aggregate_outputs(tmp_path, monkeypat
         "batch.completed",
         "bundle.exported",
     ]
+
+
+def test_library_approval_api_records_entries_and_audit(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/library/skill-packs",
+        json={
+            "payload": {
+                "id": "approved_pack",
+                "name": "Approved Pack",
+                "version": "1.0.0",
+                "metrics": ["base_metrics"],
+            },
+            "reviewer": "professor",
+            "notes": "Ready for reuse.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["entry"]["id"] == "approved_pack"
+
+    list_response = client.get("/api/library")
+
+    assert list_response.status_code == 200
+    assert list_response.json()["entries"][0]["entry_type"] == "skill_pack"
+
+    audit_response = client.get("/api/audit-events")
+    assert audit_response.json()["events"][-1]["event_type"] == (
+        "library.skill_pack.approved"
+    )

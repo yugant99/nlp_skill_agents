@@ -43,6 +43,7 @@ from backend.extensions.plugin_requests import (
 from backend.llm.openrouter import OpenRouterError
 from backend.storage.local_store import LocalRunStore, StoredRun
 from backend.storage.audit_log import AuditLogStore
+from backend.storage.library_store import LibraryStore
 from backend.storage.study_store import StudyWorkspaceStore
 
 
@@ -117,6 +118,12 @@ class StudyTextBatchRequest(BaseModel):
     transcripts: list[StudyTextTranscript] = Field(min_length=1)
 
 
+class LibraryApprovalRequest(BaseModel):
+    payload: dict
+    reviewer: str = Field(default="local-reviewer")
+    notes: str = Field(default="")
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "storage": "local"}
@@ -135,6 +142,43 @@ def list_metric_plugins() -> dict:
 @app.get("/api/audit-events")
 def list_audit_events(limit: int = 100) -> dict:
     return {"events": AuditLogStore(_local_data_root()).list_events(limit=limit)}
+
+
+@app.get("/api/library")
+def list_library_entries() -> dict:
+    return {
+        "entries": [
+            _library_entry_payload(entry)
+            for entry in LibraryStore(_local_data_root()).list_entries()
+        ]
+    }
+
+
+@app.post("/api/library/skill-packs")
+def approve_library_skill_pack(request: LibraryApprovalRequest) -> dict:
+    try:
+        parse_skill_pack(request.payload)
+        entry = LibraryStore(_local_data_root()).approve_skill_pack(
+            request.payload,
+            reviewer=request.reviewer,
+            notes=request.notes,
+        )
+    except (SkillPackValidationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"entry": _library_entry_payload(entry)}
+
+
+@app.post("/api/library/metric-plugins")
+def approve_library_metric_plugin(request: LibraryApprovalRequest) -> dict:
+    try:
+        entry = LibraryStore(_local_data_root()).approve_metric_plugin(
+            request.payload,
+            reviewer=request.reviewer,
+            notes=request.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"entry": _library_entry_payload(entry)}
 
 
 @app.post("/api/plugin-requests")
@@ -502,6 +546,18 @@ def _study_payload(study) -> dict:
         "name": study.name,
         "description": study.description,
         "created_at": study.created_at,
+    }
+
+
+def _library_entry_payload(entry) -> dict:
+    return {
+        "id": entry.id,
+        "version": entry.version,
+        "entry_type": entry.entry_type,
+        "artifact_path": str(entry.artifact_path),
+        "approved_by": entry.approved_by,
+        "notes": entry.notes,
+        "created_at": entry.created_at,
     }
 
 

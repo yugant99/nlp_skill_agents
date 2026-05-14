@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from backend.extensions.plugin_requests import PluginRequest
+
+
+AGENT_JOB_STATUSES = {"queued", "in_progress", "blocked", "verified", "merged"}
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,17 @@ class AgentJobStore:
             for path in self.jobs_dir.glob("*.json")
         ]
         return sorted(jobs, key=lambda job: job.created_at, reverse=True)
+
+    def update_status(self, job_id: str, status: str) -> AgentJob:
+        if status not in AGENT_JOB_STATUSES:
+            raise ValueError(f"Unsupported agent job status: {status}")
+        job_path = self.jobs_dir / f"{job_id}.json"
+        if not job_path.exists():
+            raise FileNotFoundError(job_id)
+        job = agent_job_from_payload(json.loads(job_path.read_text(encoding="utf-8")))
+        updated = replace(job, status=status)
+        self.persist(updated)
+        return updated
 
 
 def create_metric_plugin_build_job(

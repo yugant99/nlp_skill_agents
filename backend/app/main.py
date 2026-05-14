@@ -88,6 +88,10 @@ class PluginRequestCreateRequest(BaseModel):
     examples: list[dict[str, str]] = Field(default_factory=list)
 
 
+class AgentJobStatusUpdateRequest(BaseModel):
+    status: str = Field(min_length=1)
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "storage": "local"}
@@ -159,6 +163,17 @@ def list_agent_jobs() -> dict:
             for job in AgentJobStore(_local_data_root()).list_jobs()
         ]
     }
+
+
+@app.patch("/api/agent-jobs/{job_id}")
+def update_agent_job_status(job_id: str, request: AgentJobStatusUpdateRequest) -> dict:
+    try:
+        job = AgentJobStore(_local_data_root()).update_status(job_id, request.status)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Agent job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"job": agent_job_to_payload(job)}
 
 
 @app.post("/api/skill-packs/validate")

@@ -27,6 +27,7 @@ Each checkpoint should record:
 - [2026-05-13 V3 implementation packets](2026-05-13-v3-implementation-packets.md)
 - [2026-05-13 V3 build job artifacts](2026-05-13-v3-build-job-artifacts.md)
 - [2026-05-13 V3 agent job runbooks](2026-05-13-v3-agent-job-runbooks.md)
+- [2026-05-13 V3 agent job lifecycle](2026-05-13-v3-agent-job-lifecycle.md)
 
 ## Completion Bar
 

@@ -27,6 +27,7 @@ import {
   listRuns,
   loadSkillPack,
   refineSkillPack,
+  updateAgentJobStatus,
   validateSkillPack,
   validateSkillPackText
 } from "./api";
@@ -404,6 +405,18 @@ export function App() {
     }
   }
 
+  async function updatePluginJobStatus(jobId: string, status: string) {
+    try {
+      setError("");
+      const response = await updateAgentJobStatus(jobId, status);
+      setPluginJobStatus(`Updated ${response.job.id} -> ${response.job.status}`);
+      setAgentJobs(await listAgentJobs());
+    } catch (err) {
+      setPluginJobStatus("");
+      setError(err instanceof Error ? err.message : "Could not update agent job");
+    }
+  }
+
   return (
     <main className="app-shell min-h-screen text-[#171717]">
       <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-5 lg:px-8">
@@ -692,6 +705,7 @@ export function App() {
                 onRequestExpectedChange={setPluginRequestExpected}
                 onSubmitRequest={submitPluginRequest}
                 onQueueBuildJob={queuePluginBuildJob}
+                onUpdateJobStatus={updatePluginJobStatus}
               />
               {error ? <p className="error-text">{error}</p> : null}
             </Panel>
@@ -790,7 +804,8 @@ function PluginCatalog({
   onRequestExampleChange,
   onRequestExpectedChange,
   onSubmitRequest,
-  onQueueBuildJob
+  onQueueBuildJob,
+  onUpdateJobStatus
 }: {
   plugins: MetricPlugin[];
   activeMetrics: MetricId[];
@@ -810,6 +825,7 @@ function PluginCatalog({
   onRequestExpectedChange: (value: string) => void;
   onSubmitRequest: () => void;
   onQueueBuildJob: (requestId: string) => void;
+  onUpdateJobStatus: (jobId: string, status: string) => void;
 }) {
   if (!plugins.length) {
     return null;
@@ -932,6 +948,23 @@ function PluginCatalog({
                 </div>
                 <div className="mt-1 truncate font-mono text-xs text-[#756f64]">
                   {job.runbook_path}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {[
+                    ["in_progress", "Start"],
+                    ["blocked", "Block"],
+                    ["verified", "Verify"],
+                    ["merged", "Merge"]
+                  ].map(([status, label]) => (
+                    <button
+                      key={status}
+                      className="json-upload-button"
+                      type="button"
+                      onClick={() => onUpdateJobStatus(job.id, status)}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               </div>
               <span className="plugin-pill">{job.status}</span>

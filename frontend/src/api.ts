@@ -94,6 +94,24 @@ export async function listAgentJobs(): Promise<AgentJob[]> {
   return payload.jobs;
 }
 
+export async function updateAgentJobStatus(
+  jobId: string,
+  status: string
+): Promise<AgentJobResponse> {
+  const response = await fetch(`${API_BASE}/api/agent-jobs/${jobId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ status })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not update agent job");
+  }
+  return response.json();
+}
+
 export async function validateSkillPack(payload: unknown): Promise<SkillPackSummary> {
   const response = await fetch(`${API_BASE}/api/skill-packs/validate`, {
     method: "POST",

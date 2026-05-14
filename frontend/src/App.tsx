@@ -37,6 +37,8 @@ export function App() {
   const [skillPack, setSkillPack] = useState<SkillPack | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [participantId, setParticipantId] = useState("vr001");
+  const [caregiverPrefix, setCaregiverPrefix] = useState("vr001_c");
+  const [participantPrefix, setParticipantPrefix] = useState("vr001_p");
   const [selectedMetrics, setSelectedMetrics] = useState<MetricId[]>([
     "base_metrics",
     "lexical_metrics",
@@ -76,6 +78,10 @@ export function App() {
       const response = await createAnalysisRun({
         file,
         participantId,
+        speakerPrefixes: {
+          caregiver: caregiverPrefix,
+          participant: participantPrefix
+        },
         selectedMetrics,
         disfluencyTokens
       });
@@ -93,6 +99,12 @@ export function App() {
         ? current.filter((item) => item !== metric)
         : [...current, metric]
     );
+  }
+
+  function applyParticipantPrefixTemplate(nextParticipantId: string) {
+    setParticipantId(nextParticipantId);
+    setCaregiverPrefix(`${nextParticipantId}_c`);
+    setParticipantPrefix(`${nextParticipantId}_p`);
   }
 
   return (
@@ -160,10 +172,30 @@ export function App() {
                 <input
                   className="field-input"
                   value={participantId}
-                  onChange={(event) => setParticipantId(event.target.value)}
+                  onChange={(event) => applyParticipantPrefixTemplate(event.target.value)}
                   placeholder="vr001"
                 />
               </label>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <label className="block text-sm font-medium text-[#3e3b35]">
+                  Caregiver prefix
+                  <input
+                    className="field-input"
+                    value={caregiverPrefix}
+                    onChange={(event) => setCaregiverPrefix(event.target.value)}
+                    placeholder="vr001_c"
+                  />
+                </label>
+                <label className="block text-sm font-medium text-[#3e3b35]">
+                  Participant prefix
+                  <input
+                    className="field-input"
+                    value={participantPrefix}
+                    onChange={(event) => setParticipantPrefix(event.target.value)}
+                    placeholder="vr001_p"
+                  />
+                </label>
+              </div>
             </Panel>
 
             <Panel title="2. Skills" icon={<TableProperties size={18} />}>

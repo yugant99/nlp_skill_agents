@@ -153,3 +153,40 @@ def test_create_run_surfaces_diagnostic_warnings(tmp_path, monkeypatch) -> None:
             "message": "No speaker turns were detected. Check participant ID and speaker prefixes.",
         }
     ]
+
+
+def test_create_run_accepts_custom_speaker_prefixes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        data={
+            "config": json.dumps(
+                {
+                    "participant_id": "dyad01",
+                    "speaker_prefixes": {
+                        "caregiver": "care_partner",
+                        "participant": "participant",
+                    },
+                    "selected_metrics": ["base_metrics"],
+                }
+            )
+        },
+        files={
+            "file": (
+                "dyad01.txt",
+                b"care_partner: Hello there.\nparticipant: Hello back.",
+                "text/plain",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["turn_count"] == 2
+    assert payload["diagnostics"]["turn_counts"] == {
+        "caregiver": 1,
+        "participant": 1,
+    }
+    assert payload["results"][0]["rows"][0]["clean_words"] == 2

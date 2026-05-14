@@ -17,6 +17,10 @@ export async function loadSkillPack(): Promise<SkillPack> {
 export async function createAnalysisRun(params: {
   file: File;
   participantId: string;
+  speakerPrefixes: {
+    caregiver: string;
+    participant: string;
+  };
   selectedMetrics: MetricId[];
   disfluencyTokens: string[];
 }): Promise<RunResponse> {
@@ -26,6 +30,7 @@ export async function createAnalysisRun(params: {
     "config",
     JSON.stringify({
       participant_id: params.participantId,
+      speaker_prefixes: params.speakerPrefixes,
       selected_metrics: params.selectedMetrics,
       disfluency_tokens: params.disfluencyTokens
     })

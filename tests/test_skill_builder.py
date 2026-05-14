@@ -193,6 +193,48 @@ def test_draft_skill_pack_endpoint_can_use_openrouter(monkeypatch) -> None:
     assert "transcript content" in captured["system_prompt"].lower()
 
 
+def test_openrouter_draft_normalizes_metric_object_to_metric_ids(monkeypatch) -> None:
+    def fake_complete_json(system_prompt, user_prompt, model=None):
+        return {
+            "id": "c3f9a1e2-7b4d-4f2a-9d6e-1a2b3c4d5e6f",
+            "name": "OpenRouter Demo Study",
+            "version": "1.0.0",
+            "description": "Generated from brief.",
+            "metrics": {
+                "base_metrics": {"note": "turns"},
+                "concept_count_metrics": {"note": "concepts"},
+                "not_registered": {"note": "ignore"},
+            },
+            "speaker_roles": {
+                "caregiver": {"label": "Caregiver", "prefixes": ["CG"]},
+                "participant": {"label": "Participant", "prefixes": ["P"]},
+            },
+            "disfluency_tokens": ["um"],
+            "concept_lexicons": {"pain": ["pain"]},
+            "nonverbal_cues": {"pause": ["pause"]},
+        }
+
+    monkeypatch.setattr("backend.analysis.skill_builder.complete_json", fake_complete_json)
+
+    response = client = TestClient(app)
+    result = client.post(
+        "/api/skill-packs/draft",
+        json={
+            "brief": "Caregiver pain study.",
+            "name": "OpenRouter Demo Study",
+            "authoring_engine": "openrouter",
+        },
+    )
+
+    assert result.status_code == 200
+    body = result.json()
+    assert body["payload"]["id"] == "openrouter_demo_study"
+    assert body["payload"]["metrics"] == [
+        "base_metrics",
+        "concept_count_metrics",
+    ]
+
+
 def test_refine_skill_pack_endpoint_can_use_openrouter(monkeypatch) -> None:
     client = TestClient(app)
     payload = draft_skill_pack_from_brief(

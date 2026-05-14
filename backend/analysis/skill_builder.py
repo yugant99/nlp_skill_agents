@@ -64,6 +64,7 @@ def draft_skill_pack_with_openrouter(
     )
     if name:
         payload["name"] = str(payload.get("name") or name)
+    payload = _normalize_llm_skill_pack_payload(payload)
     parse_skill_pack(payload)
     return DraftedSkillPack(payload=payload, warnings=[])
 
@@ -148,6 +149,7 @@ def refine_skill_pack_with_openrouter(
     refined_payload = response.get("payload", response)
     if not isinstance(refined_payload, dict):
         raise ValueError("OpenRouter refinement response must include an object payload")
+    refined_payload = _normalize_llm_skill_pack_payload(refined_payload)
     parse_skill_pack(refined_payload)
     applied_changes = response.get("applied_changes", [])
     warnings = response.get("warnings", [])
@@ -170,6 +172,77 @@ def _skill_authoring_system_prompt() -> str:
         "speaker_roles values must include label and prefixes. concept_lexicons and "
         "nonverbal_cues must be objects whose values are string arrays."
     )
+
+
+def _normalize_llm_skill_pack_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = _deep_copy_payload(payload)
+    name = str(normalized.get("name") or "Research Transcript Draft")
+    normalized["id"] = _slugify(name)
+    normalized["name"] = name
+    normalized["version"] = str(normalized.get("version") or "0.1.0")
+    normalized["description"] = str(normalized.get("description") or "")
+    normalized["metrics"] = _normalize_metric_ids(normalized.get("metrics"))
+    normalized["speaker_roles"] = normalized.get("speaker_roles") or _speaker_roles("")
+    normalized["disfluency_tokens"] = _normalize_string_list(
+        normalized.get("disfluency_tokens"),
+        fallback=["um", "uh", "hm", "hmm", "like"],
+    )
+    normalized["concept_lexicons"] = _normalize_string_list_dict(
+        normalized.get("concept_lexicons")
+    )
+    normalized["nonverbal_cues"] = _normalize_string_list_dict(
+        normalized.get("nonverbal_cues")
+    )
+    return normalized
+
+
+def _normalize_metric_ids(value: Any) -> list[str]:
+    allowed = {
+        "base_metrics",
+        "lexical_metrics",
+        "disfluency_metrics",
+        "concept_count_metrics",
+        "cue_inventory_metrics",
+    }
+    if isinstance(value, dict):
+        candidates = list(value.keys())
+    elif isinstance(value, list):
+        candidates = [
+            item.get("id") if isinstance(item, dict) else item
+            for item in value
+        ]
+    else:
+        candidates = []
+    metrics = [item for item in candidates if isinstance(item, str) and item in allowed]
+    if metrics:
+        return metrics
+    return [
+        "base_metrics",
+        "lexical_metrics",
+        "disfluency_metrics",
+        "concept_count_metrics",
+        "cue_inventory_metrics",
+    ]
+
+
+def _normalize_string_list(value: Any, fallback: list[str] | None = None) -> list[str]:
+    if isinstance(value, list):
+        normalized = [str(item).strip() for item in value if str(item).strip()]
+        if normalized:
+            return normalized
+    return list(fallback or [])
+
+
+def _normalize_string_list_dict(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized = {}
+    for key, items in value.items():
+        normalized_key = _slugify(str(key))
+        normalized_items = _normalize_string_list(items)
+        if normalized_key and normalized_items:
+            normalized[normalized_key] = normalized_items
+    return normalized
 
 
 def _draft_user_prompt(brief: str, name: str | None) -> str:

@@ -12,6 +12,7 @@ from backend.llm.openrouter import (
 
 def test_is_openrouter_configured_reads_api_key(monkeypatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
 
     assert is_openrouter_configured() is False
 
@@ -66,6 +67,7 @@ def test_complete_json_sends_model_and_parses_json(monkeypatch) -> None:
 
 def test_complete_json_raises_without_api_key(monkeypatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
 
     with pytest.raises(OpenRouterError, match="OPENROUTER_API_KEY"):
         complete_json(system_prompt="Return JSON.", user_prompt="Build a skill pack.")

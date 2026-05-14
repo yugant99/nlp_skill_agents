@@ -60,6 +60,18 @@
     @apply h-4 w-4 accent-[#47615d];
   }
 
+  .skill-pack-header {
+    @apply mb-3 grid grid-cols-[1fr_auto] items-center gap-3 rounded-md border border-[#d9d4c5] bg-[#faf8f1] px-3 py-3;
+  }
+
+  .json-upload-button {
+    @apply cursor-pointer rounded-md border border-[#cfc8b8] bg-white px-3 py-2 text-xs font-semibold uppercase text-[#253735] transition hover:border-[#47615d] hover:bg-[#f3f0e7];
+  }
+
+  .secondary-button {
+    @apply mt-3 flex w-full items-center justify-center rounded-md border border-[#cfc8b8] bg-[#f7f4ea] px-4 py-2 text-sm font-semibold text-[#253735] transition hover:border-[#47615d] hover:bg-[#ece8dc];
+  }
+
   .run-button {
     @apply mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-[#253735] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#344b47] disabled:cursor-not-allowed disabled:opacity-60;
   }
@@ -106,6 +118,10 @@
 
   .error-text {
     @apply mt-3 rounded-md border border-[#e0aaa1] bg-[#fff0ee] px-3 py-2 text-sm text-[#8a2d24];
+  }
+
+  .success-text {
+    @apply mt-3 rounded-md border border-[#b7c2b5] bg-[#eef5ec] px-3 py-2 text-sm text-[#2f5b50];
   }
 
   .table-head {

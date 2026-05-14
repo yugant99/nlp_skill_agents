@@ -1,4 +1,4 @@
-import type { MetricId, RunHistoryItem, RunResponse, SkillPack } from "./types";
+import type { MetricId, RunHistoryItem, RunResponse, SkillPack, SkillPackSummary } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -14,6 +14,22 @@ export async function loadSkillPack(): Promise<SkillPack> {
   return response.json();
 }
 
+export async function validateSkillPack(payload: unknown): Promise<SkillPackSummary> {
+  const response = await fetch(`${API_BASE}/api/skill-packs/validate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Skill pack validation failed");
+  }
+  const body = (await response.json()) as { skill_pack: SkillPackSummary };
+  return body.skill_pack;
+}
+
 export async function createAnalysisRun(params: {
   file: File;
   participantId: string;
@@ -23,6 +39,7 @@ export async function createAnalysisRun(params: {
   };
   selectedMetrics: MetricId[];
   disfluencyTokens: string[];
+  skillPack?: unknown;
 }): Promise<RunResponse> {
   const form = new FormData();
   form.append("file", params.file);
@@ -32,7 +49,8 @@ export async function createAnalysisRun(params: {
       participant_id: params.participantId,
       speaker_prefixes: params.speakerPrefixes,
       selected_metrics: params.selectedMetrics,
-      disfluency_tokens: params.disfluencyTokens
+      disfluency_tokens: params.disfluencyTokens,
+      ...(params.skillPack ? { skill_pack: params.skillPack } : {})
     })
   );
 
@@ -57,6 +75,7 @@ export async function createTextAnalysisRun(params: {
   };
   selectedMetrics: MetricId[];
   disfluencyTokens: string[];
+  skillPack?: unknown;
 }): Promise<RunResponse> {
   const response = await fetch(`${API_BASE}/api/runs/text`, {
     method: "POST",
@@ -70,7 +89,8 @@ export async function createTextAnalysisRun(params: {
         participant_id: params.participantId,
         speaker_prefixes: params.speakerPrefixes,
         selected_metrics: params.selectedMetrics,
-        disfluency_tokens: params.disfluencyTokens
+        disfluency_tokens: params.disfluencyTokens,
+        ...(params.skillPack ? { skill_pack: params.skillPack } : {})
       }
     })
   });

@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertTriangle,
+  Braces,
   Database,
   FileCheck2,
   FileText,
@@ -17,20 +18,25 @@ import {
   createAnalysisRun,
   createTextAnalysisRun,
   listRuns,
-  loadSkillPack
+  loadSkillPack,
+  validateSkillPack
 } from "./api";
 import type { MetricId, MetricResult, RunHistoryItem, RunResponse, SkillPack } from "./types";
 
-const metricLabels: Record<MetricId, string> = {
+const metricLabels: Record<string, string> = {
   base_metrics: "Base metrics",
   lexical_metrics: "Lexical metrics",
-  disfluency_metrics: "Disfluencies"
+  disfluency_metrics: "Disfluencies",
+  concept_count_metrics: "Concept counts",
+  cue_inventory_metrics: "Cue inventory"
 };
 
-const metricDescriptions: Record<MetricId, string> = {
+const metricDescriptions: Record<string, string> = {
   base_metrics: "Turn structure",
   lexical_metrics: "Lexical profile",
-  disfluency_metrics: "Speech markers"
+  disfluency_metrics: "Speech markers",
+  concept_count_metrics: "Research lexicon",
+  cue_inventory_metrics: "Nonverbal coding"
 };
 
 const orderedMetrics: MetricId[] = [
@@ -41,6 +47,9 @@ const orderedMetrics: MetricId[] = [
 
 export function App() {
   const [skillPack, setSkillPack] = useState<SkillPack | null>(null);
+  const [skillPackPayload, setSkillPackPayload] = useState<unknown | null>(null);
+  const [skillPackJson, setSkillPackJson] = useState("");
+  const [skillPackStatus, setSkillPackStatus] = useState("");
   const [inputMode, setInputMode] = useState<"file" | "paste">("file");
   const [file, setFile] = useState<File | null>(null);
   const [pastedTranscript, setPastedTranscript] = useState("");
@@ -62,6 +71,8 @@ export function App() {
     loadSkillPack()
       .then((pack) => {
         setSkillPack(pack);
+        setSkillPackPayload(pack);
+        setSkillPackJson(JSON.stringify(pack, null, 2));
         setDisfluencyText(pack.disfluency_tokens.join(", "));
       })
       .catch((err: Error) => setError(err.message));
@@ -102,7 +113,8 @@ export function App() {
               participantId,
               speakerPrefixes,
               selectedMetrics,
-              disfluencyTokens
+              disfluencyTokens,
+              skillPack: skillPackPayload
             })
           : await createTextAnalysisRun({
               content: pastedTranscript,
@@ -110,7 +122,8 @@ export function App() {
               participantId,
               speakerPrefixes,
               selectedMetrics,
-              disfluencyTokens
+              disfluencyTokens,
+              skillPack: skillPackPayload
             });
       setRun(response);
       setRunHistory(await listRuns());
@@ -118,6 +131,74 @@ export function App() {
       setError(err instanceof Error ? err.message : "Analysis failed");
     } finally {
       setIsRunning(false);
+    }
+  }
+
+  async function validateCurrentSkillPack() {
+    try {
+      const parsed = JSON.parse(skillPackJson);
+      const summary = await validateSkillPack(parsed);
+      setSkillPackPayload(parsed);
+      setSkillPack({
+        id: summary.id,
+        name: summary.name,
+        version: summary.version,
+        metrics: summary.metric_ids,
+        disfluency_tokens: summary.disfluency_tokens,
+        speaker_prefixes: summary.speaker_prefixes,
+        concept_lexicons: summary.concept_lexicons,
+        nonverbal_cues: summary.nonverbal_cues
+      });
+      setSelectedMetrics(summary.metric_ids);
+      setDisfluencyText(summary.disfluency_tokens.join(", "));
+      applyPackPrefixes(summary.speaker_prefixes);
+      setSkillPackStatus(`Active: ${summary.name} v${summary.version}`);
+      setError("");
+    } catch (err) {
+      setSkillPackStatus("");
+      setError(err instanceof Error ? err.message : "Skill pack validation failed");
+    }
+  }
+
+  async function loadSkillPackFile(file: File | null) {
+    if (!file) {
+      return;
+    }
+    try {
+      const text = await file.text();
+      setSkillPackJson(text);
+      const parsed = JSON.parse(text);
+      const summary = await validateSkillPack(parsed);
+      setSkillPackPayload(parsed);
+      setSkillPack({
+        id: summary.id,
+        name: summary.name,
+        version: summary.version,
+        metrics: summary.metric_ids,
+        disfluency_tokens: summary.disfluency_tokens,
+        speaker_prefixes: summary.speaker_prefixes,
+        concept_lexicons: summary.concept_lexicons,
+        nonverbal_cues: summary.nonverbal_cues
+      });
+      setSelectedMetrics(summary.metric_ids);
+      setDisfluencyText(summary.disfluency_tokens.join(", "));
+      applyPackPrefixes(summary.speaker_prefixes);
+      setSkillPackStatus(`Loaded ${file.name}`);
+      setError("");
+    } catch (err) {
+      setSkillPackStatus("");
+      setError(err instanceof Error ? err.message : "Could not load skill pack");
+    }
+  }
+
+  function applyPackPrefixes(prefixes?: Record<string, string[]>) {
+    const caregiver = prefixes?.caregiver?.[0];
+    const participant = prefixes?.participant?.[0];
+    if (caregiver) {
+      setCaregiverPrefix(caregiver);
+    }
+    if (participant) {
+      setParticipantPrefix(participant);
     }
   }
 
@@ -254,7 +335,41 @@ export function App() {
               </div>
             </Panel>
 
-            <Panel title="2. Skills" icon={<TableProperties size={18} />}>
+            <Panel title="2. Study Skill Pack" icon={<Braces size={18} />}>
+              <div className="skill-pack-header">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-[#171717]">
+                    {skillPack?.name ?? "No active pack"}
+                  </div>
+                  <div className="mt-1 text-xs text-[#756f64]">
+                    {skillPack
+                      ? `${skillPack.id} · v${skillPack.version}`
+                      : "Upload or paste a JSON pack"}
+                  </div>
+                </div>
+                <label className="json-upload-button">
+                  JSON
+                  <input
+                    className="sr-only"
+                    type="file"
+                    accept=".json,application/json"
+                    onChange={(event) => void loadSkillPackFile(event.target.files?.[0] ?? null)}
+                  />
+                </label>
+              </div>
+              <textarea
+                className="field-input min-h-36 resize-y font-mono text-xs"
+                value={skillPackJson}
+                onChange={(event) => setSkillPackJson(event.target.value)}
+                spellCheck={false}
+              />
+              <button className="secondary-button" type="button" onClick={validateCurrentSkillPack}>
+                Validate + activate skill pack
+              </button>
+              {skillPackStatus ? <p className="success-text">{skillPackStatus}</p> : null}
+            </Panel>
+
+            <Panel title="3. Skills" icon={<TableProperties size={18} />}>
               <div className="space-y-2">
                 {(skillPack?.metrics ?? selectedMetrics).map((metric) => (
                   <label key={metric} className="metric-toggle">
@@ -263,7 +378,7 @@ export function App() {
                       checked={selectedMetrics.includes(metric)}
                       onChange={() => toggleMetric(metric)}
                     />
-                    <span>{metricLabels[metric]}</span>
+                    <span>{metricLabel(metric)}</span>
                   </label>
                 ))}
               </div>
@@ -284,7 +399,7 @@ export function App() {
           </aside>
 
           <section className="space-y-4">
-            <Panel title="3. Run Output" icon={<Database size={18} />}>
+            <Panel title="4. Run Output" icon={<Database size={18} />}>
               {run ? (
                 <div className="space-y-4">
                   <RunSummaryStrip run={run} />
@@ -293,6 +408,12 @@ export function App() {
                     <OutputFact label="Run ID" value={run.run_id.slice(0, 12)} />
                     <OutputFact label="Transcript" value={run.source_filename} />
                     <OutputFact label="Turns" value={String(run.turn_count)} />
+                    {run.skill_pack ? (
+                      <OutputFact
+                        label="Skill pack"
+                        value={`${run.skill_pack.name} v${run.skill_pack.version}`}
+                      />
+                    ) : null}
                     <OutputFact label="JSON" value={run.stored.results_json} wide />
                     <OutputFact label="Exports" value={run.stored.export_dir} wide />
                   </div>
@@ -322,7 +443,7 @@ export function App() {
 
 function RecentRunsPanel({ runs }: { runs: RunHistoryItem[] }) {
   return (
-    <Panel title="4. Recent Local Runs" icon={<Database size={18} />}>
+    <Panel title="5. Recent Local Runs" icon={<Database size={18} />}>
       {runs.length ? (
         <div className="recent-runs-list">
           {runs.slice(0, 5).map((item) => (
@@ -353,19 +474,22 @@ function RecentRunsPanel({ runs }: { runs: RunHistoryItem[] }) {
 }
 
 function RunSummaryStrip({ run }: { run: RunResponse }) {
+  const summaryMetrics = Array.from(
+    new Set([...orderedMetrics, ...run.results.map((item) => item.metric_id)])
+  );
   return (
     <div className="run-summary-strip" aria-label="Run skill summary">
-      {orderedMetrics.map((metricId) => {
+      {summaryMetrics.map((metricId) => {
         const result = run.results.find((item) => item.metric_id === metricId);
         return (
           <div key={metricId} className="run-summary-card">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-xs font-semibold uppercase text-[#47615d]">
-                  {metricDescriptions[metricId]}
+                  {metricDescription(metricId)}
                 </div>
                 <div className="mt-1 truncate text-sm font-semibold text-[#171717]">
-                  {metricLabels[metricId]}
+                  {metricLabel(metricId)}
                 </div>
               </div>
               <span className={result ? "summary-status" : "summary-status summary-status-muted"}>
@@ -518,4 +642,12 @@ function formatCell(value: unknown): string {
     return "";
   }
   return String(value);
+}
+
+function metricLabel(metricId: string): string {
+  return metricLabels[metricId] ?? metricId.replaceAll("_", " ");
+}
+
+function metricDescription(metricId: string): string {
+  return metricDescriptions[metricId] ?? "Dynamic skill";
 }

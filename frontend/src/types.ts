@@ -1,4 +1,4 @@
-export type MetricId = "base_metrics" | "lexical_metrics" | "disfluency_metrics";
+export type MetricId = string;
 
 export type MetricResult = {
   metric_id: MetricId;
@@ -11,6 +11,7 @@ export type RunResponse = {
   source_filename: string;
   created_at: string;
   turn_count: number;
+  skill_pack: SkillPackProvenance | null;
   diagnostics: TranscriptDiagnostics;
   results: MetricResult[];
   stored: {
@@ -25,9 +26,31 @@ export type SkillPack = {
   id: string;
   name: string;
   version: string;
-  description: string;
+  description?: string;
   metrics: MetricId[];
   disfluency_tokens: string[];
+  speaker_roles?: Record<string, string | { label?: string; prefixes?: string[] }>;
+  speaker_prefixes?: Record<string, string[]>;
+  concept_lexicons?: Record<string, string[]>;
+  nonverbal_cues?: Record<string, string[]>;
+};
+
+export type SkillPackSummary = {
+  id: string;
+  name: string;
+  version: string;
+  metric_ids: MetricId[];
+  speaker_roles: Record<string, string>;
+  speaker_prefixes: Record<string, string[]>;
+  disfluency_tokens: string[];
+  concept_lexicons: Record<string, string[]>;
+  nonverbal_cues: Record<string, string[]>;
+};
+
+export type SkillPackProvenance = {
+  id: string;
+  name: string;
+  version: string;
 };
 
 export type ExportLink = {

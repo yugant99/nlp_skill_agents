@@ -475,3 +475,14 @@ def test_study_workspace_batch_api_creates_aggregate_outputs(tmp_path, monkeypat
     bundle_payload = bundle_response.json()["bundle"]
     assert bundle_payload["study_id"] == "question-study"
     assert bundle_payload["manifest_path"].endswith("manifest.json")
+
+    audit_response = client.get("/api/audit-events")
+
+    assert audit_response.status_code == 200
+    event_types = [event["event_type"] for event in audit_response.json()["events"]]
+    assert event_types[-4:] == [
+        "study.created",
+        "skill_pack.versioned",
+        "batch.completed",
+        "bundle.exported",
+    ]

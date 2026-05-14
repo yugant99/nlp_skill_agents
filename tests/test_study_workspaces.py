@@ -139,3 +139,35 @@ def test_study_workspace_exports_reproducibility_bundle(tmp_path: Path) -> None:
     assert "studies/bundle-study/study.json" in [
         file_record["relative_path"] for file_record in manifest["files"]
     ]
+
+
+def test_study_workspace_writes_audit_events(tmp_path: Path) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Audit Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "audit_pack",
+            "name": "Audit Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "one.txt", "content": "CG: Hello."}],
+    )
+    bundle = store.export_study_bundle(study.id)
+
+    events = store.audit_log.list_events()
+
+    assert [event["event_type"] for event in events] == [
+        "study.created",
+        "skill_pack.versioned",
+        "batch.completed",
+        "bundle.exported",
+    ]
+    assert events[0]["subject_id"] == "audit-study"
+    assert events[2]["metadata"]["batch_id"] == batch.batch_id
+    assert events[3]["metadata"]["bundle_id"] == bundle.bundle_id

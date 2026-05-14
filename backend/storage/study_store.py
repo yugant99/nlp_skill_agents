@@ -13,6 +13,7 @@ from uuid import uuid4
 from backend.analysis.pipeline import execute_analysis
 from backend.analysis.skill_packs import parse_skill_pack
 from backend.analysis.transcripts import StudyConfig
+from backend.storage.audit_log import AuditLogStore
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class StudyWorkspaceStore:
     def __init__(self, root: Path | str = "local_data") -> None:
         self.root = Path(root)
         self.studies_dir = self.root / "studies"
+        self.audit_log = AuditLogStore(self.root)
 
     def create_study(self, payload: dict[str, Any]) -> StudyWorkspace:
         name = _required_string(payload, "name")
@@ -69,6 +71,12 @@ class StudyWorkspaceStore:
         (study_dir / "study.json").write_text(
             json.dumps(asdict(study), indent=2),
             encoding="utf-8",
+        )
+        self.audit_log.record(
+            "study.created",
+            "study",
+            study.id,
+            {"name": study.name},
         )
         return study
 
@@ -113,6 +121,16 @@ class StudyWorkspaceStore:
                 indent=2,
             ),
             encoding="utf-8",
+        )
+        self.audit_log.record(
+            "skill_pack.versioned",
+            "study",
+            study_id,
+            {
+                "version_id": version_id,
+                "skill_pack_id": str(payload["id"]),
+                "skill_pack_version": str(payload["version"]),
+            },
         )
         return metadata
 
@@ -196,6 +214,17 @@ class StudyWorkspaceStore:
             ),
             encoding="utf-8",
         )
+        self.audit_log.record(
+            "batch.completed",
+            "study",
+            study_id,
+            {
+                "batch_id": batch.batch_id,
+                "skill_pack_version_id": skill_pack_version_id,
+                "run_count": batch.run_count,
+                "failure_count": batch.failure_count,
+            },
+        )
         return batch
 
     def export_study_bundle(self, study_id: str) -> StudyBundleExport:
@@ -217,12 +246,22 @@ class StudyWorkspaceStore:
         }
         manifest_path = bundle_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        return StudyBundleExport(
+        bundle = StudyBundleExport(
             study_id=study_id,
             bundle_id=bundle_id,
             bundle_dir=bundle_dir,
             manifest_path=manifest_path,
         )
+        self.audit_log.record(
+            "bundle.exported",
+            "study",
+            study_id,
+            {
+                "bundle_id": bundle.bundle_id,
+                "manifest_path": str(bundle.manifest_path),
+            },
+        )
+        return bundle
 
     def _study_dir(self, study_id: str) -> Path:
         return self.studies_dir / study_id

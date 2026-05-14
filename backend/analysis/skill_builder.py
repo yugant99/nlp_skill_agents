@@ -13,6 +13,13 @@ class DraftedSkillPack:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class RefinedSkillPack:
+    payload: dict[str, Any]
+    applied_changes: list[str]
+    warnings: list[str]
+
+
 def draft_skill_pack_from_brief(brief: str, name: str | None = None) -> DraftedSkillPack:
     normalized_brief = brief.lower()
     pack_name = name or _default_name(normalized_brief)
@@ -42,6 +49,72 @@ def draft_skill_pack_from_brief(brief: str, name: str | None = None) -> DraftedS
             "No concept keywords were recognized; add concept_lexicons before running."
         )
     return DraftedSkillPack(payload=payload, warnings=warnings)
+
+
+def refine_skill_pack(payload: dict[str, Any], instruction: str) -> RefinedSkillPack:
+    parse_skill_pack(payload)
+    refined = _deep_copy_payload(payload)
+    normalized_instruction = instruction.lower()
+    concepts = dict(refined.get("concept_lexicons", {}))
+    cues = dict(refined.get("nonverbal_cues", {}))
+    applied_changes: list[str] = []
+
+    if (
+        "split" in normalized_instruction
+        and "pain" in normalized_instruction
+        and "pain" in concepts
+    ):
+        concepts.pop("pain")
+        concepts["acute_pain"] = ["acute", "sharp", "sudden", "hurt", "hurts"]
+        concepts["chronic_pain"] = [
+            "chronic",
+            "ongoing",
+            "persistent",
+            "ache",
+            "aches",
+            "sore",
+        ]
+        applied_changes.append("split pain into acute_pain and chronic_pain")
+
+    for concept, terms in _CONCEPT_LIBRARY.items():
+        remove_requested = _requests_remove(normalized_instruction, concept)
+        if remove_requested and concept in concepts:
+            concepts.pop(concept)
+            applied_changes.append(f"removed concept {concept}")
+        if (
+            not remove_requested
+            and _requests_add(normalized_instruction, concept)
+            and concept not in concepts
+        ):
+            concepts[concept] = terms
+            applied_changes.append(f"added concept {concept}")
+
+    for cue, patterns in _CUE_LIBRARY.items():
+        remove_requested = _requests_remove(normalized_instruction, cue)
+        if remove_requested and cue in cues:
+            cues.pop(cue)
+            applied_changes.append(f"removed cue {cue}")
+        if (
+            not remove_requested
+            and _requests_add(normalized_instruction, cue)
+            and cue not in cues
+        ):
+            cues[cue] = patterns
+            applied_changes.append(f"added cue {cue}")
+
+    refined["concept_lexicons"] = concepts
+    refined["nonverbal_cues"] = cues
+    parse_skill_pack(refined)
+    warnings = []
+    if not applied_changes:
+        warnings.append(
+            "No supported refinement was detected; edit the skill pack JSON/YAML directly."
+        )
+    return RefinedSkillPack(
+        payload=refined,
+        applied_changes=applied_changes,
+        warnings=warnings,
+    )
 
 
 def _default_name(brief: str) -> str:
@@ -133,9 +206,47 @@ def _matches_any(text: str, terms: list[str]) -> bool:
     return any(re.search(rf"\b{re.escape(term.lower())}\b", text) for term in terms)
 
 
+def _requests_add(instruction: str, key: str) -> bool:
+    readable_key = key.replace("_", " ")
+    return (
+        re.search(rf"\b(add|include|track)\b.{{0,48}}\b{re.escape(readable_key)}\b", instruction)
+        is not None
+        or re.search(rf"\b(add|include|track)\b.{{0,48}}\b{re.escape(key)}\b", instruction)
+        is not None
+    )
+
+
+def _requests_remove(instruction: str, key: str) -> bool:
+    readable_key = key.replace("_", " ")
+    return (
+        re.search(
+            rf"\b(remove|drop|ignore|exclude)\b.{{0,48}}\b{re.escape(readable_key)}\b",
+            instruction,
+        )
+        is not None
+        or re.search(
+            rf"\b(remove|drop|ignore|exclude)\b.{{0,48}}\b{re.escape(key)}\b",
+            instruction,
+        )
+        is not None
+    )
+
+
 def _slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
     return slug or "research_transcript_draft"
+
+
+def _deep_copy_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    copied: dict[str, Any] = {}
+    for key, value in payload.items():
+        if isinstance(value, dict):
+            copied[key] = _deep_copy_payload(value)
+        elif isinstance(value, list):
+            copied[key] = [dict(item) if isinstance(item, dict) else item for item in value]
+        else:
+            copied[key] = value
+    return copied
 
 
 _CONCEPT_LIBRARY = {

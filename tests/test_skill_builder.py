@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from backend.analysis.skill_builder import draft_skill_pack_from_brief
+from backend.analysis.skill_builder import draft_skill_pack_from_brief, refine_skill_pack
 from backend.analysis.skill_packs import parse_skill_pack
 from backend.app.main import app
 
@@ -79,3 +79,63 @@ def test_draft_skill_pack_endpoint_returns_payload_and_summary() -> None:
         "cue_inventory_metrics",
     ]
     assert set(body["payload"]["concept_lexicons"]) == {"emotion", "risk", "goals"}
+
+
+def test_refine_skill_pack_splits_pain_and_adds_sleep() -> None:
+    draft = draft_skill_pack_from_brief(
+        "Caregiver participant healthcare study. Track pain and medication.",
+        name="Care Study",
+    )
+
+    refined = refine_skill_pack(
+        draft.payload,
+        "Split pain into acute and chronic pain, and add sleep disruption.",
+    )
+    pack = parse_skill_pack(refined.payload)
+
+    assert "pain" not in pack.concept_lexicons
+    assert pack.concept_lexicons["acute_pain"] == [
+        "acute",
+        "sharp",
+        "sudden",
+        "hurt",
+        "hurts",
+    ]
+    assert pack.concept_lexicons["chronic_pain"] == [
+        "chronic",
+        "ongoing",
+        "persistent",
+        "ache",
+        "aches",
+        "sore",
+    ]
+    assert "sleep" in pack.concept_lexicons
+    assert refined.applied_changes == [
+        "split pain into acute_pain and chronic_pain",
+        "added concept sleep",
+    ]
+
+
+def test_refine_skill_pack_endpoint_returns_updated_payload() -> None:
+    client = TestClient(app)
+    payload = draft_skill_pack_from_brief(
+        "Psychology interview about mood and stress.",
+        name="Interview Study",
+    ).payload
+
+    response = client.post(
+        "/api/skill-packs/refine",
+        json={
+            "payload": payload,
+            "instruction": "Add anxiety and remove stress.",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "anxiety" in body["payload"]["concept_lexicons"]
+    assert "stress" not in body["payload"]["concept_lexicons"]
+    assert body["applied_changes"] == [
+        "added concept anxiety",
+        "removed concept stress",
+    ]

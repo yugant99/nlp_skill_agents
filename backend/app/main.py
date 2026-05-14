@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from backend.analysis.diagnostics import analyze_transcript_quality
 from backend.analysis.pipeline import execute_analysis
-from backend.analysis.skill_builder import draft_skill_pack_from_brief
+from backend.analysis.skill_builder import draft_skill_pack_from_brief, refine_skill_pack
 from backend.analysis.skill_packs import (
     SkillPack,
     SkillPackValidationError,
@@ -50,6 +50,11 @@ class SkillPackTextRequest(BaseModel):
 class SkillPackDraftRequest(BaseModel):
     brief: str = Field(min_length=1)
     name: str | None = Field(default=None)
+
+
+class SkillPackRefineRequest(BaseModel):
+    payload: dict
+    instruction: str = Field(min_length=1)
 
 
 @app.get("/api/health")
@@ -93,6 +98,21 @@ def draft_skill_pack(request: SkillPackDraftRequest) -> dict:
         "payload": draft.payload,
         "skill_pack": _skill_pack_summary(pack),
         "warnings": draft.warnings,
+    }
+
+
+@app.post("/api/skill-packs/refine")
+def refine_skill_pack_endpoint(request: SkillPackRefineRequest) -> dict:
+    try:
+        refined = refine_skill_pack(request.payload, request.instruction)
+        pack = parse_skill_pack(refined.payload)
+    except SkillPackValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "payload": refined.payload,
+        "skill_pack": _skill_pack_summary(pack),
+        "applied_changes": refined.applied_changes,
+        "warnings": refined.warnings,
     }
 
 

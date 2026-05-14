@@ -29,6 +29,9 @@ class StudyConfig:
     disfluency_tokens: list[str] = field(default_factory=list)
     concept_lexicons: dict[str, list[str]] = field(default_factory=dict)
     nonverbal_cues: dict[str, list[str]] = field(default_factory=dict)
+    skill_pack_id: str = ""
+    skill_pack_name: str = ""
+    skill_pack_version: str = ""
 
 
 @dataclass(frozen=True)
@@ -117,6 +120,9 @@ def _resolve_config(content: str, config: StudyConfig) -> StudyConfig:
         disfluency_tokens=list(config.disfluency_tokens),
         concept_lexicons={key: list(value) for key, value in config.concept_lexicons.items()},
         nonverbal_cues={key: list(value) for key, value in config.nonverbal_cues.items()},
+        skill_pack_id=config.skill_pack_id,
+        skill_pack_name=config.skill_pack_name,
+        skill_pack_version=config.skill_pack_version,
     )
 
 

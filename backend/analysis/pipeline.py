@@ -55,6 +55,9 @@ def execute_analysis(
             key: list(value) for key, value in config.concept_lexicons.items()
         },
         nonverbal_cues={key: list(value) for key, value in config.nonverbal_cues.items()},
+        skill_pack_id=config.skill_pack_id,
+        skill_pack_name=config.skill_pack_name,
+        skill_pack_version=config.skill_pack_version,
     )
     transcript = parse_transcript(content, resolved_config, source_filename)
     results = []

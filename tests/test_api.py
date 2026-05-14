@@ -29,6 +29,65 @@ def test_default_skill_pack_endpoint() -> None:
     ]
 
 
+def test_validate_dynamic_skill_pack_endpoint() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/skill-packs/validate",
+        json={
+            "id": "care_study",
+            "name": "Care Study",
+            "version": "1.0.0",
+            "metrics": ["concept_count_metrics", "cue_inventory_metrics"],
+            "speaker_roles": {
+                "caregiver": {"label": "Care Partner", "prefixes": ["CG"]},
+                "participant": {"label": "Participant", "prefixes": ["P"]},
+            },
+            "concept_lexicons": {"pain": ["pain", "hurts"]},
+            "nonverbal_cues": {"pause": ["pause"]},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "valid": True,
+        "skill_pack": {
+            "id": "care_study",
+            "name": "Care Study",
+            "version": "1.0.0",
+            "metric_ids": ["concept_count_metrics", "cue_inventory_metrics"],
+            "speaker_roles": {
+                "caregiver": "Care Partner",
+                "participant": "Participant",
+            },
+            "speaker_prefixes": {
+                "caregiver": ["CG"],
+                "participant": ["P"],
+            },
+            "disfluency_tokens": [],
+            "concept_lexicons": {"pain": ["pain", "hurts"]},
+            "nonverbal_cues": {"pause": ["pause"]},
+        },
+    }
+
+
+def test_validate_dynamic_skill_pack_endpoint_returns_clear_errors() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/skill-packs/validate",
+        json={
+            "id": "bad",
+            "name": "Bad",
+            "version": "1.0.0",
+            "metrics": ["not_registered"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "not_registered" in response.json()["detail"]
+
+
 def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)
@@ -245,6 +304,52 @@ def test_create_run_from_text_payload(tmp_path, monkeypatch) -> None:
     assert payload["source_filename"] == "pasted_transcript.txt"
     assert payload["turn_count"] == 2
     assert payload["results"][1]["rows"][-1]["disfluency_count"] == 1
+
+
+def test_create_text_run_applies_embedded_dynamic_skill_pack(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    skill_pack = {
+        "id": "care_study",
+        "name": "Care Study",
+        "version": "1.0.0",
+        "metrics": ["concept_count_metrics", "cue_inventory_metrics"],
+        "speaker_roles": {
+            "caregiver": {"label": "Care Partner", "prefixes": ["CG"]},
+            "participant": {"label": "Participant", "prefixes": ["P"]},
+        },
+        "disfluency_tokens": ["um"],
+        "concept_lexicons": {"pain": ["pain", "hurt", "hurts"]},
+        "nonverbal_cues": {"pause": ["pause"]},
+    }
+
+    response = client.post(
+        "/api/runs/text",
+        json={
+            "source_filename": "care_study.txt",
+            "content": "CG: Does it hurt? [pause]\nP: Um, the pain hurts.",
+            "config": {"skill_pack": skill_pack},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["skill_pack"] == {
+        "id": "care_study",
+        "name": "Care Study",
+        "version": "1.0.0",
+    }
+    assert payload["diagnostics"]["turn_counts"] == {
+        "caregiver": 1,
+        "participant": 1,
+    }
+    assert [result["metric_id"] for result in payload["results"]] == [
+        "concept_count_metrics",
+        "cue_inventory_metrics",
+    ]
+    assert payload["results"][0]["rows"][0]["match_count"] == 3
+    results_json = tmp_path / "runs" / payload["run_id"] / "results.json"
+    assert json.loads(results_json.read_text())["skill_pack"] == payload["skill_pack"]
 
 
 def test_create_run_rejects_unknown_metric_with_400(tmp_path, monkeypatch) -> None:

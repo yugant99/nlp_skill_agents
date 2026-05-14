@@ -14,7 +14,12 @@ from pydantic import BaseModel, Field
 
 from backend.analysis.diagnostics import analyze_transcript_quality
 from backend.analysis.pipeline import execute_analysis
-from backend.analysis.skill_packs import load_skill_pack
+from backend.analysis.skill_packs import (
+    SkillPack,
+    SkillPackValidationError,
+    load_skill_pack,
+    parse_skill_pack,
+)
 from backend.analysis.transcripts import StudyConfig, extract_transcript_text
 from backend.storage.local_store import LocalRunStore, StoredRun
 
@@ -45,6 +50,15 @@ def default_skill_pack() -> dict:
     return load_skill_pack("default_transcript_metrics").raw
 
 
+@app.post("/api/skill-packs/validate")
+def validate_skill_pack(payload: dict) -> dict:
+    try:
+        pack = parse_skill_pack(payload)
+    except SkillPackValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"valid": True, "skill_pack": _skill_pack_summary(pack)}
+
+
 @app.post("/api/runs")
 async def create_run(
     config: Annotated[str, Form()],
@@ -54,6 +68,8 @@ async def create_run(
         parsed_config = _study_config_from_json(config)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="config must be valid JSON") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".txt", ".docx"}:
@@ -78,9 +94,13 @@ async def create_run(
 
 @app.post("/api/runs/text")
 def create_text_run(request: TextRunRequest) -> dict:
+    try:
+        config = _study_config_from_payload(request.config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     run = _execute_or_400(
         request.content,
-        _study_config_from_payload(request.config),
+        config,
         source_filename=request.source_filename,
     )
     stored = LocalRunStore(_local_data_root()).persist_run(run)
@@ -118,12 +138,37 @@ def _execute_or_400(content: str, config: StudyConfig, source_filename: str):
 
 
 def _study_config_from_payload(payload: dict) -> StudyConfig:
+    pack = _skill_pack_from_payload(payload)
+    pack_metric_ids = [metric.id for metric in pack.metrics] if pack else []
+    pack_speaker_prefixes = pack.speaker_prefixes if pack else {}
+    pack_speaker_labels = pack.speaker_roles if pack else {}
+    pack_disfluencies = pack.disfluency_tokens if pack else []
+    pack_concepts = pack.concept_lexicons if pack else {}
+    pack_cues = pack.nonverbal_cues if pack else {}
+
     return StudyConfig(
         participant_id=str(payload.get("participant_id", "")),
-        speaker_prefixes=dict(payload.get("speaker_prefixes", {})),
-        speaker_labels=dict(payload.get("speaker_labels", {})),
-        selected_metrics=list(payload.get("selected_metrics", [])),
-        disfluency_tokens=list(payload.get("disfluency_tokens", [])),
+        speaker_prefixes={
+            **pack_speaker_prefixes,
+            **dict(payload.get("speaker_prefixes", {})),
+        },
+        speaker_labels={
+            **pack_speaker_labels,
+            **dict(payload.get("speaker_labels", {})),
+        },
+        selected_metrics=list(payload.get("selected_metrics") or pack_metric_ids),
+        disfluency_tokens=list(payload.get("disfluency_tokens") or pack_disfluencies),
+        concept_lexicons={
+            **pack_concepts,
+            **dict(payload.get("concept_lexicons", {})),
+        },
+        nonverbal_cues={
+            **pack_cues,
+            **dict(payload.get("nonverbal_cues", {})),
+        },
+        skill_pack_id=pack.id if pack else "",
+        skill_pack_name=pack.name if pack else "",
+        skill_pack_version=pack.version if pack else "",
     )
 
 
@@ -133,6 +178,7 @@ def _run_response(run, stored: StoredRun) -> dict:
         "source_filename": run.source_filename,
         "created_at": run.created_at,
         "turn_count": len(run.transcript.turns),
+        "skill_pack": _run_skill_pack_payload(run),
         "diagnostics": analyze_transcript_quality(run.transcript).to_dict(),
         "results": [asdict(result) for result in run.results],
         "stored": {
@@ -148,6 +194,40 @@ def _run_response(run, stored: StoredRun) -> dict:
             }
             for result in run.results
         ],
+    }
+
+
+def _skill_pack_from_payload(payload: dict) -> SkillPack | None:
+    if "skill_pack" in payload:
+        return parse_skill_pack(payload["skill_pack"])
+    skill_pack_id = payload.get("skill_pack_id")
+    if skill_pack_id:
+        return load_skill_pack(str(skill_pack_id))
+    return None
+
+
+def _skill_pack_summary(pack: SkillPack) -> dict:
+    return {
+        "id": pack.id,
+        "name": pack.name,
+        "version": pack.version,
+        "metric_ids": [metric.id for metric in pack.metrics],
+        "speaker_roles": pack.speaker_roles,
+        "speaker_prefixes": pack.speaker_prefixes,
+        "disfluency_tokens": pack.disfluency_tokens,
+        "concept_lexicons": pack.concept_lexicons,
+        "nonverbal_cues": pack.nonverbal_cues,
+    }
+
+
+def _run_skill_pack_payload(run) -> dict[str, str] | None:
+    config = run.transcript.config
+    if not config.skill_pack_id:
+        return None
+    return {
+        "id": config.skill_pack_id,
+        "name": config.skill_pack_name,
+        "version": config.skill_pack_version,
     }
 
 

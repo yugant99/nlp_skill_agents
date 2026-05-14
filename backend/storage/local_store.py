@@ -118,8 +118,20 @@ def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
         "source_filename": run.source_filename,
         "created_at": run.created_at,
         "participant_id": run.transcript.config.participant_id,
+        "skill_pack": _skill_pack_payload(run),
         "turn_count": len(run.transcript.turns),
         "results": [asdict(result) for result in run.results],
+    }
+
+
+def _skill_pack_payload(run: AnalysisRun) -> dict[str, str] | None:
+    config = run.transcript.config
+    if not config.skill_pack_id:
+        return None
+    return {
+        "id": config.skill_pack_id,
+        "name": config.skill_pack_name,
+        "version": config.skill_pack_version,
     }
 
 

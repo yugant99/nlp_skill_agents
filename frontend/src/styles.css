@@ -8,8 +8,9 @@
   body {
     margin: 0;
     font-family:
-      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+      Geist, Satoshi, "Avenir Next", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
       sans-serif;
+    font-variant-numeric: tabular-nums;
   }
 
   button,
@@ -20,8 +21,16 @@
 }
 
 @layer components {
+  .app-shell {
+    background:
+      radial-gradient(circle at 15% 0%, rgba(71, 97, 93, 0.1), transparent 28rem),
+      linear-gradient(135deg, rgba(37, 55, 53, 0.05) 0 1px, transparent 1px),
+      #f6f5ef;
+    background-size: auto, 22px 22px, auto;
+  }
+
   .dropzone {
-    @apply block cursor-pointer rounded-md border border-dashed border-[#9d9a8f] bg-[#f7f4ea] px-4 py-5 text-center transition hover:border-[#47615d] hover:bg-[#f0eee4];
+    @apply block cursor-pointer rounded-md border border-dashed border-[#9d9a8f] bg-[#f7f4ea] px-4 py-5 text-center transition duration-200 hover:-translate-y-px hover:border-[#47615d] hover:bg-[#f0eee4] active:translate-y-0;
   }
 
   .mode-switch {
@@ -29,7 +38,7 @@
   }
 
   .mode-button {
-    @apply rounded px-3 py-2 text-sm font-semibold text-[#5f594f] transition hover:bg-white/70;
+    @apply rounded px-3 py-2 text-sm font-semibold text-[#5f594f] transition duration-200 hover:bg-white/70 active:scale-[0.98];
   }
 
   .mode-button-active {
@@ -49,11 +58,11 @@
   }
 
   .field-input {
-    @apply mt-2 w-full rounded-md border border-[#cfc8b8] bg-white px-3 py-2 text-sm outline-none transition focus:border-[#47615d] focus:ring-2 focus:ring-[#47615d]/20;
+    @apply mt-2 w-full rounded-md border border-[#cfc8b8] bg-white/95 px-3 py-2 text-sm outline-none transition duration-200 focus:border-[#47615d] focus:ring-2 focus:ring-[#47615d]/20;
   }
 
   .metric-toggle {
-    @apply flex cursor-pointer items-center justify-between rounded-md border border-[#d9d4c5] bg-[#faf8f1] px-3 py-2 text-sm font-medium;
+    @apply flex cursor-pointer items-center justify-between rounded-md border border-[#d9d4c5] bg-[#faf8f1] px-3 py-2 text-sm font-medium transition duration-200 hover:-translate-y-px hover:border-[#b8c3b3] hover:bg-white active:translate-y-0;
   }
 
   .metric-toggle input {
@@ -64,16 +73,20 @@
     @apply mb-3 grid grid-cols-[1fr_auto] items-center gap-3 rounded-md border border-[#d9d4c5] bg-[#faf8f1] px-3 py-3;
   }
 
+  .studio-block {
+    @apply mb-4 rounded-md border border-[#d9d4c5] bg-[#f3f0e7]/70 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)];
+  }
+
   .json-upload-button {
-    @apply cursor-pointer rounded-md border border-[#cfc8b8] bg-white px-3 py-2 text-xs font-semibold uppercase text-[#253735] transition hover:border-[#47615d] hover:bg-[#f3f0e7];
+    @apply cursor-pointer rounded-md border border-[#cfc8b8] bg-white px-3 py-2 text-xs font-semibold uppercase text-[#253735] transition duration-200 hover:-translate-y-px hover:border-[#47615d] hover:bg-[#f3f0e7] active:translate-y-0;
   }
 
   .secondary-button {
-    @apply mt-3 flex w-full items-center justify-center rounded-md border border-[#cfc8b8] bg-[#f7f4ea] px-4 py-2 text-sm font-semibold text-[#253735] transition hover:border-[#47615d] hover:bg-[#ece8dc];
+    @apply mt-3 flex w-full items-center justify-center gap-2 rounded-md border border-[#cfc8b8] bg-[#f7f4ea] px-4 py-2 text-sm font-semibold text-[#253735] transition duration-200 hover:-translate-y-px hover:border-[#47615d] hover:bg-[#ece8dc] active:translate-y-0;
   }
 
   .run-button {
-    @apply mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-[#253735] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#344b47] disabled:cursor-not-allowed disabled:opacity-60;
+    @apply mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-[#253735] px-4 py-3 text-sm font-semibold text-white shadow-[0_14px_32px_-18px_rgba(37,55,53,0.8)] transition duration-200 hover:-translate-y-px hover:bg-[#344b47] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60;
   }
 
   .run-summary-strip {

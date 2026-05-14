@@ -1,4 +1,11 @@
-import type { MetricId, RunHistoryItem, RunResponse, SkillPack, SkillPackSummary } from "./types";
+import type {
+  MetricId,
+  RunHistoryItem,
+  RunResponse,
+  SkillPack,
+  SkillPackDraftResponse,
+  SkillPackSummary
+} from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -53,6 +60,24 @@ export async function validateSkillPackText(params: {
     payload: unknown;
   };
   return { summary: body.skill_pack, payload: body.payload };
+}
+
+export async function draftSkillPack(params: {
+  brief: string;
+  name?: string;
+}): Promise<SkillPackDraftResponse> {
+  const response = await fetch(`${API_BASE}/api/skill-packs/draft`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(params)
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Skill pack draft failed");
+  }
+  return response.json();
 }
 
 export async function createAnalysisRun(params: {

@@ -9,6 +9,7 @@ import {
   Loader2,
   Play,
   Download,
+  Sparkles,
   ShieldCheck,
   TableProperties
 } from "lucide-react";
@@ -17,6 +18,7 @@ import {
   apiUrl,
   createAnalysisRun,
   createTextAnalysisRun,
+  draftSkillPack,
   listRuns,
   loadSkillPack,
   validateSkillPack,
@@ -51,6 +53,11 @@ export function App() {
   const [skillPackPayload, setSkillPackPayload] = useState<unknown | null>(null);
   const [skillPackJson, setSkillPackJson] = useState("");
   const [skillPackStatus, setSkillPackStatus] = useState("");
+  const [studyBrief, setStudyBrief] = useState(
+    "Caregiver participant healthcare study. Track pain, medication, walking and balance. Nonverbal cues include pause and laughter."
+  );
+  const [draftName, setDraftName] = useState("Caregiver Mobility Study");
+  const [draftWarnings, setDraftWarnings] = useState<string[]>([]);
   const [inputMode, setInputMode] = useState<"file" | "paste">("file");
   const [file, setFile] = useState<File | null>(null);
   const [pastedTranscript, setPastedTranscript] = useState("");
@@ -175,6 +182,28 @@ export function App() {
     }
   }
 
+  async function draftPackFromBrief() {
+    if (!studyBrief.trim()) {
+      setError("Add a study brief before drafting a skill pack.");
+      return;
+    }
+    try {
+      setError("");
+      setSkillPackStatus("Drafting skill pack from study brief...");
+      const draft = await draftSkillPack({
+        brief: studyBrief,
+        name: draftName.trim() || undefined
+      });
+      activateSkillPack(draft.skill_pack, draft.payload);
+      setSkillPackJson(JSON.stringify(draft.payload, null, 2));
+      setDraftWarnings(draft.warnings);
+      setSkillPackStatus(`Drafted: ${draft.skill_pack.name} v${draft.skill_pack.version}`);
+    } catch (err) {
+      setSkillPackStatus("");
+      setError(err instanceof Error ? err.message : "Could not draft skill pack");
+    }
+  }
+
   async function loadSkillPackFile(file: File | null) {
     if (!file) {
       return;
@@ -186,26 +215,43 @@ export function App() {
         filename: file.name,
         content: text
       });
-      setSkillPackPayload(payload);
-      setSkillPack({
-        id: summary.id,
-        name: summary.name,
-        version: summary.version,
-        metrics: summary.metric_ids,
-        disfluency_tokens: summary.disfluency_tokens,
-        speaker_prefixes: summary.speaker_prefixes,
-        concept_lexicons: summary.concept_lexicons,
-        nonverbal_cues: summary.nonverbal_cues
-      });
-      setSelectedMetrics(summary.metric_ids);
-      setDisfluencyText(summary.disfluency_tokens.join(", "));
-      applyPackPrefixes(summary.speaker_prefixes);
+      activateSkillPack(summary, payload);
       setSkillPackStatus(`Loaded ${file.name}`);
+      setDraftWarnings([]);
       setError("");
     } catch (err) {
       setSkillPackStatus("");
       setError(err instanceof Error ? err.message : "Could not load skill pack");
     }
+  }
+
+  function activateSkillPack(
+    summary: {
+      id: string;
+      name: string;
+      version: string;
+      metric_ids: string[];
+      disfluency_tokens: string[];
+      speaker_prefixes: Record<string, string[]>;
+      concept_lexicons: Record<string, string[]>;
+      nonverbal_cues: Record<string, string[]>;
+    },
+    payload: unknown
+  ) {
+    setSkillPackPayload(payload);
+    setSkillPack({
+      id: summary.id,
+      name: summary.name,
+      version: summary.version,
+      metrics: summary.metric_ids,
+      disfluency_tokens: summary.disfluency_tokens,
+      speaker_prefixes: summary.speaker_prefixes,
+      concept_lexicons: summary.concept_lexicons,
+      nonverbal_cues: summary.nonverbal_cues
+    });
+    setSelectedMetrics(summary.metric_ids);
+    setDisfluencyText(summary.disfluency_tokens.join(", "));
+    applyPackPrefixes(summary.speaker_prefixes);
   }
 
   function applyPackPrefixes(prefixes?: Record<string, string[]>) {
@@ -234,7 +280,7 @@ export function App() {
   }
 
   return (
-    <main className="min-h-screen bg-[#f6f5ef] text-[#171717]">
+    <main className="app-shell min-h-screen text-[#171717]">
       <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-5 lg:px-8">
         <header className="grid gap-5 border-b border-[#d9d4c5] pb-5 lg:grid-cols-[1fr_360px]">
           <div>
@@ -352,7 +398,39 @@ export function App() {
               </div>
             </Panel>
 
-            <Panel title="2. Study Skill Pack" icon={<Braces size={18} />}>
+            <Panel title="2. Skill Pack Studio" icon={<Sparkles size={18} />}>
+              <div className="studio-block">
+                <label className="field-label mt-0">
+                  Study brief
+                  <textarea
+                    className="field-input min-h-28 resize-y"
+                    value={studyBrief}
+                    onChange={(event) => setStudyBrief(event.target.value)}
+                  />
+                </label>
+                <label className="field-label">
+                  Draft name
+                  <input
+                    className="field-input"
+                    value={draftName}
+                    onChange={(event) => setDraftName(event.target.value)}
+                  />
+                </label>
+                <button className="secondary-button" type="button" onClick={draftPackFromBrief}>
+                  <Sparkles size={16} />
+                  Draft skill pack
+                </button>
+                {draftWarnings.length ? (
+                  <div className="mt-3 space-y-2">
+                    {draftWarnings.map((warning) => (
+                      <div key={warning} className="diagnostic-warning">
+                        <AlertTriangle size={16} />
+                        <span>{warning}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
               <div className="skill-pack-header">
                 <div className="min-w-0">
                   <div className="truncate text-sm font-semibold text-[#171717]">
@@ -361,11 +439,11 @@ export function App() {
                   <div className="mt-1 text-xs text-[#756f64]">
                     {skillPack
                       ? `${skillPack.id} · v${skillPack.version}`
-                      : "Upload or paste a JSON pack"}
+                      : "Upload or paste JSON/YAML"}
                   </div>
                 </div>
                 <label className="json-upload-button">
-                  JSON
+                  JSON/YAML
                   <input
                     className="sr-only"
                     type="file"
@@ -381,6 +459,7 @@ export function App() {
                 spellCheck={false}
               />
               <button className="secondary-button" type="button" onClick={validateCurrentSkillPack}>
+                <Braces size={16} />
                 Validate + activate skill pack
               </button>
               {skillPackStatus ? <p className="success-text">{skillPackStatus}</p> : null}

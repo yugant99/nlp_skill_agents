@@ -47,6 +47,12 @@ export type SkillPackSummary = {
   nonverbal_cues: Record<string, string[]>;
 };
 
+export type SkillPackDraftResponse = {
+  payload: SkillPack;
+  skill_pack: SkillPackSummary;
+  warnings: string[];
+};
+
 export type SkillPackProvenance = {
   id: string;
   name: string;

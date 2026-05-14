@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from backend.analysis.diagnostics import analyze_transcript_quality
 from backend.analysis.pipeline import execute_analysis
+from backend.analysis.skill_builder import draft_skill_pack_from_brief
 from backend.analysis.skill_packs import (
     SkillPack,
     SkillPackValidationError,
@@ -46,6 +47,11 @@ class SkillPackTextRequest(BaseModel):
     content: str = Field(min_length=1)
 
 
+class SkillPackDraftRequest(BaseModel):
+    brief: str = Field(min_length=1)
+    name: str | None = Field(default=None)
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "storage": "local"}
@@ -76,6 +82,17 @@ def validate_skill_pack_text(request: SkillPackTextRequest) -> dict:
         "valid": True,
         "skill_pack": _skill_pack_summary(pack),
         "payload": payload,
+    }
+
+
+@app.post("/api/skill-packs/draft")
+def draft_skill_pack(request: SkillPackDraftRequest) -> dict:
+    draft = draft_skill_pack_from_brief(request.brief, request.name)
+    pack = parse_skill_pack(draft.payload)
+    return {
+        "payload": draft.payload,
+        "skill_pack": _skill_pack_summary(pack),
+        "warnings": draft.warnings,
     }
 
 

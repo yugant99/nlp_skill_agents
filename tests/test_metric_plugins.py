@@ -72,6 +72,51 @@ def test_interaction_dynamics_plugin_runs_through_pipeline() -> None:
     ]
 
 
+def test_care_plan_commitment_plugin_counts_future_care_actions() -> None:
+    run = execute_analysis(
+        "CG: I will call the clinic tomorrow.\n"
+        "P: That helps.\n"
+        "CG: We can schedule your medication review next week.\n"
+        "P: I will try to walk today.",
+        StudyConfig(
+            speaker_prefixes={"caregiver": ["CG"], "participant": ["P"]},
+            selected_metrics=["care_plan_commitment_metrics"],
+        ),
+        source_filename="care-plan.txt",
+    )
+
+    assert run.results[0].metric_id == "care_plan_commitment_metrics"
+    assert run.results[0].rows == [
+        {
+            "speaker": "caregiver",
+            "commitment_count": 2,
+            "turn_count": 2,
+            "commitment_rate": 1.0,
+            "examples": [
+                "I will call the clinic tomorrow.",
+                "We can schedule your medication review next week.",
+            ],
+        },
+        {
+            "speaker": "participant",
+            "commitment_count": 0,
+            "turn_count": 2,
+            "commitment_rate": 0.0,
+            "examples": [],
+        },
+        {
+            "speaker": "total",
+            "commitment_count": 2,
+            "turn_count": 4,
+            "commitment_rate": 0.5,
+            "examples": [
+                "I will call the clinic tomorrow.",
+                "We can schedule your medication review next week.",
+            ],
+        },
+    ]
+
+
 def test_skill_pack_validation_accepts_metric_plugins() -> None:
     pack = parse_skill_pack(
         {
@@ -95,3 +140,4 @@ def test_metric_plugin_catalog_endpoint() -> None:
     assert response.status_code == 200
     plugin_ids = [plugin["id"] for plugin in response.json()["plugins"]]
     assert "interaction_dynamics_metrics" in plugin_ids
+    assert "care_plan_commitment_metrics" in plugin_ids

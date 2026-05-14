@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from backend.analysis.metrics import (
     calculate_base_metrics,
+    calculate_care_plan_commitment_metrics,
     calculate_concept_count_metrics,
     calculate_cue_inventory_metrics,
     calculate_disfluency_metrics,
@@ -119,6 +120,20 @@ def _register_builtin_metric_plugins() -> None:
                 "longest_turn_words": "integer",
             },
             calculate=calculate_interaction_dynamics_metrics,
+        ),
+        MetricPlugin(
+            id="care_plan_commitment_metrics",
+            label="Care Plan Commitment Metrics",
+            description="Caregiver future-action commitments for healthcare coordination.",
+            category="Healthcare interaction",
+            output_schema={
+                "speaker": "string",
+                "commitment_count": "integer",
+                "turn_count": "integer",
+                "commitment_rate": "number",
+                "examples": "string[]",
+            },
+            calculate=calculate_care_plan_commitment_metrics,
         ),
     ]
     for plugin in plugins:

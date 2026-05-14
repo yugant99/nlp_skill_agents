@@ -209,6 +209,33 @@ def calculate_interaction_dynamics_metrics(transcript: Transcript) -> MetricResu
     )
 
 
+def calculate_care_plan_commitment_metrics(transcript: Transcript) -> MetricResult:
+    rows = [
+        _care_plan_commitment_row_for_role(transcript.turns, role)
+        for role in _ordered_roles(transcript)
+    ]
+    total_turns = sum(row["turn_count"] for row in rows)
+    total_commitments = sum(row["commitment_count"] for row in rows)
+    return MetricResult(
+        metric_id="care_plan_commitment_metrics",
+        label="Care Plan Commitment Metrics",
+        rows=[
+            *rows,
+            {
+                "speaker": "total",
+                "commitment_count": total_commitments,
+                "turn_count": total_turns,
+                "commitment_rate": round(total_commitments / total_turns, 3)
+                if total_turns
+                else 0.0,
+                "examples": _unique_examples(
+                    example for row in rows for example in row["examples"]
+                ),
+            },
+        ],
+    )
+
+
 def _base_row_for_role(
     turns: list[Turn],
     role: str,
@@ -235,6 +262,31 @@ def _ordered_roles(transcript: Transcript) -> list[str]:
     observed_roles = [turn.role for turn in transcript.turns]
     roles = _unique_examples([*configured_roles, *observed_roles])
     return roles or ["caregiver", "participant"]
+
+
+def _care_plan_commitment_row_for_role(
+    turns: list[Turn],
+    role: str,
+) -> dict[str, Any]:
+    role_turns = [turn for turn in turns if turn.role == role]
+    examples = [
+        turn.text.strip()
+        for turn in role_turns
+        if role == "caregiver" and _looks_like_care_plan_commitment(turn.text)
+    ]
+    turn_count = len(role_turns)
+    return {
+        "speaker": role,
+        "commitment_count": len(examples),
+        "turn_count": turn_count,
+        "commitment_rate": round(len(examples) / turn_count, 3) if turn_count else 0.0,
+        "examples": examples[:5],
+    }
+
+
+def _looks_like_care_plan_commitment(text: str) -> bool:
+    normalized = _remove_nonverbals(text).lower()
+    return any(pattern.search(normalized) for pattern in _CARE_PLAN_PATTERNS)
 
 
 def _interaction_row_for_role(
@@ -397,3 +449,15 @@ _FUNCTION_WORDS = {
     "with",
     "you",
 }
+
+
+_CARE_PLAN_PATTERNS = [
+    re.compile(r"\b(i|we)\s+(will|can|could|should)\s+\w+"),
+    re.compile(r"\b(i'm|we're)\s+going\s+to\s+\w+"),
+    re.compile(r"\b(i|we)\s+plan\s+to\s+\w+"),
+    re.compile(r"\b(let's|let us)\s+\w+"),
+    re.compile(
+        r"\b(schedule|call|contact|refer|arrange|coordinate|review|order|send|"
+        r"follow\s+up|check\s+in)\b"
+    ),
+]

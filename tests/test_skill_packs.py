@@ -43,6 +43,7 @@ def test_builtin_interaction_dynamics_plugin_template_loads() -> None:
     assert [metric.id for metric in pack.metrics] == [
         "base_metrics",
         "interaction_dynamics_metrics",
+        "care_plan_commitment_metrics",
         "concept_count_metrics",
     ]
     assert pack.speaker_prefixes["caregiver"] == ["CG", "Caregiver"]

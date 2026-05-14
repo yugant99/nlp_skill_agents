@@ -271,6 +271,15 @@ def create_study_text_batch(study_id: str, request: StudyTextBatchRequest) -> di
     return _study_batch_payload(batch)
 
 
+@app.post("/api/studies/{study_id}/bundle")
+def export_study_bundle(study_id: str) -> dict:
+    try:
+        bundle = StudyWorkspaceStore(_local_data_root()).export_study_bundle(study_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    return {"bundle": _study_bundle_payload(bundle)}
+
+
 @app.post("/api/skill-packs/validate")
 def validate_skill_pack(payload: dict) -> dict:
     try:
@@ -527,6 +536,16 @@ def _study_batch_payload(batch) -> dict:
         },
         "aggregate_results_json": str(aggregate_results_json),
         "exports": exports,
+    }
+
+
+def _study_bundle_payload(bundle) -> dict:
+    return {
+        "study_id": bundle.study_id,
+        "bundle_id": bundle.bundle_id,
+        "bundle_dir": str(bundle.bundle_dir),
+        "manifest_path": str(bundle.manifest_path),
+        "created_at": bundle.created_at,
     }
 
 

@@ -468,3 +468,10 @@ def test_study_workspace_batch_api_creates_aggregate_outputs(tmp_path, monkeypat
     list_response = client.get("/api/studies")
     assert list_response.status_code == 200
     assert list_response.json()["studies"][0]["id"] == "question-study"
+
+    bundle_response = client.post(f"/api/studies/{study_id}/bundle")
+
+    assert bundle_response.status_code == 200
+    bundle_payload = bundle_response.json()["bundle"]
+    assert bundle_payload["study_id"] == "question-study"
+    assert bundle_payload["manifest_path"].endswith("manifest.json")

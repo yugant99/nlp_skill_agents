@@ -34,6 +34,7 @@ Each checkpoint should record:
 - [2026-05-14 V4 study workspace backend](2026-05-14-v4-study-workspace-backend.md)
 - [2026-05-14 V4 study workspace UI](2026-05-14-v4-study-workspace-ui.md)
 - [2026-05-14 V5 agent job evidence](2026-05-14-v5-agent-job-evidence.md)
+- [2026-05-14 V6 reproducibility bundles](2026-05-14-v6-reproducibility-bundles.md)
 
 ## Completion Bar
 

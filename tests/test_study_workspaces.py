@@ -107,3 +107,35 @@ def test_study_workspace_records_batch_failures_without_stopping(tmp_path: Path)
         "bad.txt",
         "also_bad.txt",
     ]
+
+
+def test_study_workspace_exports_reproducibility_bundle(tmp_path: Path) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Bundle Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "bundle_pack",
+            "name": "Bundle Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "one.txt", "content": "CG: Hello.\nP: Hi."}],
+    )
+
+    bundle = store.export_study_bundle(study.id)
+
+    assert bundle.study_id == "bundle-study"
+    assert bundle.manifest_path.exists()
+    manifest = json.loads(bundle.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["study"]["id"] == "bundle-study"
+    assert manifest["bundle_id"].startswith("bundle-study-")
+    assert manifest["files"]
+    assert all(file_record["sha256"] for file_record in manifest["files"])
+    assert "studies/bundle-study/study.json" in [
+        file_record["relative_path"] for file_record in manifest["files"]
+    ]

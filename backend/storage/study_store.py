@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
@@ -39,6 +40,15 @@ class StudyBatchRun:
     run_count: int
     failure_count: int
     aggregate_dir: Path
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+@dataclass(frozen=True)
+class StudyBundleExport:
+    study_id: str
+    bundle_id: str
+    bundle_dir: Path
+    manifest_path: Path
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
@@ -188,6 +198,32 @@ class StudyWorkspaceStore:
         )
         return batch
 
+    def export_study_bundle(self, study_id: str) -> StudyBundleExport:
+        self._require_study(study_id)
+        bundle_id = f"{study_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
+        bundle_dir = self.root / "bundles" / bundle_id
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        study_dir = self._study_dir(study_id)
+        study_payload = json.loads((study_dir / "study.json").read_text(encoding="utf-8"))
+        manifest = {
+            "bundle_id": bundle_id,
+            "study": study_payload,
+            "created_at": datetime.now(UTC).isoformat(),
+            "files": [
+                _file_record(path, self.root)
+                for path in sorted(study_dir.rglob("*"))
+                if path.is_file()
+            ],
+        }
+        manifest_path = bundle_dir / "manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        return StudyBundleExport(
+            study_id=study_id,
+            bundle_id=bundle_id,
+            bundle_dir=bundle_dir,
+            manifest_path=manifest_path,
+        )
+
     def _study_dir(self, study_id: str) -> Path:
         return self.studies_dir / study_id
 
@@ -295,3 +331,11 @@ def _ordered_fieldnames(rows: list[dict[str, Any]]) -> list[str]:
             if key not in fieldnames:
                 fieldnames.append(key)
     return fieldnames
+
+
+def _file_record(path: Path, root: Path) -> dict[str, str | int]:
+    return {
+        "relative_path": path.relative_to(root).as_posix(),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "bytes": path.stat().st_size,
+    }

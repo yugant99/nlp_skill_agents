@@ -68,6 +68,34 @@ def test_load_skill_pack_by_file_path_preserves_output_schema(tmp_path: Path) ->
     }
 
 
+def test_load_skill_pack_accepts_yaml_files(tmp_path: Path) -> None:
+    pack_path = tmp_path / "custom_pack.yaml"
+    pack_path.write_text(
+        """
+id: yaml_pack
+name: YAML Pack
+version: 1.0.0
+metrics:
+  - concept_count_metrics
+concept_lexicons:
+  pain:
+    - pain
+    - hurts
+nonverbal_cues:
+  pause:
+    - pause
+""".strip(),
+        encoding="utf-8",
+    )
+
+    pack = load_skill_pack(pack_path)
+
+    assert pack.id == "yaml_pack"
+    assert [metric.id for metric in pack.metrics] == ["concept_count_metrics"]
+    assert pack.concept_lexicons == {"pain": ["pain", "hurts"]}
+    assert pack.nonverbal_cues == {"pause": ["pause"]}
+
+
 def test_load_skill_pack_supports_dynamic_research_definitions(tmp_path: Path) -> None:
     pack_path = tmp_path / "dynamic_pack.json"
     pack_path.write_text(

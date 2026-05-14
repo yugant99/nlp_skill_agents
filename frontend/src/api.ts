@@ -30,6 +30,31 @@ export async function validateSkillPack(payload: unknown): Promise<SkillPackSumm
   return body.skill_pack;
 }
 
+export async function validateSkillPackText(params: {
+  filename: string;
+  content: string;
+}): Promise<{ summary: SkillPackSummary; payload: unknown }> {
+  const response = await fetch(`${API_BASE}/api/skill-packs/validate-text`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      filename: params.filename,
+      content: params.content
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Skill pack validation failed");
+  }
+  const body = (await response.json()) as {
+    skill_pack: SkillPackSummary;
+    payload: unknown;
+  };
+  return { summary: body.skill_pack, payload: body.payload };
+}
+
 export async function createAnalysisRun(params: {
   file: File;
   participantId: string;

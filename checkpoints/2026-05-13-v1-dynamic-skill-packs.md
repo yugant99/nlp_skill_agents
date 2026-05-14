@@ -18,6 +18,7 @@ Move the MVP from mostly hardcoded metrics toward researcher-defined study skill
 - Embedded skill-pack execution through text and file run configs.
 - Skill-pack provenance in API responses and local `results.json`.
 - Frontend JSON skill-pack upload/edit/validate flow.
+- Frontend YAML skill-pack upload/validate flow.
 - Frontend dynamic metric labels and run summaries.
 - Built-in dynamic templates:
   - caregiver-participant healthcare
@@ -37,6 +38,5 @@ Feature slices were committed and pushed to `master` as they passed verification
 
 ## Follow-Up Risks
 
-- YAML upload is not implemented yet; V1 currently uses JSON.
 - UI supports the common caregiver/participant prefix controls; arbitrary role editing should be expanded in V2.
 - Concept matching is exact token matching, not stemming or semantic matching.

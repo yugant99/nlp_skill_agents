@@ -19,6 +19,7 @@ from backend.analysis.skill_packs import (
     SkillPackValidationError,
     load_skill_pack,
     parse_skill_pack,
+    parse_skill_pack_document,
 )
 from backend.analysis.transcripts import StudyConfig, extract_transcript_text
 from backend.storage.local_store import LocalRunStore, StoredRun
@@ -40,6 +41,11 @@ class TextRunRequest(BaseModel):
     config: dict = Field(default_factory=dict)
 
 
+class SkillPackTextRequest(BaseModel):
+    filename: str = Field(default="skill_pack.json", min_length=1)
+    content: str = Field(min_length=1)
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "storage": "local"}
@@ -57,6 +63,20 @@ def validate_skill_pack(payload: dict) -> dict:
     except SkillPackValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"valid": True, "skill_pack": _skill_pack_summary(pack)}
+
+
+@app.post("/api/skill-packs/validate-text")
+def validate_skill_pack_text(request: SkillPackTextRequest) -> dict:
+    try:
+        payload = parse_skill_pack_document(request.content, request.filename)
+        pack = parse_skill_pack(payload)
+    except (json.JSONDecodeError, SkillPackValidationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "valid": True,
+        "skill_pack": _skill_pack_summary(pack),
+        "payload": payload,
+    }
 
 
 @app.post("/api/runs")

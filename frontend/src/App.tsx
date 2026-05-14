@@ -19,7 +19,8 @@ import {
   createTextAnalysisRun,
   listRuns,
   loadSkillPack,
-  validateSkillPack
+  validateSkillPack,
+  validateSkillPackText
 } from "./api";
 import type { MetricId, MetricResult, RunHistoryItem, RunResponse, SkillPack } from "./types";
 
@@ -136,9 +137,23 @@ export function App() {
 
   async function validateCurrentSkillPack() {
     try {
-      const parsed = JSON.parse(skillPackJson);
-      const summary = await validateSkillPack(parsed);
-      setSkillPackPayload(parsed);
+      let payload: unknown;
+      let summary;
+      try {
+        payload = JSON.parse(skillPackJson);
+        summary = await validateSkillPack(payload);
+      } catch (jsonError) {
+        if (!(jsonError instanceof SyntaxError)) {
+          throw jsonError;
+        }
+        const validated = await validateSkillPackText({
+          filename: "pasted_skill_pack.yaml",
+          content: skillPackJson
+        });
+        payload = validated.payload;
+        summary = validated.summary;
+      }
+      setSkillPackPayload(payload);
       setSkillPack({
         id: summary.id,
         name: summary.name,
@@ -167,9 +182,11 @@ export function App() {
     try {
       const text = await file.text();
       setSkillPackJson(text);
-      const parsed = JSON.parse(text);
-      const summary = await validateSkillPack(parsed);
-      setSkillPackPayload(parsed);
+      const { summary, payload } = await validateSkillPackText({
+        filename: file.name,
+        content: text
+      });
+      setSkillPackPayload(payload);
       setSkillPack({
         id: summary.id,
         name: summary.name,
@@ -352,7 +369,7 @@ export function App() {
                   <input
                     className="sr-only"
                     type="file"
-                    accept=".json,application/json"
+                    accept=".json,.yaml,.yml,application/json,text/yaml,application/x-yaml"
                     onChange={(event) => void loadSkillPackFile(event.target.files?.[0] ?? null)}
                   />
                 </label>

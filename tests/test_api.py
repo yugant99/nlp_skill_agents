@@ -88,6 +88,37 @@ def test_validate_dynamic_skill_pack_endpoint_returns_clear_errors() -> None:
     assert "not_registered" in response.json()["detail"]
 
 
+def test_validate_skill_pack_text_endpoint_accepts_yaml() -> None:
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/skill-packs/validate-text",
+        json={
+            "filename": "study.yaml",
+            "content": """
+id: yaml_pack
+name: YAML Pack
+version: 1.0.0
+metrics:
+  - concept_count_metrics
+concept_lexicons:
+  pain:
+    - pain
+    - hurts
+nonverbal_cues:
+  pause:
+    - pause
+""".strip(),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["skill_pack"]["id"] == "yaml_pack"
+    assert payload["payload"]["metrics"] == ["concept_count_metrics"]
+    assert payload["payload"]["concept_lexicons"] == {"pain": ["pain", "hurts"]}
+
+
 def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)

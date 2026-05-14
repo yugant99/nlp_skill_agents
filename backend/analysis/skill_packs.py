@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 
 class SkillPackValidationError(ValueError):
     """Raised when a declarative skill pack is missing required or valid data."""
@@ -36,13 +38,24 @@ class SkillPack:
 def load_skill_pack(identifier: str | Path, skill_pack_dir: Path | None = None) -> SkillPack:
     path = _resolve_skill_pack_path(identifier, skill_pack_dir)
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = parse_skill_pack_document(
+            path.read_text(encoding="utf-8"),
+            source_name=path.name,
+        )
     except FileNotFoundError as exc:
         raise SkillPackValidationError(f"Skill pack not found: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise SkillPackValidationError(f"Skill pack must be valid JSON: {path}") from exc
+    except (json.JSONDecodeError, yaml.YAMLError) as exc:
+        raise SkillPackValidationError(
+            f"Skill pack must be valid JSON or YAML: {path}"
+        ) from exc
 
     return parse_skill_pack(payload, path=path)
+
+
+def parse_skill_pack_document(content: str, source_name: str = "skill_pack.json") -> Any:
+    if source_name.endswith((".yaml", ".yml")):
+        return yaml.safe_load(content)
+    return json.loads(content)
 
 
 def parse_skill_pack(payload: Any, path: Path | None = None) -> SkillPack:

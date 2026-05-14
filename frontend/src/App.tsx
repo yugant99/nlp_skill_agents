@@ -12,8 +12,8 @@ import {
   TableProperties
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { apiUrl, createAnalysisRun, loadSkillPack } from "./api";
-import type { MetricId, MetricResult, RunResponse, SkillPack } from "./types";
+import { apiUrl, createAnalysisRun, listRuns, loadSkillPack } from "./api";
+import type { MetricId, MetricResult, RunHistoryItem, RunResponse, SkillPack } from "./types";
 
 const metricLabels: Record<MetricId, string> = {
   base_metrics: "Base metrics",
@@ -46,6 +46,7 @@ export function App() {
   ]);
   const [disfluencyText, setDisfluencyText] = useState("");
   const [run, setRun] = useState<RunResponse | null>(null);
+  const [runHistory, setRunHistory] = useState<RunHistoryItem[]>([]);
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
@@ -56,6 +57,9 @@ export function App() {
         setDisfluencyText(pack.disfluency_tokens.join(", "));
       })
       .catch((err: Error) => setError(err.message));
+    listRuns()
+      .then(setRunHistory)
+      .catch(() => setRunHistory([]));
   }, []);
 
   const disfluencyTokens = useMemo(
@@ -86,6 +90,7 @@ export function App() {
         disfluencyTokens
       });
       setRun(response);
+      setRunHistory(await listRuns());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Analysis failed");
     } finally {
@@ -256,10 +261,43 @@ export function App() {
                 }
               />
             ))}
+            <RecentRunsPanel runs={runHistory} />
           </section>
         </section>
       </div>
     </main>
+  );
+}
+
+function RecentRunsPanel({ runs }: { runs: RunHistoryItem[] }) {
+  return (
+    <Panel title="4. Recent Local Runs" icon={<Database size={18} />}>
+      {runs.length ? (
+        <div className="recent-runs-list">
+          {runs.slice(0, 5).map((item) => (
+            <div key={item.run_id} className="recent-run-row">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-[#171717]">
+                  {item.source_filename}
+                </div>
+                <div className="mt-1 font-mono text-xs text-[#756f64]">
+                  {item.run_id.slice(0, 12)} · {item.metric_count} metric
+                  {item.metric_count === 1 ? "" : "s"}
+                </div>
+              </div>
+              <div className="text-right text-xs text-[#756f64]">
+                {new Date(item.created_at).toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit"
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-sm text-[#676157]">No local runs recorded yet.</div>
+      )}
+    </Panel>
   );
 }
 

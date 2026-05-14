@@ -80,6 +80,14 @@
     @apply flex items-start gap-2 rounded-md border border-[#e0aaa1] bg-[#fff0ee] px-3 py-2 text-sm text-[#8a2d24];
   }
 
+  .recent-runs-list {
+    @apply divide-y divide-[#e4ded0] overflow-hidden rounded-md border border-[#d9d4c5];
+  }
+
+  .recent-run-row {
+    @apply grid grid-cols-[1fr_auto] gap-3 bg-[#fffdf8] px-3 py-3;
+  }
+
   .export-link {
     @apply inline-flex items-center gap-2 rounded-md border border-[#cfc8b8] bg-[#f7f4ea] px-3 py-2 text-sm font-semibold text-[#253735] transition hover:border-[#47615d] hover:bg-[#ece8dc];
   }

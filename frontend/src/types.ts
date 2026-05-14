@@ -36,6 +36,15 @@ export type ExportLink = {
   download_url: string;
 };
 
+export type RunHistoryItem = {
+  run_id: string;
+  source_filename: string;
+  created_at: string;
+  metric_count: number;
+  results_json: string;
+  export_dir: string;
+};
+
 export type TranscriptDiagnostics = {
   turn_counts: Record<string, number>;
   warnings: DiagnosticWarning[];

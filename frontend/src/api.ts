@@ -1,4 +1,4 @@
-import type { MetricId, RunResponse, SkillPack } from "./types";
+import type { MetricId, RunHistoryItem, RunResponse, SkillPack } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
@@ -45,4 +45,13 @@ export async function createAnalysisRun(params: {
     throw new Error(message || "Analysis run failed");
   }
   return response.json();
+}
+
+export async function listRuns(): Promise<RunHistoryItem[]> {
+  const response = await fetch(`${API_BASE}/api/runs`);
+  if (!response.ok) {
+    throw new Error("Could not load local run history");
+  }
+  const payload = (await response.json()) as { runs: RunHistoryItem[] };
+  return payload.runs;
 }

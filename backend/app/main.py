@@ -43,6 +43,7 @@ from backend.extensions.plugin_requests import (
 from backend.llm.openrouter import OpenRouterError
 from backend.storage.local_store import LocalRunStore, StoredRun
 from backend.storage.audit_log import AuditLogStore
+from backend.storage.deployment_profiles import check_deployment_profile
 from backend.storage.library_store import LibraryStore
 from backend.storage.study_store import StudyWorkspaceStore
 
@@ -142,6 +143,11 @@ def list_metric_plugins() -> dict:
 @app.get("/api/audit-events")
 def list_audit_events(limit: int = 100) -> dict:
     return {"events": AuditLogStore(_local_data_root()).list_events(limit=limit)}
+
+
+@app.get("/api/deployment-profile/{profile}")
+def get_deployment_profile(profile: str) -> dict:
+    return check_deployment_profile(profile)
 
 
 @app.get("/api/library")

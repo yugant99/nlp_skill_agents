@@ -37,6 +37,7 @@ Each checkpoint should record:
 - [2026-05-14 V6 reproducibility bundles](2026-05-14-v6-reproducibility-bundles.md)
 - [2026-05-14 V6 audit log](2026-05-14-v6-audit-log.md)
 - [2026-05-14 V6 approved library](2026-05-14-v6-approved-library.md)
+- [2026-05-14 V6 deployment profiles](2026-05-14-v6-deployment-profiles.md)
 
 ## Completion Bar
 

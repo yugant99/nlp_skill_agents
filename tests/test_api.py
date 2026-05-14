@@ -518,3 +518,18 @@ def test_library_approval_api_records_entries_and_audit(tmp_path, monkeypatch) -
     assert audit_response.json()["events"][-1]["event_type"] == (
         "library.skill_pack.approved"
     )
+
+
+def test_deployment_profile_endpoint_reports_secure_offline_status(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    client = TestClient(app)
+
+    response = client.get("/api/deployment-profile/secure-offline")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+    assert response.json()["checks"][1]["id"] == "network_llm_disabled"

@@ -316,9 +316,15 @@ export function App() {
   }
 
   function applyParticipantPrefixTemplate(nextParticipantId: string) {
+    const previousCaregiverPrefix = `${participantId}_c`;
+    const previousParticipantPrefix = `${participantId}_p`;
     setParticipantId(nextParticipantId);
-    setCaregiverPrefix(`${nextParticipantId}_c`);
-    setParticipantPrefix(`${nextParticipantId}_p`);
+    if (!caregiverPrefix || caregiverPrefix === previousCaregiverPrefix) {
+      setCaregiverPrefix(`${nextParticipantId}_c`);
+    }
+    if (!participantPrefix || participantPrefix === previousParticipantPrefix) {
+      setParticipantPrefix(`${nextParticipantId}_p`);
+    }
   }
 
   return (

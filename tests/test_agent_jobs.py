@@ -53,6 +53,7 @@ def test_create_metric_plugin_build_job_from_request(tmp_path: Path) -> None:
     runbook_path = tmp_path / "agent_jobs" / job.id / "runbook.md"
     runbook = runbook_path.read_text(encoding="utf-8")
     assert "# Agent Job Runbook: build_empathy_response_metric" in runbook
+    assert "codex_internal_skills/metric-plugin-builder/SKILL.md" in runbook
     assert (
         "git worktree add ../nlp_skill_agents-build_empathy_response_metric "
         "-b codex/plugin-empathy-response-metric"

@@ -136,6 +136,13 @@ Read the generated implementation prompt before editing:
 cat {job.prompt_path}
 ```
 
+## Internal Skill
+Before implementation, read the project-local builder skill:
+
+```bash
+cat codex_internal_skills/metric-plugin-builder/SKILL.md
+```
+
 ## Allowed Files
 Keep the change scoped to these paths unless the prompt proves a wider edit is required:
 

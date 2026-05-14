@@ -28,6 +28,7 @@ Each checkpoint should record:
 - [2026-05-13 V3 build job artifacts](2026-05-13-v3-build-job-artifacts.md)
 - [2026-05-13 V3 agent job runbooks](2026-05-13-v3-agent-job-runbooks.md)
 - [2026-05-13 V3 agent job lifecycle](2026-05-13-v3-agent-job-lifecycle.md)
+- [2026-05-13 V3 metric plugin builder skill](2026-05-13-v3-metric-plugin-builder-skill.md)
 
 ## Completion Bar
 

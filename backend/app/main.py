@@ -30,6 +30,7 @@ from backend.analysis.skill_packs import (
 from backend.analysis.transcripts import StudyConfig, extract_transcript_text
 from backend.extensions.agent_jobs import (
     AgentJobStore,
+    agent_job_evidence_to_payload,
     agent_job_to_payload,
     create_metric_plugin_build_job,
 )
@@ -91,6 +92,13 @@ class PluginRequestCreateRequest(BaseModel):
 
 class AgentJobStatusUpdateRequest(BaseModel):
     status: str = Field(min_length=1)
+
+
+class AgentJobEvidenceCreateRequest(BaseModel):
+    gate: str = Field(min_length=1)
+    command: str = Field(default="")
+    status: str = Field(min_length=1)
+    summary: str = Field(default="")
 
 
 class StudyCreateRequest(BaseModel):
@@ -190,6 +198,32 @@ def update_agent_job_status(job_id: str, request: AgentJobStatusUpdateRequest) -
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"job": agent_job_to_payload(job)}
+
+
+@app.post("/api/agent-jobs/{job_id}/evidence")
+def add_agent_job_evidence(job_id: str, request: AgentJobEvidenceCreateRequest) -> dict:
+    try:
+        evidence = AgentJobStore(_local_data_root()).add_evidence(
+            job_id,
+            request.model_dump(),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Agent job not found") from exc
+    return {"evidence": agent_job_evidence_to_payload(evidence)}
+
+
+@app.get("/api/agent-jobs/{job_id}/evidence")
+def list_agent_job_evidence(job_id: str) -> dict:
+    try:
+        evidence = AgentJobStore(_local_data_root()).list_evidence(job_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Agent job not found") from exc
+    return {
+        "evidence": [
+            agent_job_evidence_to_payload(item)
+            for item in evidence
+        ]
+    }
 
 
 @app.post("/api/studies")

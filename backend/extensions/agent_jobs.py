@@ -33,6 +33,17 @@ class StoredAgentJob:
     runbook_path: Path
 
 
+@dataclass(frozen=True)
+class AgentJobEvidence:
+    job_id: str
+    gate: str
+    command: str
+    status: str
+    summary: str
+    artifact_path: str
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
 class AgentJobStore:
     def __init__(self, root: Path | str = "local_data") -> None:
         self.root = Path(root)
@@ -74,6 +85,41 @@ class AgentJobStore:
         self.persist(updated)
         return updated
 
+    def add_evidence(self, job_id: str, payload: dict[str, Any]) -> AgentJobEvidence:
+        self._require_job(job_id)
+        gate = _safe_gate_name(str(payload.get("gate") or "verification"))
+        evidence_dir = self.jobs_dir / job_id / "evidence"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = evidence_dir / f"{gate}.json"
+        evidence = AgentJobEvidence(
+            job_id=job_id,
+            gate=gate,
+            command=str(payload.get("command") or ""),
+            status=str(payload.get("status") or "unknown"),
+            summary=str(payload.get("summary") or ""),
+            artifact_path=str(artifact_path),
+        )
+        artifact_path.write_text(
+            json.dumps(asdict(evidence), indent=2),
+            encoding="utf-8",
+        )
+        return evidence
+
+    def list_evidence(self, job_id: str) -> list[AgentJobEvidence]:
+        self._require_job(job_id)
+        evidence_dir = self.jobs_dir / job_id / "evidence"
+        if not evidence_dir.exists():
+            return []
+        evidence = [
+            AgentJobEvidence(**json.loads(path.read_text(encoding="utf-8")))
+            for path in evidence_dir.glob("*.json")
+        ]
+        return sorted(evidence, key=lambda item: item.created_at, reverse=True)
+
+    def _require_job(self, job_id: str) -> None:
+        if not (self.jobs_dir / f"{job_id}.json").exists():
+            raise FileNotFoundError(job_id)
+
 
 def create_metric_plugin_build_job(
     request: PluginRequest,
@@ -110,6 +156,10 @@ def create_metric_plugin_build_job(
 
 def agent_job_to_payload(job: AgentJob) -> dict[str, Any]:
     return asdict(job)
+
+
+def agent_job_evidence_to_payload(evidence: AgentJobEvidence) -> dict[str, Any]:
+    return asdict(evidence)
 
 
 def build_agent_job_runbook(job: AgentJob) -> str:
@@ -173,3 +223,11 @@ def agent_job_from_payload(payload: dict[str, Any]) -> AgentJob:
         ],
         created_at=str(payload.get("created_at") or datetime.now(UTC).isoformat()),
     )
+
+
+def _safe_gate_name(value: str) -> str:
+    normalized = "".join(
+        character if character.isalnum() or character in {"_", "-"} else "_"
+        for character in value.strip().lower()
+    ).strip("_")
+    return normalized or "verification"

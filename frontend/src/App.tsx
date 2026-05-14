@@ -18,6 +18,7 @@ import {
   apiUrl,
   addStudySkillPackVersion,
   createAnalysisRun,
+  createAgentJobEvidence,
   createPluginBuildJob,
   createPluginRequest,
   createStudy,
@@ -442,6 +443,23 @@ export function App() {
     }
   }
 
+  async function recordPluginJobEvidence(jobId: string) {
+    try {
+      setError("");
+      const evidence = await createAgentJobEvidence({
+        jobId,
+        gate: "ui_review",
+        command: "manual workbench review",
+        status: "passed",
+        summary: "Recorded from the Agent jobs panel."
+      });
+      setPluginJobStatus(`Evidence recorded: ${evidence.artifact_path}`);
+    } catch (err) {
+      setPluginJobStatus("");
+      setError(err instanceof Error ? err.message : "Could not record evidence");
+    }
+  }
+
   async function runStudyWorkspaceBatch() {
     if (!skillPackPayload) {
       setError("Activate a skill pack before running a study batch.");
@@ -760,6 +778,7 @@ export function App() {
                 onSubmitRequest={submitPluginRequest}
                 onQueueBuildJob={queuePluginBuildJob}
                 onUpdateJobStatus={updatePluginJobStatus}
+                onRecordEvidence={recordPluginJobEvidence}
               />
               {error ? <p className="error-text">{error}</p> : null}
             </Panel>
@@ -966,7 +985,8 @@ function PluginCatalog({
   onRequestExpectedChange,
   onSubmitRequest,
   onQueueBuildJob,
-  onUpdateJobStatus
+  onUpdateJobStatus,
+  onRecordEvidence
 }: {
   plugins: MetricPlugin[];
   activeMetrics: MetricId[];
@@ -987,6 +1007,7 @@ function PluginCatalog({
   onSubmitRequest: () => void;
   onQueueBuildJob: (requestId: string) => void;
   onUpdateJobStatus: (jobId: string, status: string) => void;
+  onRecordEvidence: (jobId: string) => void;
 }) {
   if (!plugins.length) {
     return null;
@@ -1126,6 +1147,13 @@ function PluginCatalog({
                       {label}
                     </button>
                   ))}
+                  <button
+                    className="json-upload-button"
+                    type="button"
+                    onClick={() => onRecordEvidence(job.id)}
+                  >
+                    Evidence
+                  </button>
                 </div>
               </div>
               <span className="plugin-pill">{job.status}</span>

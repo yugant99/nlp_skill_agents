@@ -52,6 +52,16 @@ export type AgentJobResponse = {
   artifact_path: string;
 };
 
+export type AgentJobEvidence = {
+  job_id: string;
+  gate: string;
+  command: string;
+  status: string;
+  summary: string;
+  artifact_path: string;
+  created_at: string;
+};
+
 export type StudyWorkspace = {
   id: string;
   name: string;

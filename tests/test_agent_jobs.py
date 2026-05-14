@@ -142,3 +142,27 @@ def test_agent_job_api_creates_and_lists_build_jobs(tmp_path: Path, monkeypatch)
     assert update_response.status_code == 200
     assert update_response.json()["job"]["status"] == "verified"
     assert client.get("/api/agent-jobs").json()["jobs"][0]["status"] == "verified"
+
+    evidence_response = client.post(
+        "/api/agent-jobs/build_repair_sequence_metric/evidence",
+        json={
+            "gate": "backend_tests",
+            "command": ".venv/bin/pytest -q",
+            "status": "passed",
+            "summary": "70 passed",
+        },
+    )
+
+    assert evidence_response.status_code == 200
+    evidence = evidence_response.json()["evidence"]
+    assert evidence["gate"] == "backend_tests"
+    assert evidence["artifact_path"].endswith(
+        "agent_jobs/build_repair_sequence_metric/evidence/backend_tests.json"
+    )
+
+    evidence_list_response = client.get(
+        "/api/agent-jobs/build_repair_sequence_metric/evidence"
+    )
+
+    assert evidence_list_response.status_code == 200
+    assert evidence_list_response.json()["evidence"][0]["summary"] == "70 passed"

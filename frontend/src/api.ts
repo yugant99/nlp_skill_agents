@@ -1,5 +1,6 @@
 import type {
   AgentJob,
+  AgentJobEvidence,
   AgentJobResponse,
   MetricId,
   MetricPlugin,
@@ -113,6 +114,33 @@ export async function updateAgentJobStatus(
     throw new Error(message || "Could not update agent job");
   }
   return response.json();
+}
+
+export async function createAgentJobEvidence(params: {
+  jobId: string;
+  gate: string;
+  command: string;
+  status: string;
+  summary: string;
+}): Promise<AgentJobEvidence> {
+  const response = await fetch(`${API_BASE}/api/agent-jobs/${params.jobId}/evidence`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      gate: params.gate,
+      command: params.command,
+      status: params.status,
+      summary: params.summary
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not record agent job evidence");
+  }
+  const payload = (await response.json()) as { evidence: AgentJobEvidence };
+  return payload.evidence;
 }
 
 export async function createStudy(params: {

@@ -1,6 +1,8 @@
 import {
   Activity,
+  AlertTriangle,
   Database,
+  FileCheck2,
   FileText,
   FlaskConical,
   Loader2,
@@ -18,6 +20,18 @@ const metricLabels: Record<MetricId, string> = {
   lexical_metrics: "Lexical metrics",
   disfluency_metrics: "Disfluencies"
 };
+
+const metricDescriptions: Record<MetricId, string> = {
+  base_metrics: "Turn structure",
+  lexical_metrics: "Lexical profile",
+  disfluency_metrics: "Speech markers"
+};
+
+const orderedMetrics: MetricId[] = [
+  "base_metrics",
+  "lexical_metrics",
+  "disfluency_metrics"
+];
 
 export function App() {
   const [skillPack, setSkillPack] = useState<SkillPack | null>(null);
@@ -115,10 +129,31 @@ export function App() {
                   accept=".txt,.docx"
                   onChange={(event) => setFile(event.target.files?.[0] ?? null)}
                 />
-                <span className="text-sm font-semibold">Choose DOCX or TXT</span>
-                <span className="mt-2 block text-sm text-[#676157]">
-                  {file ? file.name : "One transcript per run for v1"}
-                </span>
+                {file ? (
+                  <span className="loaded-file">
+                    <span className="loaded-file-icon">
+                      <FileCheck2 size={18} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-xs font-semibold uppercase text-[#47615d]">
+                        Demo transcript loaded
+                      </span>
+                      <span className="mt-1 block overflow-hidden text-ellipsis whitespace-nowrap text-sm font-semibold text-[#171717]">
+                        {file.name}
+                      </span>
+                      <span className="mt-1 block text-xs text-[#676157]">
+                        {(file.size / 1024).toFixed(1)} KB - click to replace
+                      </span>
+                    </span>
+                  </span>
+                ) : (
+                  <>
+                    <span className="text-sm font-semibold">Choose DOCX or TXT</span>
+                    <span className="mt-2 block text-sm text-[#676157]">
+                      One transcript per run for v1
+                    </span>
+                  </>
+                )}
               </label>
               <label className="field-label">
                 Participant ID
@@ -163,12 +198,16 @@ export function App() {
           <section className="space-y-4">
             <Panel title="3. Run Output" icon={<Database size={18} />}>
               {run ? (
-                <div className="grid gap-3 md:grid-cols-3">
-                  <OutputFact label="Run ID" value={run.run_id.slice(0, 12)} />
-                  <OutputFact label="Transcript" value={run.source_filename} />
-                  <OutputFact label="Turns" value={String(run.turn_count)} />
-                  <OutputFact label="JSON" value={run.stored.results_json} wide />
-                  <OutputFact label="Exports" value={run.stored.export_dir} wide />
+                <div className="space-y-4">
+                  <RunSummaryStrip run={run} />
+                  <DiagnosticsPanel run={run} />
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <OutputFact label="Run ID" value={run.run_id.slice(0, 12)} />
+                    <OutputFact label="Transcript" value={run.source_filename} />
+                    <OutputFact label="Turns" value={String(run.turn_count)} />
+                    <OutputFact label="JSON" value={run.stored.results_json} wide />
+                    <OutputFact label="Exports" value={run.stored.export_dir} wide />
+                  </div>
                 </div>
               ) : (
                 <EmptyState />
@@ -189,6 +228,77 @@ export function App() {
         </section>
       </div>
     </main>
+  );
+}
+
+function RunSummaryStrip({ run }: { run: RunResponse }) {
+  return (
+    <div className="run-summary-strip" aria-label="Run skill summary">
+      {orderedMetrics.map((metricId) => {
+        const result = run.results.find((item) => item.metric_id === metricId);
+        return (
+          <div key={metricId} className="run-summary-card">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold uppercase text-[#47615d]">
+                  {metricDescriptions[metricId]}
+                </div>
+                <div className="mt-1 truncate text-sm font-semibold text-[#171717]">
+                  {metricLabels[metricId]}
+                </div>
+              </div>
+              <span className={result ? "summary-status" : "summary-status summary-status-muted"}>
+                {result ? "Complete" : "Skipped"}
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <div className="text-[#756f64]">Rows</div>
+                <div className="mt-1 font-mono text-sm font-semibold">
+                  {result ? result.rows.length : 0}
+                </div>
+              </div>
+              <div>
+                <div className="text-[#756f64]">Export</div>
+                <div className="mt-1 font-semibold">
+                  {run.exports.some((item) => item.metric_id === metricId) ? "CSV" : "None"}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DiagnosticsPanel({ run }: { run: RunResponse }) {
+  const entries = Object.entries(run.diagnostics.turn_counts);
+  return (
+    <div className="diagnostics-panel">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold uppercase text-[#47615d]">
+          Transcript QA
+        </span>
+        {entries.map(([role, count]) => (
+          <span key={role} className="diagnostic-pill">
+            {role}: {count}
+          </span>
+        ))}
+      </div>
+      {run.diagnostics.warnings.length ? (
+        <div className="mt-3 space-y-2">
+          {run.diagnostics.warnings.map((warning) => (
+            <div key={`${warning.code}-${warning.message}`} className="diagnostic-warning">
+              <AlertTriangle size={16} />
+              <span>{warning.message}</span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-2 text-sm text-[#4f625c]">No parser warnings detected.</div>
+      )}
+    </div>
   );
 }
 

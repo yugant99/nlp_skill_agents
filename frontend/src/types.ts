@@ -11,6 +11,7 @@ export type RunResponse = {
   source_filename: string;
   created_at: string;
   turn_count: number;
+  diagnostics: TranscriptDiagnostics;
   results: MetricResult[];
   stored: {
     run_dir: string;
@@ -33,4 +34,14 @@ export type ExportLink = {
   metric_id: MetricId;
   filename: string;
   download_url: string;
+};
+
+export type TranscriptDiagnostics = {
+  turn_counts: Record<string, number>;
+  warnings: DiagnosticWarning[];
+};
+
+export type DiagnosticWarning = {
+  code: string;
+  message: string;
 };

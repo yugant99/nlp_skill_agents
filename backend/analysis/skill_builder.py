@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from backend.llm.openrouter import DEFAULT_OPENROUTER_MODEL, complete_json
 from backend.analysis.skill_packs import parse_skill_pack
 
 
@@ -49,6 +50,22 @@ def draft_skill_pack_from_brief(brief: str, name: str | None = None) -> DraftedS
             "No concept keywords were recognized; add concept_lexicons before running."
         )
     return DraftedSkillPack(payload=payload, warnings=warnings)
+
+
+def draft_skill_pack_with_openrouter(
+    brief: str,
+    name: str | None = None,
+    model: str | None = None,
+) -> DraftedSkillPack:
+    payload = complete_json(
+        system_prompt=_skill_authoring_system_prompt(),
+        user_prompt=_draft_user_prompt(brief, name),
+        model=model or DEFAULT_OPENROUTER_MODEL,
+    )
+    if name:
+        payload["name"] = str(payload.get("name") or name)
+    parse_skill_pack(payload)
+    return DraftedSkillPack(payload=payload, warnings=[])
 
 
 def refine_skill_pack(payload: dict[str, Any], instruction: str) -> RefinedSkillPack:
@@ -114,6 +131,62 @@ def refine_skill_pack(payload: dict[str, Any], instruction: str) -> RefinedSkill
         payload=refined,
         applied_changes=applied_changes,
         warnings=warnings,
+    )
+
+
+def refine_skill_pack_with_openrouter(
+    payload: dict[str, Any],
+    instruction: str,
+    model: str | None = None,
+) -> RefinedSkillPack:
+    parse_skill_pack(payload)
+    response = complete_json(
+        system_prompt=_skill_authoring_system_prompt(),
+        user_prompt=_refine_user_prompt(payload, instruction),
+        model=model or DEFAULT_OPENROUTER_MODEL,
+    )
+    refined_payload = response.get("payload", response)
+    if not isinstance(refined_payload, dict):
+        raise ValueError("OpenRouter refinement response must include an object payload")
+    parse_skill_pack(refined_payload)
+    applied_changes = response.get("applied_changes", [])
+    warnings = response.get("warnings", [])
+    return RefinedSkillPack(
+        payload=refined_payload,
+        applied_changes=applied_changes if isinstance(applied_changes, list) else [],
+        warnings=warnings if isinstance(warnings, list) else [],
+    )
+
+
+def _skill_authoring_system_prompt() -> str:
+    return (
+        "You draft and refine schema-valid NLP Skill Agents study skill packs. "
+        "Return only valid JSON. Do not include markdown. Do not request or include "
+        "transcript content. The application must never send transcript content to "
+        "the model by default. A skill pack object must contain id, name, version, "
+        "description, metrics, speaker_roles, disfluency_tokens, concept_lexicons, "
+        "and nonverbal_cues. Metrics must only use base_metrics, lexical_metrics, "
+        "disfluency_metrics, concept_count_metrics, and cue_inventory_metrics. "
+        "speaker_roles values must include label and prefixes. concept_lexicons and "
+        "nonverbal_cues must be objects whose values are string arrays."
+    )
+
+
+def _draft_user_prompt(brief: str, name: str | None) -> str:
+    return (
+        "Draft one study skill pack from this researcher brief.\n"
+        f"Preferred name: {name or 'infer a concise study name'}\n"
+        f"Brief: {brief}\n"
+        "Return the skill pack object itself."
+    )
+
+
+def _refine_user_prompt(payload: dict[str, Any], instruction: str) -> str:
+    return (
+        "Refine the current skill pack according to the instruction.\n"
+        "Return an object with keys payload, applied_changes, and warnings.\n"
+        f"Current skill pack JSON: {payload}\n"
+        f"Instruction: {instruction}"
     )
 
 

@@ -139,3 +139,101 @@ def test_refine_skill_pack_endpoint_returns_updated_payload() -> None:
         "added concept anxiety",
         "removed concept stress",
     ]
+
+
+def test_draft_skill_pack_endpoint_can_use_openrouter(monkeypatch) -> None:
+    client = TestClient(app)
+    captured = {}
+
+    def fake_complete_json(system_prompt, user_prompt, model=None):
+        captured["system_prompt"] = system_prompt
+        captured["user_prompt"] = user_prompt
+        captured["model"] = model
+        return {
+            "id": "llm_care_study",
+            "name": "LLM Care Study",
+            "version": "0.1.0",
+            "description": "Generated from brief.",
+            "metrics": [
+                "base_metrics",
+                "lexical_metrics",
+                "disfluency_metrics",
+                "concept_count_metrics",
+                "cue_inventory_metrics",
+            ],
+            "speaker_roles": {
+                "caregiver": {"label": "Care Partner", "prefixes": ["CG"]},
+                "participant": {"label": "Participant", "prefixes": ["P"]},
+            },
+            "disfluency_tokens": ["um", "uh"],
+            "concept_lexicons": {"pain": ["pain", "hurts"]},
+            "nonverbal_cues": {"pause": ["pause"]},
+        }
+
+    monkeypatch.setattr("backend.analysis.skill_builder.complete_json", fake_complete_json)
+
+    response = client.post(
+        "/api/skill-packs/draft",
+        json={
+            "brief": "Build a caregiver pain study.",
+            "name": "LLM Care Study",
+            "authoring_engine": "openrouter",
+            "model": "openai/gpt-oss-120b",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["payload"]["id"] == "llm_care_study"
+    assert body["authoring"] == {
+        "engine": "openrouter",
+        "model": "openai/gpt-oss-120b",
+    }
+    assert captured["model"] == "openai/gpt-oss-120b"
+    assert "transcript content" in captured["system_prompt"].lower()
+
+
+def test_refine_skill_pack_endpoint_can_use_openrouter(monkeypatch) -> None:
+    client = TestClient(app)
+    payload = draft_skill_pack_from_brief(
+        "Caregiver participant healthcare study. Track pain.",
+        name="Care Study",
+    ).payload
+
+    def fake_complete_json(system_prompt, user_prompt, model=None):
+        updated = dict(payload)
+        updated["concept_lexicons"] = {
+            "acute_pain": ["acute", "sharp"],
+            "chronic_pain": ["chronic", "ongoing"],
+        }
+        return {
+            "payload": updated,
+            "applied_changes": ["split pain into acute_pain and chronic_pain"],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr("backend.analysis.skill_builder.complete_json", fake_complete_json)
+
+    response = client.post(
+        "/api/skill-packs/refine",
+        json={
+            "payload": payload,
+            "instruction": "Split pain into acute and chronic.",
+            "authoring_engine": "openrouter",
+            "model": "openai/gpt-oss-120b",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body["payload"]["concept_lexicons"]) == {
+        "acute_pain",
+        "chronic_pain",
+    }
+    assert body["applied_changes"] == [
+        "split pain into acute_pain and chronic_pain"
+    ]
+    assert body["authoring"] == {
+        "engine": "openrouter",
+        "model": "openai/gpt-oss-120b",
+    }

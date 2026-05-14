@@ -14,7 +14,12 @@ from pydantic import BaseModel, Field
 
 from backend.analysis.diagnostics import analyze_transcript_quality
 from backend.analysis.pipeline import execute_analysis
-from backend.analysis.skill_builder import draft_skill_pack_from_brief, refine_skill_pack
+from backend.analysis.skill_builder import (
+    draft_skill_pack_from_brief,
+    draft_skill_pack_with_openrouter,
+    refine_skill_pack,
+    refine_skill_pack_with_openrouter,
+)
 from backend.analysis.skill_packs import (
     SkillPack,
     SkillPackValidationError,
@@ -50,11 +55,15 @@ class SkillPackTextRequest(BaseModel):
 class SkillPackDraftRequest(BaseModel):
     brief: str = Field(min_length=1)
     name: str | None = Field(default=None)
+    authoring_engine: str = Field(default="local")
+    model: str | None = Field(default=None)
 
 
 class SkillPackRefineRequest(BaseModel):
     payload: dict
     instruction: str = Field(min_length=1)
+    authoring_engine: str = Field(default="local")
+    model: str | None = Field(default=None)
 
 
 @app.get("/api/health")
@@ -92,27 +101,47 @@ def validate_skill_pack_text(request: SkillPackTextRequest) -> dict:
 
 @app.post("/api/skill-packs/draft")
 def draft_skill_pack(request: SkillPackDraftRequest) -> dict:
-    draft = draft_skill_pack_from_brief(request.brief, request.name)
+    if request.authoring_engine == "openrouter":
+        draft = draft_skill_pack_with_openrouter(
+            request.brief,
+            request.name,
+            request.model,
+        )
+    elif request.authoring_engine == "local":
+        draft = draft_skill_pack_from_brief(request.brief, request.name)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported authoring engine")
     pack = parse_skill_pack(draft.payload)
     return {
         "payload": draft.payload,
         "skill_pack": _skill_pack_summary(pack),
         "warnings": draft.warnings,
+        "authoring": _authoring_payload(request.authoring_engine, request.model),
     }
 
 
 @app.post("/api/skill-packs/refine")
 def refine_skill_pack_endpoint(request: SkillPackRefineRequest) -> dict:
     try:
-        refined = refine_skill_pack(request.payload, request.instruction)
+        if request.authoring_engine == "openrouter":
+            refined = refine_skill_pack_with_openrouter(
+                request.payload,
+                request.instruction,
+                request.model,
+            )
+        elif request.authoring_engine == "local":
+            refined = refine_skill_pack(request.payload, request.instruction)
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported authoring engine")
         pack = parse_skill_pack(refined.payload)
-    except SkillPackValidationError as exc:
+    except (SkillPackValidationError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "payload": refined.payload,
         "skill_pack": _skill_pack_summary(pack),
         "applied_changes": refined.applied_changes,
         "warnings": refined.warnings,
+        "authoring": _authoring_payload(request.authoring_engine, request.model),
     }
 
 
@@ -274,6 +303,13 @@ def _skill_pack_summary(pack: SkillPack) -> dict:
         "disfluency_tokens": pack.disfluency_tokens,
         "concept_lexicons": pack.concept_lexicons,
         "nonverbal_cues": pack.nonverbal_cues,
+    }
+
+
+def _authoring_payload(engine: str, model: str | None) -> dict:
+    return {
+        "engine": engine,
+        "model": model or "local",
     }
 
 

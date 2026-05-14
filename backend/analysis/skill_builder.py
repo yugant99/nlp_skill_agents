@@ -31,13 +31,7 @@ def draft_skill_pack_from_brief(brief: str, name: str | None = None) -> DraftedS
         "name": pack_name,
         "version": "0.1.0",
         "description": brief.strip(),
-        "metrics": [
-            "base_metrics",
-            "lexical_metrics",
-            "disfluency_metrics",
-            "concept_count_metrics",
-            "cue_inventory_metrics",
-        ],
+        "metrics": _select_metrics(normalized_brief),
         "speaker_roles": _speaker_roles(normalized_brief),
         "disfluency_tokens": ["um", "uh", "hm", "hmm", "like"],
         "concept_lexicons": concepts,
@@ -168,7 +162,10 @@ def _skill_authoring_system_prompt() -> str:
         "the model by default. A skill pack object must contain id, name, version, "
         "description, metrics, speaker_roles, disfluency_tokens, concept_lexicons, "
         "and nonverbal_cues. Metrics must only use base_metrics, lexical_metrics, "
-        "disfluency_metrics, concept_count_metrics, and cue_inventory_metrics. "
+        "disfluency_metrics, concept_count_metrics, cue_inventory_metrics, and "
+        "interaction_dynamics_metrics. Use interaction_dynamics_metrics when the "
+        "brief asks for turn taking, speaker balance, question balance, or "
+        "interaction dynamics. "
         "speaker_roles values must include label and prefixes. concept_lexicons and "
         "nonverbal_cues must be objects whose values are string arrays."
     )
@@ -234,6 +231,7 @@ def _normalize_metric_ids(value: Any) -> list[str]:
         "disfluency_metrics",
         "concept_count_metrics",
         "cue_inventory_metrics",
+        "interaction_dynamics_metrics",
     }
     if isinstance(value, dict):
         candidates = list(value.keys())
@@ -254,6 +252,29 @@ def _normalize_metric_ids(value: Any) -> list[str]:
         "concept_count_metrics",
         "cue_inventory_metrics",
     ]
+
+
+def _select_metrics(brief: str) -> list[str]:
+    metrics = [
+        "base_metrics",
+        "lexical_metrics",
+        "disfluency_metrics",
+        "concept_count_metrics",
+        "cue_inventory_metrics",
+    ]
+    if _matches_any(
+        brief,
+        [
+            "turn taking",
+            "turn-taking",
+            "speaker balance",
+            "question balance",
+            "interaction dynamics",
+            "conversation dynamics",
+        ],
+    ):
+        metrics.insert(3, "interaction_dynamics_metrics")
+    return metrics
 
 
 def _normalize_string_list(value: Any, fallback: list[str] | None = None) -> list[str]:

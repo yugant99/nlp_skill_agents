@@ -5,13 +5,21 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from backend.analysis.metrics import (
-    MetricResult,
     calculate_base_metrics,
     calculate_concept_count_metrics,
     calculate_cue_inventory_metrics,
     calculate_disfluency_metrics,
+    calculate_interaction_dynamics_metrics,
     calculate_lexical_metrics,
 )
+from backend.analysis.metric_plugins import (
+    MetricPlugin,
+    get_metric_plugin,
+    metric_calculators,
+    metric_plugin_catalog,
+    register_metric_plugin,
+)
+from backend.analysis.metrics import MetricResult
 from backend.analysis.transcripts import StudyConfig, Transcript, parse_transcript
 
 
@@ -21,13 +29,104 @@ DEFAULT_SELECTED_METRICS = [
     "disfluency_metrics",
 ]
 
-METRIC_REGISTRY = {
-    "base_metrics": calculate_base_metrics,
-    "lexical_metrics": calculate_lexical_metrics,
-    "disfluency_metrics": calculate_disfluency_metrics,
-    "concept_count_metrics": calculate_concept_count_metrics,
-    "cue_inventory_metrics": calculate_cue_inventory_metrics,
-}
+def _register_builtin_metric_plugins() -> None:
+    plugins = [
+        MetricPlugin(
+            id="base_metrics",
+            label="Base Metrics",
+            description="Turns, clean words, raw words, questions, and nonverbal counts.",
+            category="Turn structure",
+            output_schema={
+                "speaker": "string",
+                "turns": "integer",
+                "clean_words": "integer",
+                "raw_words": "integer",
+                "sentences": "integer",
+                "questions": "integer",
+                "nonverbal_cues": "integer",
+                "words_per_turn": "number",
+            },
+            calculate=calculate_base_metrics,
+        ),
+        MetricPlugin(
+            id="lexical_metrics",
+            label="Lexical Metrics",
+            description="Token counts, unique tokens, type-token ratio, and lexical density.",
+            category="Lexical profile",
+            output_schema={
+                "speaker": "string",
+                "tokens": "integer",
+                "unique_tokens": "integer",
+                "type_token_ratio": "number",
+                "lexical_density": "number",
+            },
+            calculate=calculate_lexical_metrics,
+        ),
+        MetricPlugin(
+            id="disfluency_metrics",
+            label="Disfluency Metrics",
+            description="Configured disfluency counts, rates, and examples by speaker.",
+            category="Speech markers",
+            output_schema={
+                "speaker": "string",
+                "disfluency_count": "integer",
+                "total_words": "integer",
+                "disfluency_rate": "number",
+                "examples": "string[]",
+            },
+            calculate=calculate_disfluency_metrics,
+        ),
+        MetricPlugin(
+            id="concept_count_metrics",
+            label="Concept Count Metrics",
+            description="Researcher-defined concept lexicon counts and examples.",
+            category="Research lexicon",
+            output_schema={
+                "concept": "string",
+                "match_count": "integer",
+                "turn_count": "integer",
+                "speakers": "string",
+                "rate_per_100_words": "number",
+                "examples": "string[]",
+            },
+            calculate=calculate_concept_count_metrics,
+        ),
+        MetricPlugin(
+            id="cue_inventory_metrics",
+            label="Cue Inventory Metrics",
+            description="Configured nonverbal cue counts and examples.",
+            category="Nonverbal coding",
+            output_schema={
+                "cue": "string",
+                "match_count": "integer",
+                "turn_count": "integer",
+                "speakers": "string",
+                "examples": "string[]",
+            },
+            calculate=calculate_cue_inventory_metrics,
+        ),
+        MetricPlugin(
+            id="interaction_dynamics_metrics",
+            label="Interaction Dynamics Metrics",
+            description="Turn-taking balance, question share, and longest-turn measures.",
+            category="Conversation dynamics",
+            output_schema={
+                "speaker": "string",
+                "turns": "integer",
+                "word_share": "number",
+                "question_turns": "integer",
+                "avg_words_per_turn": "number",
+                "longest_turn_words": "integer",
+            },
+            calculate=calculate_interaction_dynamics_metrics,
+        ),
+    ]
+    for plugin in plugins:
+        register_metric_plugin(plugin, replace=True)
+
+
+_register_builtin_metric_plugins()
+METRIC_REGISTRY = metric_calculators()
 
 
 @dataclass(frozen=True)
@@ -62,9 +161,7 @@ def execute_analysis(
     transcript = parse_transcript(content, resolved_config, source_filename)
     results = []
     for metric_id in selected_metrics:
-        if metric_id not in METRIC_REGISTRY:
-            raise ValueError(f"Unknown metric skill: {metric_id}")
-        results.append(METRIC_REGISTRY[metric_id](transcript))
+        results.append(get_metric_plugin(metric_id).calculate(transcript))
     return AnalysisRun(
         run_id=uuid4().hex,
         source_filename=source_filename,

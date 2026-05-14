@@ -105,6 +105,22 @@
     @apply mt-4 flex w-full items-center justify-center gap-2 rounded-md bg-[#253735] px-4 py-3 text-sm font-semibold text-white shadow-[0_14px_32px_-18px_rgba(37,55,53,0.8)] transition duration-200 hover:-translate-y-px hover:bg-[#344b47] active:translate-y-0 disabled:cursor-not-allowed disabled:opacity-60;
   }
 
+  .plugin-catalog {
+    @apply mt-4 rounded-md border border-[#d9d4c5] bg-[#f7f4ea] p-3;
+  }
+
+  .plugin-row {
+    @apply grid grid-cols-[1fr_auto] items-center gap-3 rounded border border-[#e4ded0] bg-white/75 px-2 py-2;
+  }
+
+  .plugin-pill {
+    @apply rounded-full bg-[#dce9df] px-2 py-1 text-[11px] font-semibold uppercase text-[#2f5b50];
+  }
+
+  .plugin-pill-muted {
+    @apply rounded-full bg-[#eee9dd] px-2 py-1 text-[11px] font-semibold uppercase text-[#756f64];
+  }
+
   .run-summary-strip {
     @apply grid gap-3 md:grid-cols-3;
   }

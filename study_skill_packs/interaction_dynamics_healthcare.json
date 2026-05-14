@@ -1,0 +1,31 @@
+{
+  "id": "interaction_dynamics_healthcare",
+  "name": "Interaction Dynamics Healthcare",
+  "version": "0.1.0",
+  "description": "Healthcare conversation pack that adds the V3 interaction-dynamics metric plugin for turn-taking balance and question patterns.",
+  "metrics": [
+    "base_metrics",
+    "interaction_dynamics_metrics",
+    "concept_count_metrics"
+  ],
+  "speaker_roles": {
+    "caregiver": {
+      "label": "Caregiver",
+      "prefixes": ["CG", "Caregiver"]
+    },
+    "participant": {
+      "label": "Participant",
+      "prefixes": ["P", "Participant", "Patient"]
+    }
+  },
+  "disfluency_tokens": ["um", "uh", "hm", "hmm", "like"],
+  "concept_lexicons": {
+    "pain": ["pain", "ache", "aches", "hurt", "hurts", "sore"],
+    "medication": ["medication", "medicine", "pill", "pills", "dose"],
+    "sleep": ["sleep", "slept", "tired", "fatigue", "awake"]
+  },
+  "nonverbal_cues": {
+    "pause": ["pause", "long pause", "silence"],
+    "laughter": ["laughs", "laughing", "chuckles"]
+  }
+}

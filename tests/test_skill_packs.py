@@ -36,6 +36,18 @@ def test_builtin_dynamic_templates_load_with_research_definitions() -> None:
     assert all(pack.nonverbal_cues for pack in packs)
 
 
+def test_builtin_interaction_dynamics_plugin_template_loads() -> None:
+    pack = load_skill_pack("interaction_dynamics_healthcare")
+
+    assert pack.id == "interaction_dynamics_healthcare"
+    assert [metric.id for metric in pack.metrics] == [
+        "base_metrics",
+        "interaction_dynamics_metrics",
+        "concept_count_metrics",
+    ]
+    assert pack.speaker_prefixes["caregiver"] == ["CG", "Caregiver"]
+
+
 def test_load_skill_pack_by_file_path_preserves_output_schema(tmp_path: Path) -> None:
     pack_path = tmp_path / "custom_pack.json"
     pack_path.write_text(

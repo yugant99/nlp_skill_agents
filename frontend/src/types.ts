@@ -6,6 +6,14 @@ export type MetricResult = {
   rows: Record<string, unknown>[];
 };
 
+export type MetricPlugin = {
+  id: MetricId;
+  label: string;
+  description: string;
+  category: string;
+  output_schema: Record<string, string>;
+};
+
 export type RunResponse = {
   run_id: string;
   source_filename: string;

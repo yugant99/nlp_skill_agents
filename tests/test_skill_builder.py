@@ -56,6 +56,17 @@ def test_draft_skill_pack_falls_back_to_psychology_defaults_when_brief_is_broad(
     assert "pause" in pack.nonverbal_cues
 
 
+def test_draft_skill_pack_adds_interaction_plugin_when_requested() -> None:
+    draft = draft_skill_pack_from_brief(
+        "Caregiver participant study. Track turn taking, question balance, pain, and medication.",
+        name="Interaction Study",
+    )
+
+    pack = parse_skill_pack(draft.payload)
+
+    assert "interaction_dynamics_metrics" in [metric.id for metric in pack.metrics]
+
+
 def test_draft_skill_pack_endpoint_returns_payload_and_summary() -> None:
     client = TestClient(app)
 

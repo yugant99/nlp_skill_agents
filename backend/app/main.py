@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from backend.analysis.diagnostics import analyze_transcript_quality
-from backend.analysis.pipeline import execute_analysis
+from backend.analysis.pipeline import execute_analysis, metric_plugin_catalog
 from backend.analysis.skill_builder import (
     draft_skill_pack_from_brief,
     draft_skill_pack_with_openrouter,
@@ -75,6 +75,11 @@ def health() -> dict[str, str]:
 @app.get("/api/skill-packs/default")
 def default_skill_pack() -> dict:
     return load_skill_pack("default_transcript_metrics").raw
+
+
+@app.get("/api/metric-plugins")
+def list_metric_plugins() -> dict:
+    return {"plugins": metric_plugin_catalog()}
 
 
 @app.post("/api/skill-packs/validate")

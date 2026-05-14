@@ -174,6 +174,41 @@ def calculate_cue_inventory_metrics(transcript: Transcript) -> MetricResult:
     )
 
 
+def calculate_interaction_dynamics_metrics(transcript: Transcript) -> MetricResult:
+    disfluency_tokens = set(transcript.config.disfluency_tokens) or DEFAULT_DISFLUENCY_TOKENS
+    roles = _ordered_roles(transcript)
+    role_rows = [
+        _interaction_row_for_role(transcript.turns, role, disfluency_tokens)
+        for role in roles
+    ]
+    total_words = sum(row["total_words"] for row in role_rows)
+    rows = [
+        _without_private_interaction_fields(row, total_words)
+        for row in role_rows
+    ]
+    total_turns = sum(row["turns"] for row in role_rows)
+    return MetricResult(
+        metric_id="interaction_dynamics_metrics",
+        label="Interaction Dynamics Metrics",
+        rows=[
+            *rows,
+            {
+                "speaker": "total",
+                "turns": total_turns,
+                "word_share": 1.0 if total_words else 0.0,
+                "question_turns": sum(row["question_turns"] for row in role_rows),
+                "avg_words_per_turn": round(total_words / total_turns, 2)
+                if total_turns
+                else 0.0,
+                "longest_turn_words": max(
+                    [row["longest_turn_words"] for row in role_rows],
+                    default=0,
+                ),
+            },
+        ],
+    )
+
+
 def _base_row_for_role(
     turns: list[Turn],
     role: str,
@@ -193,6 +228,47 @@ def _base_row_for_role(
         "nonverbal_cues": sum(len(_extract_nonverbals(turn.text)) for turn in role_turns),
         "words_per_turn": round(clean_words / turn_count, 2) if turn_count else 0.0,
     }
+
+
+def _ordered_roles(transcript: Transcript) -> list[str]:
+    configured_roles = list(transcript.config.speaker_prefixes)
+    observed_roles = [turn.role for turn in transcript.turns]
+    roles = _unique_examples([*configured_roles, *observed_roles])
+    return roles or ["caregiver", "participant"]
+
+
+def _interaction_row_for_role(
+    turns: list[Turn],
+    role: str,
+    disfluency_tokens: set[str],
+) -> dict[str, Any]:
+    role_turns = [turn for turn in turns if turn.role == role]
+    turn_word_counts = [
+        len(_word_tokens(_clean_text(turn.text), disfluency_tokens))
+        for turn in role_turns
+    ]
+    total_words = sum(turn_word_counts)
+    turn_count = len(role_turns)
+    return {
+        "speaker": role,
+        "turns": turn_count,
+        "total_words": total_words,
+        "question_turns": sum(1 for turn in role_turns if "?" in turn.text),
+        "avg_words_per_turn": round(total_words / turn_count, 2)
+        if turn_count
+        else 0.0,
+        "longest_turn_words": max(turn_word_counts, default=0),
+    }
+
+
+def _without_private_interaction_fields(
+    row: dict[str, Any],
+    total_words: int,
+) -> dict[str, Any]:
+    public_row = dict(row)
+    role_words = int(public_row.pop("total_words"))
+    public_row["word_share"] = round(role_words / total_words, 3) if total_words else 0.0
+    return public_row
 
 
 def _lexical_row_for_role(

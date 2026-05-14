@@ -1,5 +1,6 @@
 import type {
   MetricId,
+  MetricPlugin,
   RunHistoryItem,
   RunResponse,
   SkillPack,
@@ -20,6 +21,15 @@ export async function loadSkillPack(): Promise<SkillPack> {
     throw new Error("Could not load study skill pack");
   }
   return response.json();
+}
+
+export async function listMetricPlugins(): Promise<MetricPlugin[]> {
+  const response = await fetch(`${API_BASE}/api/metric-plugins`);
+  if (!response.ok) {
+    throw new Error("Could not load metric plugin catalog");
+  }
+  const payload = (await response.json()) as { plugins: MetricPlugin[] };
+  return payload.plugins;
 }
 
 export async function validateSkillPack(payload: unknown): Promise<SkillPackSummary> {

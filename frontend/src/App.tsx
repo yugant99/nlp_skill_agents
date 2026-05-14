@@ -19,6 +19,7 @@ import {
   createAnalysisRun,
   createTextAnalysisRun,
   draftSkillPack,
+  listMetricPlugins,
   listRuns,
   loadSkillPack,
   refineSkillPack,
@@ -26,6 +27,7 @@ import {
   validateSkillPackText
 } from "./api";
 import type { MetricId, MetricResult, RunHistoryItem, RunResponse, SkillPack } from "./types";
+import type { MetricPlugin } from "./types";
 
 const metricLabels: Record<string, string> = {
   base_metrics: "Base metrics",
@@ -81,6 +83,7 @@ export function App() {
   const [disfluencyText, setDisfluencyText] = useState("");
   const [run, setRun] = useState<RunResponse | null>(null);
   const [runHistory, setRunHistory] = useState<RunHistoryItem[]>([]);
+  const [metricPlugins, setMetricPlugins] = useState<MetricPlugin[]>([]);
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
@@ -96,6 +99,9 @@ export function App() {
     listRuns()
       .then(setRunHistory)
       .catch(() => setRunHistory([]));
+    listMetricPlugins()
+      .then(setMetricPlugins)
+      .catch(() => setMetricPlugins([]));
   }, []);
 
   const disfluencyTokens = useMemo(
@@ -596,6 +602,7 @@ export function App() {
                 {isRunning ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
                 Run local analysis
               </button>
+              <PluginCatalog plugins={metricPlugins} activeMetrics={selectedMetrics} />
               {error ? <p className="error-text">{error}</p> : null}
             </Panel>
           </aside>
@@ -672,6 +679,45 @@ function RecentRunsPanel({ runs }: { runs: RunHistoryItem[] }) {
         <div className="text-sm text-[#676157]">No local runs recorded yet.</div>
       )}
     </Panel>
+  );
+}
+
+function PluginCatalog({
+  plugins,
+  activeMetrics
+}: {
+  plugins: MetricPlugin[];
+  activeMetrics: MetricId[];
+}) {
+  if (!plugins.length) {
+    return null;
+  }
+  return (
+    <div className="plugin-catalog" aria-label="Metric plugin registry">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="text-xs font-semibold uppercase text-[#47615d]">
+          Plugin registry
+        </span>
+        <span className="font-mono text-xs text-[#756f64]">{plugins.length} registered</span>
+      </div>
+      <div className="space-y-2">
+        {plugins.map((plugin) => (
+          <div key={plugin.id} className="plugin-row">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-semibold text-[#171717]">
+                {plugin.label}
+              </div>
+              <div className="mt-1 truncate text-xs text-[#756f64]">
+                {plugin.category}
+              </div>
+            </div>
+            <span className={activeMetrics.includes(plugin.id) ? "plugin-pill" : "plugin-pill-muted"}>
+              {activeMetrics.includes(plugin.id) ? "Active" : "Available"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

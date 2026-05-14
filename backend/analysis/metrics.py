@@ -104,6 +104,76 @@ def calculate_disfluency_metrics(transcript: Transcript) -> MetricResult:
     )
 
 
+def calculate_concept_count_metrics(transcript: Transcript) -> MetricResult:
+    disfluency_tokens = set(transcript.config.disfluency_tokens) or DEFAULT_DISFLUENCY_TOKENS
+    total_words = len(_tokens_for_turns(transcript.turns, disfluency_tokens))
+    rows = []
+    for concept, terms in transcript.config.concept_lexicons.items():
+        normalized_terms = {term.lower() for term in terms}
+        matches: list[str] = []
+        turn_indexes: set[int] = set()
+        speakers: list[str] = []
+        for turn in transcript.turns:
+            turn_tokens = _word_tokens(_remove_nonverbals(turn.text), disfluency_tokens)
+            turn_matches = [token for token in turn_tokens if token in normalized_terms]
+            if not turn_matches:
+                continue
+            matches.extend(turn_matches)
+            turn_indexes.add(turn.turn_index)
+            speakers.append(turn.role)
+        rows.append(
+            {
+                "concept": concept,
+                "match_count": len(matches),
+                "turn_count": len(turn_indexes),
+                "speakers": ", ".join(_unique_examples(speakers)),
+                "rate_per_100_words": round((len(matches) / total_words) * 100, 2)
+                if total_words
+                else 0.0,
+                "examples": _unique_examples(matches),
+            }
+        )
+    return MetricResult(
+        metric_id="concept_count_metrics",
+        label="Concept Count Metrics",
+        rows=rows,
+    )
+
+
+def calculate_cue_inventory_metrics(transcript: Transcript) -> MetricResult:
+    rows = []
+    for cue, patterns in transcript.config.nonverbal_cues.items():
+        normalized_patterns = {pattern.lower() for pattern in patterns}
+        matches: list[str] = []
+        turn_indexes: set[int] = set()
+        speakers: list[str] = []
+        for turn in transcript.turns:
+            turn_matches = [
+                cue_text.lower()
+                for cue_text in _extract_nonverbals(turn.text)
+                if cue_text.lower() in normalized_patterns
+            ]
+            if not turn_matches:
+                continue
+            matches.extend(turn_matches)
+            turn_indexes.add(turn.turn_index)
+            speakers.append(turn.role)
+        rows.append(
+            {
+                "cue": cue,
+                "match_count": len(matches),
+                "turn_count": len(turn_indexes),
+                "speakers": ", ".join(_unique_examples(speakers)),
+                "examples": _unique_examples(matches),
+            }
+        )
+    return MetricResult(
+        metric_id="cue_inventory_metrics",
+        label="Cue Inventory Metrics",
+        rows=rows,
+    )
+
+
 def _base_row_for_role(
     turns: list[Turn],
     role: str,

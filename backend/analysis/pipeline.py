@@ -7,6 +7,8 @@ from uuid import uuid4
 from backend.analysis.metrics import (
     MetricResult,
     calculate_base_metrics,
+    calculate_concept_count_metrics,
+    calculate_cue_inventory_metrics,
     calculate_disfluency_metrics,
     calculate_lexical_metrics,
 )
@@ -23,6 +25,8 @@ METRIC_REGISTRY = {
     "base_metrics": calculate_base_metrics,
     "lexical_metrics": calculate_lexical_metrics,
     "disfluency_metrics": calculate_disfluency_metrics,
+    "concept_count_metrics": calculate_concept_count_metrics,
+    "cue_inventory_metrics": calculate_cue_inventory_metrics,
 }
 
 
@@ -47,6 +51,10 @@ def execute_analysis(
         speaker_labels=dict(config.speaker_labels),
         selected_metrics=list(selected_metrics),
         disfluency_tokens=list(config.disfluency_tokens),
+        concept_lexicons={
+            key: list(value) for key, value in config.concept_lexicons.items()
+        },
+        nonverbal_cues={key: list(value) for key, value in config.nonverbal_cues.items()},
     )
     transcript = parse_transcript(content, resolved_config, source_filename)
     results = []
@@ -61,4 +69,3 @@ def execute_analysis(
         transcript=transcript,
         results=results,
     )
-

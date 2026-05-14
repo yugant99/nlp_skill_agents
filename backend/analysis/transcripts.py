@@ -3,8 +3,12 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeAlias
 
 from docx import Document
+
+
+SpeakerPrefixes: TypeAlias = dict[str, str | list[str]]
 
 
 @dataclass(frozen=True)
@@ -19,10 +23,12 @@ class Turn:
 @dataclass(frozen=True)
 class StudyConfig:
     participant_id: str = ""
-    speaker_prefixes: dict[str, str] = field(default_factory=dict)
+    speaker_prefixes: SpeakerPrefixes = field(default_factory=dict)
     speaker_labels: dict[str, str] = field(default_factory=dict)
     selected_metrics: list[str] = field(default_factory=list)
     disfluency_tokens: list[str] = field(default_factory=list)
+    concept_lexicons: dict[str, list[str]] = field(default_factory=dict)
+    nonverbal_cues: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -59,10 +65,13 @@ def parse_transcript(
     source_filename: str,
 ) -> Transcript:
     resolved = _resolve_config(content, config)
-    prefix_to_role = {
-        prefix.lower(): role for role, prefix in resolved.speaker_prefixes.items()
-    }
-    prefixes = [re.escape(prefix) for prefix in resolved.speaker_prefixes.values()]
+    prefix_to_role = {}
+    prefixes = []
+    for role, role_prefixes in resolved.speaker_prefixes.items():
+        normalized_prefixes = _prefix_list(role_prefixes)
+        for prefix in normalized_prefixes:
+            prefix_to_role[prefix.lower()] = role
+            prefixes.append(re.escape(prefix))
     if not prefixes:
         return Transcript(source_filename=source_filename, config=resolved, turns=[])
 
@@ -106,6 +115,8 @@ def _resolve_config(content: str, config: StudyConfig) -> StudyConfig:
         speaker_labels=speaker_labels,
         selected_metrics=list(config.selected_metrics),
         disfluency_tokens=list(config.disfluency_tokens),
+        concept_lexicons={key: list(value) for key, value in config.concept_lexicons.items()},
+        nonverbal_cues={key: list(value) for key, value in config.nonverbal_cues.items()},
     )
 
 
@@ -113,3 +124,8 @@ def _infer_participant_id(content: str) -> str:
     match = re.search(r"\b(vr(?:x)?\d+)_\w+:", content, re.IGNORECASE)
     return match.group(1).lower() if match else ""
 
+
+def _prefix_list(value: str | list[str]) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    return list(value)

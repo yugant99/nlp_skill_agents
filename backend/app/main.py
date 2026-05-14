@@ -10,6 +10,7 @@ from typing import Annotated
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 from backend.analysis.diagnostics import analyze_transcript_quality
 from backend.analysis.pipeline import execute_analysis
@@ -26,6 +27,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class TextRunRequest(BaseModel):
+    source_filename: str = Field(default="pasted_transcript.txt", min_length=1)
+    content: str = Field(min_length=1)
+    config: dict = Field(default_factory=dict)
 
 
 @app.get("/api/health")
@@ -69,6 +76,17 @@ async def create_run(
     return _run_response(run, stored)
 
 
+@app.post("/api/runs/text")
+def create_text_run(request: TextRunRequest) -> dict:
+    run = execute_analysis(
+        request.content,
+        _study_config_from_payload(request.config),
+        source_filename=request.source_filename,
+    )
+    stored = LocalRunStore(_local_data_root()).persist_run(run)
+    return _run_response(run, stored)
+
+
 @app.get("/api/runs")
 def list_runs() -> dict:
     return {"runs": LocalRunStore(_local_data_root()).list_runs()}
@@ -89,7 +107,10 @@ def download_export(run_id: str, filename: str) -> FileResponse:
 
 
 def _study_config_from_json(config_json: str) -> StudyConfig:
-    payload = json.loads(config_json)
+    return _study_config_from_payload(json.loads(config_json))
+
+
+def _study_config_from_payload(payload: dict) -> StudyConfig:
     return StudyConfig(
         participant_id=str(payload.get("participant_id", "")),
         speaker_prefixes=dict(payload.get("speaker_prefixes", {})),

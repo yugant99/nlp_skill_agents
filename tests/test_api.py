@@ -222,3 +222,26 @@ def test_create_run_accepts_custom_speaker_prefixes(tmp_path, monkeypatch) -> No
         "participant": 1,
     }
     assert payload["results"][0]["rows"][0]["clean_words"] == 2
+
+
+def test_create_run_from_text_payload(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs/text",
+        json={
+            "source_filename": "pasted_transcript.txt",
+            "content": "vr050_c: Hello.\nvr050_p: Um, hello back.",
+            "config": {
+                "participant_id": "vr050",
+                "selected_metrics": ["base_metrics", "disfluency_metrics"],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["source_filename"] == "pasted_transcript.txt"
+    assert payload["turn_count"] == 2
+    assert payload["results"][1]["rows"][-1]["disfluency_count"] == 1

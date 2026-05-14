@@ -41,6 +41,7 @@ from backend.extensions.plugin_requests import (
 )
 from backend.llm.openrouter import OpenRouterError
 from backend.storage.local_store import LocalRunStore, StoredRun
+from backend.storage.study_store import StudyWorkspaceStore
 
 
 app = FastAPI(title="NLP Skill Agents", version="0.1.0")
@@ -90,6 +91,21 @@ class PluginRequestCreateRequest(BaseModel):
 
 class AgentJobStatusUpdateRequest(BaseModel):
     status: str = Field(min_length=1)
+
+
+class StudyCreateRequest(BaseModel):
+    name: str = Field(min_length=1)
+    description: str = Field(default="")
+
+
+class StudyTextTranscript(BaseModel):
+    source_filename: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+
+
+class StudyTextBatchRequest(BaseModel):
+    skill_pack_version_id: str = Field(min_length=1)
+    transcripts: list[StudyTextTranscript] = Field(min_length=1)
 
 
 @app.get("/api/health")
@@ -174,6 +190,51 @@ def update_agent_job_status(job_id: str, request: AgentJobStatusUpdateRequest) -
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"job": agent_job_to_payload(job)}
+
+
+@app.post("/api/studies")
+def create_study(request: StudyCreateRequest) -> dict:
+    study = StudyWorkspaceStore(_local_data_root()).create_study(request.model_dump())
+    return {"study": _study_payload(study)}
+
+
+@app.get("/api/studies")
+def list_studies() -> dict:
+    return {
+        "studies": [
+            _study_payload(study)
+            for study in StudyWorkspaceStore(_local_data_root()).list_studies()
+        ]
+    }
+
+
+@app.post("/api/studies/{study_id}/skill-pack-versions")
+def create_study_skill_pack_version(study_id: str, payload: dict) -> dict:
+    try:
+        version = StudyWorkspaceStore(_local_data_root()).add_skill_pack_version(
+            study_id,
+            payload,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (SkillPackValidationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"version": _study_skill_pack_version_payload(version)}
+
+
+@app.post("/api/studies/{study_id}/batches/text")
+def create_study_text_batch(study_id: str, request: StudyTextBatchRequest) -> dict:
+    try:
+        batch = StudyWorkspaceStore(_local_data_root()).run_text_batch(
+            study_id,
+            request.skill_pack_version_id,
+            [item.model_dump() for item in request.transcripts],
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study artifact not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _study_batch_payload(batch)
 
 
 @app.post("/api/skill-packs/validate")
@@ -383,6 +444,55 @@ def _run_response(run, stored: StoredRun) -> dict:
             }
             for result in run.results
         ],
+    }
+
+
+def _study_payload(study) -> dict:
+    return {
+        "id": study.id,
+        "name": study.name,
+        "description": study.description,
+        "created_at": study.created_at,
+    }
+
+
+def _study_skill_pack_version_payload(version) -> dict:
+    return {
+        "study_id": version.study_id,
+        "version_id": version.version_id,
+        "artifact_path": str(version.artifact_path),
+        "created_at": version.created_at,
+        "skill_pack": {
+            "id": version.payload["id"],
+            "name": version.payload["name"],
+            "version": version.payload["version"],
+            "metrics": version.payload.get("metrics", []),
+        },
+    }
+
+
+def _study_batch_payload(batch) -> dict:
+    aggregate_results_json = batch.aggregate_dir / "aggregate_results.json"
+    exports = [
+        {
+            "metric_id": path.stem,
+            "filename": path.name,
+            "path": str(path),
+        }
+        for path in sorted(batch.aggregate_dir.glob("*.csv"))
+    ]
+    return {
+        "batch": {
+            "study_id": batch.study_id,
+            "batch_id": batch.batch_id,
+            "skill_pack_version_id": batch.skill_pack_version_id,
+            "run_count": batch.run_count,
+            "failure_count": batch.failure_count,
+            "aggregate_dir": str(batch.aggregate_dir),
+            "created_at": batch.created_at,
+        },
+        "aggregate_results_json": str(aggregate_results_json),
+        "exports": exports,
     }
 
 

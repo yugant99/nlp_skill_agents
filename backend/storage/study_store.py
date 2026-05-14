@@ -1,0 +1,297 @@
+from __future__ import annotations
+
+import csv
+import json
+import re
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from backend.analysis.pipeline import execute_analysis
+from backend.analysis.skill_packs import parse_skill_pack
+from backend.analysis.transcripts import StudyConfig
+
+
+@dataclass(frozen=True)
+class StudyWorkspace:
+    id: str
+    name: str
+    description: str
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+@dataclass(frozen=True)
+class StudySkillPackVersion:
+    study_id: str
+    version_id: str
+    payload: dict[str, Any]
+    artifact_path: Path
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+@dataclass(frozen=True)
+class StudyBatchRun:
+    study_id: str
+    batch_id: str
+    skill_pack_version_id: str
+    run_count: int
+    failure_count: int
+    aggregate_dir: Path
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+class StudyWorkspaceStore:
+    def __init__(self, root: Path | str = "local_data") -> None:
+        self.root = Path(root)
+        self.studies_dir = self.root / "studies"
+
+    def create_study(self, payload: dict[str, Any]) -> StudyWorkspace:
+        name = _required_string(payload, "name")
+        study = StudyWorkspace(
+            id=_slugify(str(payload.get("id") or name)),
+            name=name,
+            description=str(payload.get("description") or ""),
+        )
+        study_dir = self._study_dir(study.id)
+        study_dir.mkdir(parents=True, exist_ok=True)
+        (study_dir / "study.json").write_text(
+            json.dumps(asdict(study), indent=2),
+            encoding="utf-8",
+        )
+        return study
+
+    def list_studies(self) -> list[StudyWorkspace]:
+        if not self.studies_dir.exists():
+            return []
+        studies = [
+            StudyWorkspace(**json.loads(path.read_text(encoding="utf-8")))
+            for path in self.studies_dir.glob("*/study.json")
+        ]
+        return sorted(studies, key=lambda study: study.created_at, reverse=True)
+
+    def add_skill_pack_version(
+        self,
+        study_id: str,
+        payload: dict[str, Any],
+        *,
+        validate: bool = True,
+    ) -> StudySkillPackVersion:
+        self._require_study(study_id)
+        if validate:
+            parse_skill_pack(payload)
+        version_id = _skill_pack_version_id(payload)
+        version_dir = self._study_dir(study_id) / "skill_packs"
+        version_dir.mkdir(parents=True, exist_ok=True)
+        artifact_path = version_dir / f"{version_id}.json"
+        artifact_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        metadata = StudySkillPackVersion(
+            study_id=study_id,
+            version_id=version_id,
+            payload=payload,
+            artifact_path=artifact_path,
+        )
+        (version_dir / f"{version_id}.metadata.json").write_text(
+            json.dumps(
+                {
+                    "study_id": metadata.study_id,
+                    "version_id": metadata.version_id,
+                    "artifact_path": str(metadata.artifact_path),
+                    "created_at": metadata.created_at,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return metadata
+
+    def run_text_batch(
+        self,
+        study_id: str,
+        skill_pack_version_id: str,
+        transcripts: list[dict[str, str]],
+    ) -> StudyBatchRun:
+        self._require_study(study_id)
+        skill_pack_payload = self._load_skill_pack_version(
+            study_id,
+            skill_pack_version_id,
+        )
+        batch_id = f"batch_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}"
+        aggregate_dir = self._study_dir(study_id) / "batches" / batch_id
+        runs_dir = aggregate_dir / "runs"
+        runs_dir.mkdir(parents=True, exist_ok=True)
+
+        successes = []
+        failures = []
+        for item in transcripts:
+            source_filename = _required_string(item, "source_filename")
+            try:
+                run = execute_analysis(
+                    _required_string(item, "content"),
+                    _study_config_from_skill_pack_payload(skill_pack_payload),
+                    source_filename=source_filename,
+                )
+            except (ValueError, KeyError) as exc:
+                failures.append(
+                    {
+                        "source_filename": source_filename,
+                        "error": str(exc),
+                    }
+                )
+                continue
+
+            run_payload = {
+                "run_id": run.run_id,
+                "source_filename": run.source_filename,
+                "created_at": run.created_at,
+                "turn_count": len(run.transcript.turns),
+                "results": [asdict(result) for result in run.results],
+            }
+            (runs_dir / f"{run.run_id}.json").write_text(
+                json.dumps(run_payload, indent=2),
+                encoding="utf-8",
+            )
+            successes.append(run_payload)
+
+        aggregate_payload = _aggregate_batch_payload(
+            study_id,
+            batch_id,
+            skill_pack_version_id,
+            successes,
+            failures,
+        )
+        (aggregate_dir / "aggregate_results.json").write_text(
+            json.dumps(aggregate_payload, indent=2),
+            encoding="utf-8",
+        )
+        for result in aggregate_payload["results"]:
+            _write_csv(aggregate_dir / f"{result['metric_id']}.csv", result["rows"])
+
+        batch = StudyBatchRun(
+            study_id=study_id,
+            batch_id=batch_id,
+            skill_pack_version_id=skill_pack_version_id,
+            run_count=len(successes),
+            failure_count=len(failures),
+            aggregate_dir=aggregate_dir,
+        )
+        (aggregate_dir / "batch.json").write_text(
+            json.dumps(
+                {
+                    **asdict(batch),
+                    "aggregate_dir": str(batch.aggregate_dir),
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return batch
+
+    def _study_dir(self, study_id: str) -> Path:
+        return self.studies_dir / study_id
+
+    def _require_study(self, study_id: str) -> None:
+        if not (self._study_dir(study_id) / "study.json").exists():
+            raise FileNotFoundError(study_id)
+
+    def _load_skill_pack_version(
+        self,
+        study_id: str,
+        skill_pack_version_id: str,
+    ) -> dict[str, Any]:
+        path = self._study_dir(study_id) / "skill_packs" / f"{skill_pack_version_id}.json"
+        if not path.exists():
+            raise FileNotFoundError(skill_pack_version_id)
+        return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _aggregate_batch_payload(
+    study_id: str,
+    batch_id: str,
+    skill_pack_version_id: str,
+    runs: list[dict[str, Any]],
+    failures: list[dict[str, str]],
+) -> dict[str, Any]:
+    results_by_metric: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        for result in run["results"]:
+            aggregate = results_by_metric.setdefault(
+                result["metric_id"],
+                {
+                    "metric_id": result["metric_id"],
+                    "label": result["label"],
+                    "rows": [],
+                },
+            )
+            aggregate["rows"].extend(
+                {
+                    "source_filename": run["source_filename"],
+                    "run_id": run["run_id"],
+                    **row,
+                }
+                for row in result["rows"]
+            )
+    return {
+        "study_id": study_id,
+        "batch_id": batch_id,
+        "skill_pack_version_id": skill_pack_version_id,
+        "created_at": datetime.now(UTC).isoformat(),
+        "run_count": len(runs),
+        "failure_count": len(failures),
+        "failures": failures,
+        "results": list(results_by_metric.values()),
+    }
+
+
+def _study_config_from_skill_pack_payload(payload: dict[str, Any]) -> StudyConfig:
+    pack = parse_skill_pack(payload)
+    return StudyConfig(
+        participant_id="",
+        speaker_prefixes=pack.speaker_prefixes,
+        speaker_labels=pack.speaker_roles,
+        selected_metrics=[metric.id for metric in pack.metrics],
+        disfluency_tokens=pack.disfluency_tokens,
+        concept_lexicons=pack.concept_lexicons,
+        nonverbal_cues=pack.nonverbal_cues,
+        skill_pack_id=pack.id,
+        skill_pack_name=pack.name,
+        skill_pack_version=pack.version,
+    )
+
+
+def _skill_pack_version_id(payload: dict[str, Any]) -> str:
+    return f"{_identifier(str(payload['id']))}-{_identifier(str(payload['version']))}"
+
+
+def _identifier(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_]+", "_", value).strip("_").lower()
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()
+    return slug or f"study-{uuid4().hex[:8]}"
+
+
+def _required_string(payload: dict[str, Any], key: str) -> str:
+    value = str(payload.get(key) or "").strip()
+    if not value:
+        raise ValueError(f"{key} is required")
+    return value
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    fieldnames = _ordered_fieldnames(rows)
+    with path.open("w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _ordered_fieldnames(rows: list[dict[str, Any]]) -> list[str]:
+    fieldnames: list[str] = []
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    return fieldnames

@@ -31,6 +31,7 @@ Each checkpoint should record:
 - [2026-05-13 V3 metric plugin builder skill](2026-05-13-v3-metric-plugin-builder-skill.md)
 - [2026-05-13 V3 care plan commitments metric](2026-05-13-v3-care-plan-commitments.md)
 - [2026-05-13 V3 question type metrics](2026-05-13-v3-question-types.md)
+- [2026-05-14 V4 study workspace backend](2026-05-14-v4-study-workspace-backend.md)
 
 ## Completion Bar
 

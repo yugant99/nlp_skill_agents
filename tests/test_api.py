@@ -401,3 +401,70 @@ def test_create_run_rejects_unknown_metric_with_400(tmp_path, monkeypatch) -> No
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Unknown metric skill: not_a_metric"
+
+
+def test_study_workspace_batch_api_creates_aggregate_outputs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    study_response = client.post(
+        "/api/studies",
+        json={
+            "name": "Question Study",
+            "description": "Prompting style across transcripts.",
+        },
+    )
+
+    assert study_response.status_code == 200
+    study_id = study_response.json()["study"]["id"]
+
+    pack_response = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json={
+            "id": "question_pack",
+            "name": "Question Pack",
+            "version": "1.0.0",
+            "metrics": ["question_type_metrics"],
+            "speaker_roles": {
+                "caregiver": {"label": "Caregiver", "prefixes": ["CG"]},
+                "participant": {"label": "Participant", "prefixes": ["P"]},
+            },
+        },
+    )
+
+    assert pack_response.status_code == 200
+    version_id = pack_response.json()["version"]["version_id"]
+
+    batch_response = client.post(
+        f"/api/studies/{study_id}/batches/text",
+        json={
+            "skill_pack_version_id": version_id,
+            "transcripts": [
+                {
+                    "source_filename": "one.txt",
+                    "content": "CG: How are you?\nP: Fine.",
+                },
+                {
+                    "source_filename": "two.txt",
+                    "content": "CG: Did sleep improve?\nP: Yes.",
+                },
+            ],
+        },
+    )
+
+    assert batch_response.status_code == 200
+    payload = batch_response.json()
+    assert payload["batch"]["run_count"] == 2
+    assert payload["batch"]["failure_count"] == 0
+    assert payload["aggregate_results_json"].endswith("aggregate_results.json")
+    assert payload["exports"] == [
+        {
+            "metric_id": "question_type_metrics",
+            "filename": "question_type_metrics.csv",
+            "path": f"{payload['batch']['aggregate_dir']}/question_type_metrics.csv",
+        }
+    ]
+
+    list_response = client.get("/api/studies")
+    assert list_response.status_code == 200
+    assert list_response.json()["studies"][0]["id"] == "question-study"

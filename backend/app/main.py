@@ -28,6 +28,11 @@ from backend.analysis.skill_packs import (
     parse_skill_pack_document,
 )
 from backend.analysis.transcripts import StudyConfig, extract_transcript_text
+from backend.extensions.plugin_requests import (
+    PluginRequestStore,
+    create_plugin_request,
+    plugin_request_to_payload,
+)
 from backend.llm.openrouter import OpenRouterError
 from backend.storage.local_store import LocalRunStore, StoredRun
 
@@ -67,6 +72,16 @@ class SkillPackRefineRequest(BaseModel):
     model: str | None = Field(default=None)
 
 
+class PluginRequestCreateRequest(BaseModel):
+    title: str = Field(min_length=1)
+    research_question: str = Field(min_length=1)
+    requested_metric_id: str | None = Field(default=None)
+    output_columns: list[str] | str = Field(default_factory=list)
+    example_transcript: str | None = Field(default=None)
+    expected_behavior: str | None = Field(default=None)
+    examples: list[dict[str, str]] = Field(default_factory=list)
+
+
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "storage": "local"}
@@ -80,6 +95,29 @@ def default_skill_pack() -> dict:
 @app.get("/api/metric-plugins")
 def list_metric_plugins() -> dict:
     return {"plugins": metric_plugin_catalog()}
+
+
+@app.post("/api/plugin-requests")
+def create_metric_plugin_request(request: PluginRequestCreateRequest) -> dict:
+    try:
+        stored = PluginRequestStore(_local_data_root())
+        plugin_request = create_plugin_request(request.model_dump(), store=stored)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "request": plugin_request_to_payload(plugin_request),
+        "artifact_path": str(stored.requests_dir / f"{plugin_request.id}.json"),
+    }
+
+
+@app.get("/api/plugin-requests")
+def list_metric_plugin_requests() -> dict:
+    return {
+        "requests": [
+            plugin_request_to_payload(request)
+            for request in PluginRequestStore(_local_data_root()).list_requests()
+        ]
+    }
 
 
 @app.post("/api/skill-packs/validate")

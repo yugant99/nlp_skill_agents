@@ -23,6 +23,7 @@ Each checkpoint should record:
 - [2026-05-13 V1 dynamic skill packs](2026-05-13-v1-dynamic-skill-packs.md)
 - [2026-05-13 V2 skill pack studio](2026-05-13-v2-skill-pack-studio.md)
 - [2026-05-13 V3 metric plugin foundation](2026-05-13-v3-metric-plugin-foundation.md)
+- [2026-05-13 V3 plugin request artifacts](2026-05-13-v3-plugin-request-artifacts.md)
 
 ## Completion Bar
 

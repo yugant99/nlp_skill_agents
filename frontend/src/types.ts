@@ -14,6 +14,25 @@ export type MetricPlugin = {
   output_schema: Record<string, string>;
 };
 
+export type PluginRequest = {
+  id: string;
+  title: string;
+  research_question: string;
+  requested_metric_id: string;
+  output_columns: string[];
+  examples: {
+    transcript: string;
+    expected_behavior: string;
+  }[];
+  status: string;
+  created_at: string;
+};
+
+export type PluginRequestResponse = {
+  request: PluginRequest;
+  artifact_path: string;
+};
+
 export type RunResponse = {
   run_id: string;
   source_filename: string;

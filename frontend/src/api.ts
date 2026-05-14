@@ -1,6 +1,8 @@
 import type {
   MetricId,
   MetricPlugin,
+  PluginRequest,
+  PluginRequestResponse,
   RunHistoryItem,
   RunResponse,
   SkillPack,
@@ -30,6 +32,44 @@ export async function listMetricPlugins(): Promise<MetricPlugin[]> {
   }
   const payload = (await response.json()) as { plugins: MetricPlugin[] };
   return payload.plugins;
+}
+
+export async function createPluginRequest(params: {
+  title: string;
+  researchQuestion: string;
+  requestedMetricId: string;
+  outputColumns: string;
+  exampleTranscript: string;
+  expectedBehavior: string;
+}): Promise<PluginRequestResponse> {
+  const response = await fetch(`${API_BASE}/api/plugin-requests`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      title: params.title,
+      research_question: params.researchQuestion,
+      requested_metric_id: params.requestedMetricId,
+      output_columns: params.outputColumns,
+      example_transcript: params.exampleTranscript,
+      expected_behavior: params.expectedBehavior
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Plugin request failed");
+  }
+  return response.json();
+}
+
+export async function listPluginRequests(): Promise<PluginRequest[]> {
+  const response = await fetch(`${API_BASE}/api/plugin-requests`);
+  if (!response.ok) {
+    throw new Error("Could not load plugin requests");
+  }
+  const payload = (await response.json()) as { requests: PluginRequest[] };
+  return payload.requests;
 }
 
 export async function validateSkillPack(payload: unknown): Promise<SkillPackSummary> {

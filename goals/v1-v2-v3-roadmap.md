@@ -106,6 +106,98 @@ V3 is where the agent may modify code, but only through an isolated developer wo
 - Review and approve it.
 - Run the new metric inside the workbench without destabilizing existing skills.
 
+## V4: Study Workspace and Dashboard Composer
+
+**Goal:** Move from one-off transcript runs to reusable study workspaces with batch analysis, versioned skill packs, aggregate outputs, and dashboard-ready bundles.
+
+V4 keeps the same safe flow but adds study-level structure: a professor can create a study, draft or upload skill packs, run multiple transcripts, compare versions, and export data for dashboard composition.
+
+### Product Capabilities
+
+- Create a local study workspace.
+- Save every drafted/refined skill pack as a versioned study artifact.
+- Run multiple transcripts under one study.
+- Produce per-file and aggregate metric tables.
+- Compare two skill-pack versions on the same transcript or batch.
+- Export a dashboard schema bundle with JSON metadata and CSV data.
+
+### Technical Capabilities
+
+- `local_data/studies/<study_id>` workspace layout.
+- Study metadata endpoints.
+- Skill-pack version store and diff engine.
+- Batch run executor with per-file failure isolation.
+- Aggregate reducers for metric outputs.
+- Dashboard schema exporter.
+
+### Demo Bar
+
+- Create one study workspace.
+- Run three synthetic transcripts.
+- Show aggregate tables and a dashboard schema bundle.
+- Show that changing a skill-pack version changes downstream outputs.
+
+## V5: Local Orchestration and Review Gates
+
+**Goal:** Make the workflow agent-native without giving up reviewability.
+
+V5 introduces local agent job artifacts for skill drafting, plugin building, dashboard composition, and batch analysis. The app prepares auditable work packets; Codex or a local automation runner executes them through explicit verification gates.
+
+### Product Capabilities
+
+- Convert a plugin request into a local build job.
+- Track job status and review gates.
+- Store verification evidence for tests, builds, and UI smoke checks.
+- Record branch, commit, and model-provider provenance.
+- Approve or reject agent-produced work before reuse.
+
+### Technical Capabilities
+
+- Local `agent_jobs` artifact store.
+- Job schemas for skill packs, plugins, dashboards, and batch runs.
+- Verification gate schema.
+- Git branch/commit provenance capture.
+- Optional GitHub PR creation when `gh` is authenticated.
+- Provider abstraction for OpenRouter now and local LLMs later.
+
+### Demo Bar
+
+- Create a metric-plugin build job from a V3 request.
+- Show review gates and verification evidence.
+- Show generated branch/commit provenance.
+- Approve the job and run the new plugin.
+
+## V6: Institutional Research Platform
+
+**Goal:** Prepare the system for lab and institutional use with reusable libraries, reproducibility, audit trails, deployment profiles, and backup/restore.
+
+V6 keeps transcript analysis local-first, but adds operational structure for professors, labs, and secure environments.
+
+### Product Capabilities
+
+- Institution-level library of approved skill packs and metric plugins.
+- Import/export reusable research capability bundles.
+- Generate reproducibility reports for study outputs.
+- Track approvals and exports through an audit log.
+- Run in dev, lab-local, or secure-offline profiles.
+- Backup and restore local research workspaces.
+
+### Technical Capabilities
+
+- Library bundle manifest format.
+- Run report generator with input hashes and provenance.
+- Local role model for researcher/reviewer/admin.
+- Audit event store.
+- Deployment profile checks.
+- Synthetic benchmark corpus and release validation harness.
+
+### Demo Bar
+
+- Export a complete study bundle.
+- Import it into a clean local profile.
+- Re-run and verify matching outputs.
+- Show audit report and approved library entries.
+
 ## Working Rule
 
 Every feature added from this roadmap must follow the same completion bar:

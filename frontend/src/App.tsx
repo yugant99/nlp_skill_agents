@@ -17,16 +17,25 @@ import { useEffect, useMemo, useState } from "react";
 import {
   apiUrl,
   createAnalysisRun,
+  createPluginRequest,
   createTextAnalysisRun,
   draftSkillPack,
   listMetricPlugins,
+  listPluginRequests,
   listRuns,
   loadSkillPack,
   refineSkillPack,
   validateSkillPack,
   validateSkillPackText
 } from "./api";
-import type { MetricId, MetricResult, RunHistoryItem, RunResponse, SkillPack } from "./types";
+import type {
+  MetricId,
+  MetricResult,
+  PluginRequest,
+  RunHistoryItem,
+  RunResponse,
+  SkillPack
+} from "./types";
 import type { MetricPlugin } from "./types";
 
 const metricLabels: Record<string, string> = {
@@ -84,6 +93,21 @@ export function App() {
   const [run, setRun] = useState<RunResponse | null>(null);
   const [runHistory, setRunHistory] = useState<RunHistoryItem[]>([]);
   const [metricPlugins, setMetricPlugins] = useState<MetricPlugin[]>([]);
+  const [pluginRequests, setPluginRequests] = useState<PluginRequest[]>([]);
+  const [pluginRequestStatus, setPluginRequestStatus] = useState("");
+  const [pluginRequestTitle, setPluginRequestTitle] = useState("Empathy Response Metric");
+  const [pluginRequestQuestion, setPluginRequestQuestion] = useState(
+    "Count caregiver turns that acknowledge participant distress or difficulty."
+  );
+  const [pluginRequestColumns, setPluginRequestColumns] = useState(
+    "speaker, empathy_count, examples"
+  );
+  const [pluginRequestExample, setPluginRequestExample] = useState(
+    "CG: That sounds really hard.\nP: It was difficult."
+  );
+  const [pluginRequestExpected, setPluginRequestExpected] = useState(
+    "Count the caregiver turn as one empathy response."
+  );
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
@@ -102,6 +126,9 @@ export function App() {
     listMetricPlugins()
       .then(setMetricPlugins)
       .catch(() => setMetricPlugins([]));
+    listPluginRequests()
+      .then(setPluginRequests)
+      .catch(() => setPluginRequests([]));
   }, []);
 
   const disfluencyTokens = useMemo(
@@ -330,6 +357,25 @@ export function App() {
     }
     if (!participantPrefix || participantPrefix === previousParticipantPrefix) {
       setParticipantPrefix(`${nextParticipantId}_p`);
+    }
+  }
+
+  async function submitPluginRequest() {
+    try {
+      setError("");
+      const response = await createPluginRequest({
+        title: pluginRequestTitle,
+        researchQuestion: pluginRequestQuestion,
+        requestedMetricId: pluginRequestTitle,
+        outputColumns: pluginRequestColumns,
+        exampleTranscript: pluginRequestExample,
+        expectedBehavior: pluginRequestExpected
+      });
+      setPluginRequestStatus(`Saved request: ${response.request.id}`);
+      setPluginRequests(await listPluginRequests());
+    } catch (err) {
+      setPluginRequestStatus("");
+      setError(err instanceof Error ? err.message : "Could not save plugin request");
     }
   }
 
@@ -602,7 +648,23 @@ export function App() {
                 {isRunning ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
                 Run local analysis
               </button>
-              <PluginCatalog plugins={metricPlugins} activeMetrics={selectedMetrics} />
+              <PluginCatalog
+                plugins={metricPlugins}
+                activeMetrics={selectedMetrics}
+                requests={pluginRequests}
+                requestTitle={pluginRequestTitle}
+                requestQuestion={pluginRequestQuestion}
+                requestColumns={pluginRequestColumns}
+                requestExample={pluginRequestExample}
+                requestExpected={pluginRequestExpected}
+                requestStatus={pluginRequestStatus}
+                onRequestTitleChange={setPluginRequestTitle}
+                onRequestQuestionChange={setPluginRequestQuestion}
+                onRequestColumnsChange={setPluginRequestColumns}
+                onRequestExampleChange={setPluginRequestExample}
+                onRequestExpectedChange={setPluginRequestExpected}
+                onSubmitRequest={submitPluginRequest}
+              />
               {error ? <p className="error-text">{error}</p> : null}
             </Panel>
           </aside>
@@ -684,10 +746,36 @@ function RecentRunsPanel({ runs }: { runs: RunHistoryItem[] }) {
 
 function PluginCatalog({
   plugins,
-  activeMetrics
+  activeMetrics,
+  requests,
+  requestTitle,
+  requestQuestion,
+  requestColumns,
+  requestExample,
+  requestExpected,
+  requestStatus,
+  onRequestTitleChange,
+  onRequestQuestionChange,
+  onRequestColumnsChange,
+  onRequestExampleChange,
+  onRequestExpectedChange,
+  onSubmitRequest
 }: {
   plugins: MetricPlugin[];
   activeMetrics: MetricId[];
+  requests: PluginRequest[];
+  requestTitle: string;
+  requestQuestion: string;
+  requestColumns: string;
+  requestExample: string;
+  requestExpected: string;
+  requestStatus: string;
+  onRequestTitleChange: (value: string) => void;
+  onRequestQuestionChange: (value: string) => void;
+  onRequestColumnsChange: (value: string) => void;
+  onRequestExampleChange: (value: string) => void;
+  onRequestExpectedChange: (value: string) => void;
+  onSubmitRequest: () => void;
 }) {
   if (!plugins.length) {
     return null;
@@ -717,6 +805,76 @@ function PluginCatalog({
           </div>
         ))}
       </div>
+      <div className="plugin-request-form">
+        <div className="text-xs font-semibold uppercase text-[#47615d]">
+          Request new metric
+        </div>
+        <label className="field-label">
+          Metric title
+          <input
+            className="field-input"
+            value={requestTitle}
+            onChange={(event) => onRequestTitleChange(event.target.value)}
+          />
+        </label>
+        <label className="field-label">
+          Research question
+          <textarea
+            className="field-input min-h-20 resize-y"
+            value={requestQuestion}
+            onChange={(event) => onRequestQuestionChange(event.target.value)}
+          />
+        </label>
+        <label className="field-label">
+          Output columns
+          <input
+            className="field-input"
+            value={requestColumns}
+            onChange={(event) => onRequestColumnsChange(event.target.value)}
+          />
+        </label>
+        <label className="field-label">
+          Synthetic example
+          <textarea
+            className="field-input min-h-20 resize-y font-mono text-xs"
+            value={requestExample}
+            onChange={(event) => onRequestExampleChange(event.target.value)}
+          />
+        </label>
+        <label className="field-label">
+          Expected behavior
+          <textarea
+            className="field-input min-h-20 resize-y"
+            value={requestExpected}
+            onChange={(event) => onRequestExpectedChange(event.target.value)}
+          />
+        </label>
+        <button className="secondary-button" type="button" onClick={onSubmitRequest}>
+          <Sparkles size={16} />
+          Save plugin request
+        </button>
+        {requestStatus ? <p className="success-text">{requestStatus}</p> : null}
+      </div>
+      {requests.length ? (
+        <div className="mt-3 space-y-2">
+          <div className="text-xs font-semibold uppercase text-[#47615d]">
+            Recent requests
+          </div>
+          {requests.slice(0, 3).map((request) => (
+            <div key={request.id} className="plugin-row">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-[#171717]">
+                  {request.title}
+                </div>
+                <div className="mt-1 truncate font-mono text-xs text-[#756f64]">
+                  {request.requested_metric_id}
+                </div>
+              </div>
+              <span className="plugin-pill-muted">{request.status}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -60,6 +60,10 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
         "base_metrics",
         "disfluency_metrics",
     ]
+    assert payload["diagnostics"] == {
+        "turn_counts": {"caregiver": 1, "participant": 1},
+        "warnings": [],
+    }
     assert payload["stored"]["results_json"].endswith("results.json")
     assert payload["exports"] == [
         {
@@ -117,3 +121,35 @@ def test_download_export_rejects_path_traversal(tmp_path, monkeypatch) -> None:
     response = client.get("/api/runs/abc/exports/../runs.sqlite3")
 
     assert response.status_code == 404
+
+
+def test_create_run_surfaces_diagnostic_warnings(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs",
+        data={
+            "config": json.dumps(
+                {
+                    "participant_id": "vr099",
+                    "selected_metrics": ["base_metrics"],
+                }
+            )
+        },
+        files={
+            "file": (
+                "bad.txt",
+                b"This transcript has no known speaker prefixes.",
+                "text/plain",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["diagnostics"]["warnings"] == [
+        {
+            "code": "no_turns_found",
+            "message": "No speaker turns were detected. Check participant ID and speaker prefixes.",
+        }
+    ]

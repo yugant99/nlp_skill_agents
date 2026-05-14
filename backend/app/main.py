@@ -11,7 +11,9 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+from backend.analysis.diagnostics import analyze_transcript_quality
 from backend.analysis.pipeline import execute_analysis
+from backend.analysis.skill_packs import load_skill_pack
 from backend.analysis.transcripts import StudyConfig, extract_transcript_text
 from backend.storage.local_store import LocalRunStore, StoredRun
 
@@ -33,8 +35,7 @@ def health() -> dict[str, str]:
 
 @app.get("/api/skill-packs/default")
 def default_skill_pack() -> dict:
-    path = _repo_root() / "study_skill_packs" / "default_transcript_metrics.json"
-    return json.loads(path.read_text(encoding="utf-8"))
+    return load_skill_pack("default_transcript_metrics").raw
 
 
 @app.post("/api/runs")
@@ -99,6 +100,7 @@ def _run_response(run, stored: StoredRun) -> dict:
         "source_filename": run.source_filename,
         "created_at": run.created_at,
         "turn_count": len(run.transcript.turns),
+        "diagnostics": analyze_transcript_quality(run.transcript).to_dict(),
         "results": [asdict(result) for result in run.results],
         "stored": {
             "run_dir": str(stored.run_dir),

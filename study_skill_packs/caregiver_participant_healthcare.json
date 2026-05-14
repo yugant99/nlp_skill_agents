@@ -1,0 +1,39 @@
+{
+  "id": "caregiver_participant_healthcare",
+  "name": "Caregiver Participant Healthcare",
+  "version": "1.0.0",
+  "description": "Dynamic skill pack for caregiver-participant conversations with health, care, and interaction signals.",
+  "metrics": [
+    "base_metrics",
+    "lexical_metrics",
+    "disfluency_metrics",
+    "concept_count_metrics",
+    "cue_inventory_metrics"
+  ],
+  "speaker_roles": {
+    "caregiver": {
+      "label": "Care Partner",
+      "prefixes": ["CG", "Caregiver", "Interviewer"]
+    },
+    "participant": {
+      "label": "Participant",
+      "prefixes": ["P", "Participant", "Patient"]
+    }
+  },
+  "disfluency_tokens": ["um", "uh", "hm", "hmm", "mhm", "like"],
+  "concept_lexicons": {
+    "pain": ["pain", "ache", "aches", "hurt", "hurts", "sore"],
+    "medication": ["medication", "medicine", "pill", "pills", "dose", "prescription"],
+    "sleep": ["sleep", "slept", "tired", "fatigue", "nap", "awake"],
+    "mobility": ["walk", "walking", "stand", "standing", "fall", "falls", "balance"],
+    "memory": ["remember", "forgot", "forget", "memory", "recall"],
+    "care_activity": ["bath", "bathe", "meal", "eat", "drink", "dress", "appointment"]
+  },
+  "nonverbal_cues": {
+    "pause": ["pause", "long pause", "silence"],
+    "laughter": ["laughs", "laughing", "chuckles"],
+    "distress": ["crying", "sighs", "sigh"],
+    "cough": ["cough", "coughs"],
+    "gesture": ["points", "nods", "shakes head"]
+  }
+}

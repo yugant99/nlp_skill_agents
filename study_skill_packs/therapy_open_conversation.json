@@ -1,0 +1,37 @@
+{
+  "id": "therapy_open_conversation",
+  "name": "Therapy Open Conversation",
+  "version": "1.0.0",
+  "description": "Dynamic skill pack for open-ended clinical or counseling conversations.",
+  "metrics": [
+    "base_metrics",
+    "lexical_metrics",
+    "disfluency_metrics",
+    "concept_count_metrics",
+    "cue_inventory_metrics"
+  ],
+  "speaker_roles": {
+    "clinician": {
+      "label": "Clinician",
+      "prefixes": ["T", "Therapist", "Clinician"]
+    },
+    "participant": {
+      "label": "Participant",
+      "prefixes": ["P", "Participant", "Client"]
+    }
+  },
+  "disfluency_tokens": ["um", "uh", "hm", "hmm", "like"],
+  "concept_lexicons": {
+    "emotion": ["feel", "feeling", "felt", "sad", "angry", "afraid", "happy"],
+    "risk": ["harm", "unsafe", "danger", "risk", "hurt", "crisis"],
+    "goals": ["goal", "goals", "change", "plan", "progress"],
+    "relationships": ["mother", "father", "partner", "friend", "family"],
+    "self_reflection": ["think", "thought", "realize", "noticed", "understand"]
+  },
+  "nonverbal_cues": {
+    "pause": ["pause", "long pause", "silence"],
+    "laughter": ["laughs", "laughing", "chuckles"],
+    "distress": ["crying", "tearful", "sigh", "sighs"],
+    "agreement": ["nods", "nodding"]
+  }
+}

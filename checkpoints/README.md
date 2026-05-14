@@ -20,6 +20,7 @@ Each checkpoint should record:
 ## Current Checkpoints
 
 - [2026-05-13 MVP foundation](2026-05-13-mvp-foundation.md)
+- [2026-05-13 V1 dynamic skill packs](2026-05-13-v1-dynamic-skill-packs.md)
 
 ## Completion Bar
 

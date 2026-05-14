@@ -1,0 +1,37 @@
+{
+  "id": "interview_psychology",
+  "name": "Psychology Interview",
+  "version": "1.0.0",
+  "description": "Dynamic skill pack for semi-structured psychology or behavioral-health interviews.",
+  "metrics": [
+    "base_metrics",
+    "lexical_metrics",
+    "disfluency_metrics",
+    "concept_count_metrics",
+    "cue_inventory_metrics"
+  ],
+  "speaker_roles": {
+    "interviewer": {
+      "label": "Interviewer",
+      "prefixes": ["I", "Interviewer", "Researcher"]
+    },
+    "participant": {
+      "label": "Participant",
+      "prefixes": ["P", "Participant", "Client"]
+    }
+  },
+  "disfluency_tokens": ["um", "uh", "er", "hm", "hmm", "like", "you know"],
+  "concept_lexicons": {
+    "mood": ["happy", "sad", "angry", "upset", "calm", "irritable"],
+    "anxiety": ["anxious", "worry", "worried", "panic", "nervous", "fear"],
+    "stress": ["stress", "stressed", "pressure", "overwhelmed"],
+    "social_support": ["family", "friend", "friends", "support", "alone", "lonely"],
+    "coping": ["cope", "coping", "manage", "managed", "strategy", "strategies"]
+  },
+  "nonverbal_cues": {
+    "pause": ["pause", "long pause", "silence"],
+    "laughter": ["laughs", "laughing", "chuckles"],
+    "emotion": ["crying", "tearful", "sigh", "sighs"],
+    "uncertainty": ["shrugs", "hesitates"]
+  }
+}

@@ -21,6 +21,21 @@ def test_load_skill_pack_by_id_from_default_directory() -> None:
     assert pack.raw["speaker_roles"]["caregiver"] == "Caregiver"
 
 
+def test_builtin_dynamic_templates_load_with_research_definitions() -> None:
+    template_ids = [
+        "caregiver_participant_healthcare",
+        "interview_psychology",
+        "therapy_open_conversation",
+    ]
+
+    packs = [load_skill_pack(template_id) for template_id in template_ids]
+
+    assert [pack.id for pack in packs] == template_ids
+    assert all("concept_count_metrics" in [metric.id for metric in pack.metrics] for pack in packs)
+    assert all(pack.concept_lexicons for pack in packs)
+    assert all(pack.nonverbal_cues for pack in packs)
+
+
 def test_load_skill_pack_by_file_path_preserves_output_schema(tmp_path: Path) -> None:
     pack_path = tmp_path / "custom_pack.json"
     pack_path.write_text(

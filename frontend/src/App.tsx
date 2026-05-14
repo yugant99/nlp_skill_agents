@@ -236,7 +236,7 @@ export function App() {
           <div className="grid grid-cols-3 gap-2 self-end">
             <StatusTile icon={<ShieldCheck size={18} />} label="Local" value="No cloud I/O" />
             <StatusTile icon={<Database size={18} />} label="Store" value="SQLite + files" />
-            <StatusTile icon={<Activity size={18} />} label="Skills" value="3 demo metrics" />
+            <StatusTile icon={<Activity size={18} />} label="Skills" value="Dynamic packs" />
           </div>
         </header>
 

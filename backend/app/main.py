@@ -107,6 +107,9 @@ def create_metric_plugin_request(request: PluginRequestCreateRequest) -> dict:
     return {
         "request": plugin_request_to_payload(plugin_request),
         "artifact_path": str(stored.requests_dir / f"{plugin_request.id}.json"),
+        "implementation_prompt_path": str(
+            stored.requests_dir / plugin_request.id / "implementation_prompt.md"
+        ),
     }
 
 

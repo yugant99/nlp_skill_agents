@@ -30,6 +30,7 @@ class PluginRequest:
 class StoredPluginRequest:
     request: PluginRequest
     artifact_path: Path
+    implementation_prompt_path: Path
 
 
 class PluginRequestStore:
@@ -44,7 +45,18 @@ class PluginRequestStore:
             json.dumps(plugin_request_to_payload(request), indent=2),
             encoding="utf-8",
         )
-        return StoredPluginRequest(request=request, artifact_path=artifact_path)
+        prompt_dir = self.requests_dir / request.id
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        implementation_prompt_path = prompt_dir / "implementation_prompt.md"
+        implementation_prompt_path.write_text(
+            build_implementation_prompt(request),
+            encoding="utf-8",
+        )
+        return StoredPluginRequest(
+            request=request,
+            artifact_path=artifact_path,
+            implementation_prompt_path=implementation_prompt_path,
+        )
 
     def list_requests(self) -> list[PluginRequest]:
         if not self.requests_dir.exists():
@@ -101,6 +113,65 @@ def plugin_request_from_payload(payload: dict[str, Any]) -> PluginRequest:
         examples=examples,
         status=str(payload.get("status") or "draft"),
         created_at=str(payload.get("created_at") or datetime.now(UTC).isoformat()),
+    )
+
+
+def build_implementation_prompt(request: PluginRequest) -> str:
+    branch_name = f"codex/plugin-{request.id.replace('_', '-')}"
+    columns = "\n".join(f"- `{column}`" for column in request.output_columns)
+    examples = "\n\n".join(
+        "\n".join(
+            [
+                f"### Example {index}",
+                "",
+                "Transcript:",
+                "```text",
+                example.transcript,
+                "```",
+                "",
+                "Expected behavior:",
+                example.expected_behavior,
+            ]
+        )
+        for index, example in enumerate(request.examples, start=1)
+    )
+    return "\n".join(
+        [
+            f"# Metric Plugin Request: {request.title}",
+            "",
+            f"Branch: `{branch_name}`",
+            f"Metric id: `{request.requested_metric_id}`",
+            f"Status: `{request.status}`",
+            "",
+            "## Research Question",
+            "",
+            request.research_question,
+            "",
+            "## Output Columns",
+            "",
+            columns,
+            "",
+            "## Synthetic Examples",
+            "",
+            examples,
+            "",
+            "## Implementation Contract",
+            "",
+            "- Add a deterministic metric function in `backend/analysis/metrics.py`.",
+            "- Register it with `MetricPlugin` in `backend/analysis/pipeline.py`.",
+            "- Add focused tests in `tests/test_metric_plugins.py`.",
+            "- Keep transcript content local and use only synthetic examples in tests.",
+            "- Keep output tabular and CSV-exportable.",
+            "",
+            "## Verification Commands",
+            "",
+            "```bash",
+            ".venv/bin/pytest tests/test_metric_plugins.py -q",
+            ".venv/bin/pytest -q",
+            "cd frontend && npm run lint && npm run build",
+            "```",
+            "",
+        ]
     )
 
 

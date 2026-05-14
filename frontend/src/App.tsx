@@ -371,7 +371,9 @@ export function App() {
         exampleTranscript: pluginRequestExample,
         expectedBehavior: pluginRequestExpected
       });
-      setPluginRequestStatus(`Saved request: ${response.request.id}`);
+      setPluginRequestStatus(
+        `Saved request: ${response.request.id} -> ${response.implementation_prompt_path}`
+      );
       setPluginRequests(await listPluginRequests());
     } catch (err) {
       setPluginRequestStatus("");

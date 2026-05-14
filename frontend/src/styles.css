@@ -170,7 +170,7 @@
   }
 
   .success-text {
-    @apply mt-3 rounded-md border border-[#b7c2b5] bg-[#eef5ec] px-3 py-2 text-sm text-[#2f5b50];
+    @apply mt-3 break-words rounded-md border border-[#b7c2b5] bg-[#eef5ec] px-3 py-2 text-sm text-[#2f5b50];
   }
 
   .table-head {

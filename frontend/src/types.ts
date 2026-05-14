@@ -31,6 +31,7 @@ export type PluginRequest = {
 export type PluginRequestResponse = {
   request: PluginRequest;
   artifact_path: string;
+  implementation_prompt_path: string;
 };
 
 export type RunResponse = {

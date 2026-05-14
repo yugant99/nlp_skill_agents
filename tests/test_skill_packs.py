@@ -53,6 +53,81 @@ def test_load_skill_pack_by_file_path_preserves_output_schema(tmp_path: Path) ->
     }
 
 
+def test_load_skill_pack_supports_dynamic_research_definitions(tmp_path: Path) -> None:
+    pack_path = tmp_path / "dynamic_pack.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "id": "dynamic_pack",
+                "name": "Dynamic Pack",
+                "version": "1.0.0",
+                "metrics": ["base_metrics"],
+                "speaker_roles": {
+                    "caregiver": {
+                        "label": "Care Partner",
+                        "prefixes": ["CG", "Caregiver"],
+                    },
+                    "participant": {
+                        "label": "Participant",
+                        "prefixes": ["P", "Patient"],
+                    },
+                },
+                "disfluency_tokens": ["um", "uh", "like"],
+                "concept_lexicons": {
+                    "pain": ["pain", "ache", "hurts"],
+                    "medication": ["pill", "dose"],
+                },
+                "nonverbal_cues": {
+                    "pause": ["pause", "long pause", "silence"],
+                    "laughter": ["laughs", "laughing", "chuckles"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    pack = load_skill_pack(pack_path)
+
+    assert pack.speaker_roles == {
+        "caregiver": "Care Partner",
+        "participant": "Participant",
+    }
+    assert pack.speaker_prefixes == {
+        "caregiver": ["CG", "Caregiver"],
+        "participant": ["P", "Patient"],
+    }
+    assert pack.disfluency_tokens == ["um", "uh", "like"]
+    assert pack.concept_lexicons == {
+        "pain": ["pain", "ache", "hurts"],
+        "medication": ["pill", "dose"],
+    }
+    assert pack.nonverbal_cues == {
+        "pause": ["pause", "long pause", "silence"],
+        "laughter": ["laughs", "laughing", "chuckles"],
+    }
+
+
+def test_load_skill_pack_rejects_invalid_dynamic_definitions(tmp_path: Path) -> None:
+    pack_path = tmp_path / "bad_dynamic_pack.json"
+    pack_path.write_text(
+        json.dumps(
+            {
+                "id": "bad_dynamic_pack",
+                "name": "Bad Dynamic Pack",
+                "version": "1.0.0",
+                "metrics": ["base_metrics"],
+                "concept_lexicons": {
+                    "pain": ["pain", 12],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillPackValidationError, match="concept_lexicons"):
+        load_skill_pack(pack_path)
+
+
 def test_load_skill_pack_rejects_missing_required_fields(tmp_path: Path) -> None:
     pack_path = tmp_path / "missing_fields.json"
     pack_path.write_text(

@@ -25,7 +25,10 @@ class SkillPack:
     metrics: list[SkillPackMetric]
     description: str | None
     speaker_roles: dict[str, str]
+    speaker_prefixes: dict[str, list[str]]
     disfluency_tokens: list[str]
+    concept_lexicons: dict[str, list[str]]
+    nonverbal_cues: dict[str, list[str]]
     raw: dict[str, Any]
     path: Path
 
@@ -59,6 +62,9 @@ def parse_skill_pack(payload: Any, path: Path | None = None) -> SkillPack:
     version = _required_string(payload, "version")
     metrics = _parse_metrics(payload["metrics"])
     _validate_registered_metric_ids(metrics)
+    speaker_roles, speaker_prefixes = _parse_speaker_roles(
+        payload.get("speaker_roles", {})
+    )
 
     return SkillPack(
         id=pack_id,
@@ -66,9 +72,16 @@ def parse_skill_pack(payload: Any, path: Path | None = None) -> SkillPack:
         version=version,
         metrics=metrics,
         description=_optional_string(payload, "description"),
-        speaker_roles=_string_dict(payload.get("speaker_roles", {}), "speaker_roles"),
+        speaker_roles=speaker_roles,
+        speaker_prefixes=speaker_prefixes,
         disfluency_tokens=_string_list(
             payload.get("disfluency_tokens", []), "disfluency_tokens"
+        ),
+        concept_lexicons=_string_list_dict(
+            payload.get("concept_lexicons", {}), "concept_lexicons"
+        ),
+        nonverbal_cues=_string_list_dict(
+            payload.get("nonverbal_cues", {}), "nonverbal_cues"
         ),
         raw=dict(payload),
         path=path or Path(),
@@ -160,6 +173,53 @@ def _string_dict(value: Any, field: str) -> dict[str, str]:
             f"Skill pack field '{field}' must contain only string keys and values"
         )
     return dict(value)
+
+
+def _parse_speaker_roles(value: Any) -> tuple[dict[str, str], dict[str, list[str]]]:
+    if not isinstance(value, dict):
+        raise SkillPackValidationError("Skill pack field 'speaker_roles' must be an object")
+
+    labels: dict[str, str] = {}
+    prefixes: dict[str, list[str]] = {}
+    for role, definition in value.items():
+        if not isinstance(role, str) or not role:
+            raise SkillPackValidationError(
+                "Skill pack field 'speaker_roles' must contain non-empty string role names"
+            )
+        if isinstance(definition, str):
+            labels[role] = definition
+            continue
+        if not isinstance(definition, dict):
+            raise SkillPackValidationError(
+                "Skill pack field 'speaker_roles' values must be strings or objects"
+            )
+
+        label = definition.get("label", role.title())
+        if not isinstance(label, str) or not label:
+            raise SkillPackValidationError(
+                f"speaker_roles.{role}.label must be a non-empty string"
+            )
+        labels[role] = label
+
+        role_prefixes = definition.get("prefixes", [])
+        if role_prefixes:
+            prefixes[role] = _string_list(
+                role_prefixes, f"speaker_roles.{role}.prefixes"
+            )
+    return labels, prefixes
+
+
+def _string_list_dict(value: Any, field: str) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        raise SkillPackValidationError(f"Skill pack field '{field}' must be an object")
+    parsed: dict[str, list[str]] = {}
+    for key, items in value.items():
+        if not isinstance(key, str) or not key:
+            raise SkillPackValidationError(
+                f"Skill pack field '{field}' must contain non-empty string keys"
+            )
+        parsed[key] = _string_list(items, f"{field}.{key}")
+    return parsed
 
 
 def _string_list(value: Any, field: str) -> list[str]:

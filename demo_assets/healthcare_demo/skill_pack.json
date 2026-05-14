@@ -1,0 +1,34 @@
+{
+  "id": "healthcare_demo_pack",
+  "name": "Healthcare Demo Pack",
+  "version": "1.0.0",
+  "description": "Synthetic demo pack for caregiver-participant healthcare conversations.",
+  "metrics": [
+    "base_metrics",
+    "question_type_metrics",
+    "care_plan_commitment_metrics",
+    "concept_count_metrics"
+  ],
+  "speaker_roles": {
+    "caregiver": {
+      "label": "Caregiver",
+      "prefixes": ["CG", "Caregiver"]
+    },
+    "participant": {
+      "label": "Participant",
+      "prefixes": ["P", "Participant", "Patient"]
+    }
+  },
+  "disfluency_tokens": ["um", "uh", "hm", "hmm", "mhm", "like"],
+  "concept_lexicons": {
+    "pain": ["pain", "hurt", "hurts", "sore", "ache"],
+    "medication": ["medication", "pill", "pills", "dose", "review"],
+    "mobility": ["walking", "walk", "stood", "balance", "falling", "transportation"],
+    "sleep": ["sleep", "slept", "dizzy", "tired"],
+    "memory": ["forgot", "remember", "appointment"]
+  },
+  "nonverbal_cues": {
+    "pause": ["pause", "long pause", "silence"],
+    "distress": ["sigh", "sighs", "crying"]
+  }
+}

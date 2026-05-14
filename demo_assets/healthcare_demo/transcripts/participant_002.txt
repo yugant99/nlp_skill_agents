@@ -1,0 +1,4 @@
+CG: Did the new pill help you sleep?
+P: Yes, I slept longer but felt dizzy.
+CG: We can schedule a balance check next week.
+P: I am worried about falling again.

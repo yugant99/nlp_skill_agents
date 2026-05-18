@@ -37,6 +37,7 @@ import {
   validateSkillPackText
 } from "./api";
 import {
+  createBatchTranscriptFromTextFile,
   parseBatchTranscriptText,
   serializeBatchTranscriptText,
   updateBatchTranscriptMetadata
@@ -148,6 +149,7 @@ export function App() {
     parseBatchTranscriptText(DEFAULT_BATCH_TRANSCRIPT_TEXT)
   );
   const [batchParseError, setBatchParseError] = useState("");
+  const [batchUploadStatus, setBatchUploadStatus] = useState("");
   const [studyBatch, setStudyBatch] = useState<StudyBatchResponse | null>(null);
   const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
   const [error, setError] = useState("");
@@ -523,6 +525,33 @@ export function App() {
     setBatchParseError("");
   }
 
+  async function importBatchFiles(files: FileList | null) {
+    if (!files?.length) {
+      return;
+    }
+    try {
+      const fileArray = Array.from(files);
+      const unsupported = fileArray.filter((item) => !item.name.toLowerCase().endsWith(".txt"));
+      if (unsupported.length) {
+        throw new Error("Study batch file import currently supports TXT files.");
+      }
+      const transcripts = await Promise.all(
+        fileArray.map(async (item) =>
+          createBatchTranscriptFromTextFile(item.name, await item.text())
+        )
+      );
+      setBatchTranscripts(transcripts);
+      setBatchTranscriptText(serializeBatchTranscriptText(transcripts));
+      setBatchParseError("");
+      setBatchUploadStatus(
+        `Imported ${transcripts.length} TXT file${transcripts.length === 1 ? "" : "s"}`
+      );
+    } catch (err) {
+      setBatchUploadStatus("");
+      setBatchParseError(err instanceof Error ? err.message : "Could not import batch files.");
+    }
+  }
+
   return (
     <main className="app-shell min-h-screen text-[#171717]">
       <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-5 lg:px-8">
@@ -860,11 +889,13 @@ export function App() {
               batchTranscriptText={batchTranscriptText}
               batchTranscripts={batchTranscripts}
               batchParseError={batchParseError}
+              batchUploadStatus={batchUploadStatus}
               batch={studyBatch}
               status={studyWorkspaceStatus}
               onStudyNameChange={setStudyName}
               onStudyDescriptionChange={setStudyDescription}
               onBatchTranscriptTextChange={updateBatchTranscriptText}
+              onBatchFilesSelected={importBatchFiles}
               onBatchAssignmentChange={updateBatchAssignment}
               onRunBatch={runStudyWorkspaceBatch}
             />
@@ -915,11 +946,13 @@ function StudyWorkspacePanel({
   batchTranscriptText,
   batchTranscripts,
   batchParseError,
+  batchUploadStatus,
   batch,
   status,
   onStudyNameChange,
   onStudyDescriptionChange,
   onBatchTranscriptTextChange,
+  onBatchFilesSelected,
   onBatchAssignmentChange,
   onRunBatch
 }: {
@@ -929,11 +962,13 @@ function StudyWorkspacePanel({
   batchTranscriptText: string;
   batchTranscripts: BatchTranscript[];
   batchParseError: string;
+  batchUploadStatus: string;
   batch: StudyBatchResponse | null;
   status: string;
   onStudyNameChange: (value: string) => void;
   onStudyDescriptionChange: (value: string) => void;
   onBatchTranscriptTextChange: (value: string) => void;
+  onBatchFilesSelected: (files: FileList | null) => void;
   onBatchAssignmentChange: (index: number, key: string, value: string) => void;
   onRunBatch: () => void;
 }) {
@@ -975,6 +1010,30 @@ function StudyWorkspacePanel({
           ) : null}
         </div>
         <div className="space-y-3">
+          <label className="batch-upload-zone">
+            <input
+              className="sr-only"
+              type="file"
+              accept=".txt,text/plain"
+              multiple
+              onChange={(event) => {
+                void onBatchFilesSelected(event.target.files);
+                event.target.value = "";
+              }}
+            />
+            <span className="batch-upload-icon">
+              <FileText size={18} />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold text-[#253735]">
+                Select transcript TXT files
+              </span>
+              <span className="mt-1 block text-xs leading-5 text-[#756f64]">
+                Filenames like `P1_home_week1.txt` auto-fill participant, condition, and week.
+              </span>
+            </span>
+          </label>
+          {batchUploadStatus ? <p className="success-text">{batchUploadStatus}</p> : null}
           <label className="field-label mt-0">
             Batch transcripts
             <textarea

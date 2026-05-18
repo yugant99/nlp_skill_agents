@@ -121,6 +121,19 @@ export type StudyBatchResponse = {
 
 export type StudyBatchSummary = StudyBatchResponse["batch"];
 
+export type StudyBatchRunSummary = {
+  run_id: string;
+  source_filename: string;
+  metadata: Record<string, string>;
+  created_at: string;
+  turn_count: number;
+  metric_ids: MetricId[];
+};
+
+export type StudyBatchRunDetail = StudyBatchRunSummary & {
+  results: MetricResult[];
+};
+
 export type RunResponse = {
   run_id: string;
   source_filename: string;

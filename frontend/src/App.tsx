@@ -28,7 +28,9 @@ import {
   createTextAnalysisRun,
   draftSkillPack,
   getStudyBatch,
+  getStudyBatchRun,
   getStudySchema,
+  listStudyBatchRuns,
   listStudyBatches,
   listAgentJobs,
   listMetricPlugins,
@@ -70,6 +72,8 @@ import type {
   RunResponse,
   SkillPack,
   StudyBatchResponse,
+  StudyBatchRunDetail,
+  StudyBatchRunSummary,
   StudyBatchSummary,
   StudyWorkspace
 } from "./types";
@@ -188,6 +192,8 @@ export function App() {
   const [batchUploadStatus, setBatchUploadStatus] = useState("");
   const [studyBatches, setStudyBatches] = useState<StudyBatchSummary[]>([]);
   const [studyBatch, setStudyBatch] = useState<StudyBatchResponse | null>(null);
+  const [batchRuns, setBatchRuns] = useState<StudyBatchRunSummary[]>([]);
+  const [selectedBatchRun, setSelectedBatchRun] = useState<StudyBatchRunDetail | null>(null);
   const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -578,9 +584,20 @@ export function App() {
       setStudies(await listStudies());
       setSelectedStudyId(study.id);
       setStudyBatches(await listStudyBatches(study.id));
+      await refreshBatchRuns(study.id, batch.batch.batch_id);
     } catch (err) {
       setStudyWorkspaceStatus("");
       setError(err instanceof Error ? err.message : "Could not run study batch");
+    }
+  }
+
+  async function refreshBatchRuns(studyId: string, batchId: string) {
+    try {
+      setBatchRuns(await listStudyBatchRuns(studyId, batchId));
+      setSelectedBatchRun(null);
+    } catch {
+      setBatchRuns([]);
+      setSelectedBatchRun(null);
     }
   }
 
@@ -655,6 +672,8 @@ export function App() {
     setStudyDescription(study.description);
     setStudyWorkspaceStatus(`Using existing study: ${study.name}`);
     setStudyBatches([]);
+    setBatchRuns([]);
+    setSelectedBatchRun(null);
     try {
       const schema = await getStudySchema(study.id);
       const controls = schemaControlsFromStudySchema(schema);
@@ -675,6 +694,8 @@ export function App() {
   function startNewStudy() {
     setSelectedStudyId("");
     setStudyBatches([]);
+    setBatchRuns([]);
+    setSelectedBatchRun(null);
     setStudyWorkspaceStatus("");
   }
 
@@ -686,8 +707,26 @@ export function App() {
       const batch = await getStudyBatch(selectedStudyId, batchId);
       setStudyBatch(batch);
       setStudyWorkspaceStatus(`Loaded batch ${batch.batch.batch_id.slice(0, 18)}`);
+      await refreshBatchRuns(selectedStudyId, batchId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load study batch");
+    }
+  }
+
+  async function loadStudyBatchRun(runId: string) {
+    if (!selectedStudyId || !studyBatch) {
+      return;
+    }
+    try {
+      const transcriptRun = await getStudyBatchRun(
+        selectedStudyId,
+        studyBatch.batch.batch_id,
+        runId
+      );
+      setSelectedBatchRun(transcriptRun);
+      setStudyWorkspaceStatus(`Loaded transcript: ${transcriptRun.source_filename}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load transcript run");
     }
   }
 
@@ -1070,6 +1109,8 @@ export function App() {
               batchUploadStatus={batchUploadStatus}
               studyBatches={studyBatches}
               batch={studyBatch}
+              batchRuns={batchRuns}
+              selectedBatchRun={selectedBatchRun}
               status={studyWorkspaceStatus}
               onStudyNameChange={setStudyName}
               onStudyDescriptionChange={setStudyDescription}
@@ -1086,6 +1127,7 @@ export function App() {
               onCasebookCsvImport={importCasebookCsv}
               onBatchAssignmentChange={updateBatchAssignment}
               onLoadBatch={loadStudyBatch}
+              onLoadBatchRun={loadStudyBatchRun}
               onRunBatch={runStudyWorkspaceBatch}
             />
             <RecentRunsPanel runs={runHistory} />
@@ -1145,6 +1187,8 @@ function StudyWorkspacePanel({
   batchUploadStatus,
   studyBatches,
   batch,
+  batchRuns,
+  selectedBatchRun,
   status,
   onStudyNameChange,
   onStudyDescriptionChange,
@@ -1161,6 +1205,7 @@ function StudyWorkspacePanel({
   onCasebookCsvImport,
   onBatchAssignmentChange,
   onLoadBatch,
+  onLoadBatchRun,
   onRunBatch
 }: {
   studies: StudyWorkspace[];
@@ -1179,6 +1224,8 @@ function StudyWorkspacePanel({
   batchUploadStatus: string;
   studyBatches: StudyBatchSummary[];
   batch: StudyBatchResponse | null;
+  batchRuns: StudyBatchRunSummary[];
+  selectedBatchRun: StudyBatchRunDetail | null;
   status: string;
   onStudyNameChange: (value: string) => void;
   onStudyDescriptionChange: (value: string) => void;
@@ -1195,6 +1242,7 @@ function StudyWorkspacePanel({
   onCasebookCsvImport: (files: FileList | null) => void;
   onBatchAssignmentChange: (index: number, key: string, value: string) => void;
   onLoadBatch: (batchId: string) => void;
+  onLoadBatchRun: (runId: string) => void;
   onRunBatch: () => void;
 }) {
   return (
@@ -1424,6 +1472,70 @@ function StudyWorkspacePanel({
               ) : null}
             </div>
           ) : null}
+          {batchRuns.length ? (
+            <div className="mt-4 rounded-md border border-[#d9d4c5] bg-white/75">
+              <div className="grid gap-1 border-b border-[#e4ded0] px-3 py-2">
+                <div className="text-sm font-semibold text-[#2f413f]">
+                  Transcript drilldown
+                </div>
+                <div className="text-xs text-[#756f64]">
+                  Inspect each source file behind the aggregate study tables.
+                </div>
+              </div>
+              <div className="divide-y divide-[#e4ded0]">
+                {batchRuns.map((item) => (
+                  <div
+                    key={item.run_id}
+                    className="grid gap-3 px-3 py-2 md:grid-cols-[1fr_auto] md:items-center"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-[#171717]">
+                        {item.source_filename}
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-2 text-xs text-[#756f64]">
+                        <span className="font-mono">{item.run_id.slice(0, 12)}</span>
+                        <span>{item.turn_count} turn{item.turn_count === 1 ? "" : "s"}</span>
+                        <span>{item.metric_ids.length} metric{item.metric_ids.length === 1 ? "" : "s"}</span>
+                        {batchRunMetadataLine(item.metadata) ? (
+                          <span>{batchRunMetadataLine(item.metadata)}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <button
+                      className="small-action-button justify-self-start md:justify-self-end"
+                      type="button"
+                      onClick={() => onLoadBatchRun(item.run_id)}
+                    >
+                      Inspect
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {selectedBatchRun ? (
+            <div className="mt-4 space-y-4 border-t border-[#e4ded0] pt-4">
+              <div>
+                <div className="text-sm font-semibold text-[#2f413f]">
+                  Transcript results: {selectedBatchRun.source_filename}
+                </div>
+                <p className="mt-1 text-xs text-[#756f64]">
+                  Source-level tables use the same skill pack as the loaded aggregate batch.
+                </p>
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <OutputFact label="Run ID" value={selectedBatchRun.run_id.slice(0, 12)} />
+                <OutputFact label="Turns" value={String(selectedBatchRun.turn_count)} />
+                <OutputFact
+                  label="Casebook"
+                  value={batchRunMetadataLine(selectedBatchRun.metadata) || "No metadata"}
+                />
+              </div>
+              {selectedBatchRun.results.map((result) => (
+                <BatchMetricTable key={result.metric_id} result={result} />
+              ))}
+            </div>
+          ) : null}
           {batch?.results.length ? (
             <div className="mt-4 space-y-4 border-t border-[#e4ded0] pt-4">
               <div>
@@ -1446,6 +1558,16 @@ function StudyWorkspacePanel({
       </div>
     </Panel>
   );
+}
+
+function batchRunMetadataLine(metadata: Record<string, string>): string {
+  const preferred = ["participant_id", "condition", "week"]
+    .map((key) => metadata[key])
+    .filter(Boolean);
+  const extras = Object.entries(metadata)
+    .filter(([key, value]) => value && !["participant_id", "condition", "week"].includes(key))
+    .map(([key, value]) => `${key}: ${value}`);
+  return [...preferred, ...extras].join(" / ");
 }
 
 function FileAssignmentGrid({

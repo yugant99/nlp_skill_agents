@@ -24,6 +24,8 @@ This makes the study workflow closer to an NVivo-style evidence path: aggregate 
 - Added frontend API types and client functions for those endpoints.
 - Added Transcript drilldown UI under loaded study batches.
 - Added Inspect action to render source-level metric tables for one transcript.
+- Stored parsed speaker turns in each local batch run artifact.
+- Added Source evidence preview for inspected transcript runs.
 
 ## CLI Verification
 
@@ -40,14 +42,17 @@ This makes the study workflow closer to an NVivo-style evidence path: aggregate 
 - Confirmed Transcript drilldown listed 3 source runs.
 - Clicked Inspect and confirmed transcript-level metric tables rendered.
 - Smoke screenshot saved under ignored local storage: `local_data/tmp/batch-run-drilldown-smoke.png`.
+- Re-ran the browser flow after parsed-turn support and confirmed Source evidence rendered.
+- Smoke screenshot saved under ignored local storage: `local_data/tmp/source-evidence-smoke.png`.
 
 ## Git Commit
 
 - `c302c70 feat: expose batch run drilldown`
 - `3a5bfb1 feat: inspect batch transcript drilldowns`
+- `0263e0f feat: show source evidence in batch drilldown`
 
 ## Follow-Up Risks
 
-- The drilldown currently shows stored metric tables, not transcript text snippets.
 - Batch failures should eventually have their own inspectable error detail rows.
 - Longitudinal source browsing will need filters when batches contain dozens of files.
+- Source evidence currently previews parsed turns only; future versions can link metric rows directly to matching turn spans.

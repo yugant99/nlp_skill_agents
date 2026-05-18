@@ -2,6 +2,7 @@ import type {
   AgentJob,
   AgentJobEvidence,
   AgentJobResponse,
+  BatchTranscript,
   MetricId,
   MetricPlugin,
   PluginRequest,
@@ -193,7 +194,7 @@ export async function addStudySkillPackVersion(
 export async function createStudyTextBatch(params: {
   studyId: string;
   skillPackVersionId: string;
-  transcripts: { source_filename: string; content: string }[];
+  transcripts: BatchTranscript[];
 }): Promise<StudyBatchResponse> {
   const response = await fetch(`${API_BASE}/api/studies/${params.studyId}/batches/text`, {
     method: "POST",

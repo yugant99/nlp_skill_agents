@@ -38,6 +38,7 @@ import {
 } from "./api";
 import type {
   AgentJob,
+  BatchTranscript,
   MetricId,
   MetricResult,
   PluginRequest,
@@ -131,9 +132,12 @@ export function App() {
     "Three-transcript demo workspace for aggregate prompting and care-plan metrics."
   );
   const [batchTranscriptText, setBatchTranscriptText] = useState(
-    "one.txt\nCG: How did walking feel today?\nP: It hurt after lunch.\n---\n" +
-      "two.txt\nCG: Did medication help last night?\nP: Yes, I slept better.\n---\n" +
-      "three.txt\nCG: I will call the clinic tomorrow.\nP: Thank you."
+    "participant_001.txt | participant_id=P1 | condition=home | week=week_1\n" +
+      "P1_c: How did walking feel today?\nP1_p: It hurt after lunch.\n---\n" +
+      "participant_002.txt | participant_id=P2 | condition=lab | week=week_1\n" +
+      "P2_c: Did medication help last night?\nP2_p: Yes, I slept better.\n---\n" +
+      "participant_003.txt | participant_id=P3 | condition=home | week=week_2\n" +
+      "P3_c: I will call the clinic tomorrow.\nP3_p: Thank you."
   );
   const [studyBatch, setStudyBatch] = useState<StudyBatchResponse | null>(null);
   const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
@@ -940,7 +944,7 @@ function StudyWorkspacePanel({
               onChange={(event) => onBatchTranscriptTextChange(event.target.value)}
             />
             <span className="field-helper">
-              Separate files with `---`; first line of each block is the filename.
+              Separate files with `---`; first line can be `filename | participant_id=P1 | condition=home | week=week_1`.
             </span>
           </label>
           <button className="secondary-button" type="button" onClick={onRunBatch}>
@@ -958,6 +962,21 @@ function StudyWorkspacePanel({
                 value={batch.exports.map((item) => item.filename).join(", ")}
                 wide
               />
+            </div>
+          ) : null}
+          {batch?.results.length ? (
+            <div className="mt-4 space-y-4 border-t border-[#e4ded0] pt-4">
+              <div>
+                <div className="text-sm font-semibold text-[#2f413f]">
+                  Aggregate comparison tables
+                </div>
+                <p className="mt-1 text-xs text-[#756f64]">
+                  Rows carry file-level casebook metadata for participant, condition, week, and custom fields.
+                </p>
+              </div>
+              {batch.results.map((result) => (
+                <BatchMetricTable key={result.metric_id} result={result} />
+              ))}
             </div>
           ) : null}
         </div>
@@ -1326,6 +1345,44 @@ function MetricTable({
   );
 }
 
+function BatchMetricTable({ result }: { result: MetricResult }) {
+  const columns = Array.from(new Set(result.rows.flatMap((row) => Object.keys(row))));
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="text-sm font-semibold text-[#171717]">{result.label}</div>
+        <div className="font-mono text-xs text-[#756f64]">
+          {result.rows.length} row{result.rows.length === 1 ? "" : "s"}
+        </div>
+      </div>
+      <div className="overflow-x-auto rounded-md border border-[#e4ded0]">
+        <table className="w-full min-w-[760px] border-collapse text-left text-xs">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th key={column} className="table-head">
+                  {column.replaceAll("_", " ")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {result.rows.map((row, index) => (
+              <tr key={index} className="border-t border-[#e4ded0]">
+                {columns.map((column) => (
+                  <td key={column} className="table-cell">
+                    {formatCell(row[column])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function formatCell(value: unknown): string {
   if (Array.isArray(value)) {
     return value.join(", ");
@@ -1340,19 +1397,28 @@ function metricLabel(metricId: string): string {
   return metricLabels[metricId] ?? metricId.replaceAll("_", " ");
 }
 
-function parseBatchTranscripts(
-  value: string
-): { source_filename: string; content: string }[] {
+function parseBatchTranscripts(value: string): BatchTranscript[] {
   const transcripts = value
     .split(/\n---+\n/g)
     .map((block) => block.trim())
     .filter(Boolean)
     .map((block, index) => {
-      const [filenameLine, ...contentLines] = block.split("\n");
-      const sourceFilename = filenameLine.trim() || `transcript_${index + 1}.txt`;
+      const [headerLine, ...contentLines] = block.split("\n");
+      const [filenamePart, ...metadataParts] = headerLine
+        .split("|")
+        .map((part) => part.trim());
+      const metadata = Object.fromEntries(
+        metadataParts
+          .map((part) => {
+            const [key, ...valueParts] = part.split("=");
+            return [key?.trim() ?? "", valueParts.join("=").trim()];
+          })
+          .filter(([key, value]) => key && value)
+      );
       return {
-        source_filename: sourceFilename,
-        content: contentLines.join("\n").trim()
+        source_filename: filenamePart || `transcript_${index + 1}.txt`,
+        content: contentLines.join("\n").trim(),
+        ...(Object.keys(metadata).length ? { metadata } : {})
       };
     })
     .filter((item) => item.content);

@@ -4,7 +4,7 @@ import csv
 import hashlib
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -158,7 +158,7 @@ class StudyWorkspaceStore:
             try:
                 run = execute_analysis(
                     _required_string(item, "content"),
-                    _study_config_from_skill_pack_payload(skill_pack_payload),
+                    _study_config_for_batch_item(skill_pack_payload, metadata),
                     source_filename=source_filename,
                 )
             except (ValueError, KeyError) as exc:
@@ -336,6 +336,17 @@ def _study_config_from_skill_pack_payload(payload: dict[str, Any]) -> StudyConfi
         skill_pack_name=pack.name,
         skill_pack_version=pack.version,
     )
+
+
+def _study_config_for_batch_item(
+    skill_pack_payload: dict[str, Any],
+    metadata: dict[str, str],
+) -> StudyConfig:
+    config = _study_config_from_skill_pack_payload(skill_pack_payload)
+    participant_id = metadata.get("participant_id", "").strip()
+    if not participant_id:
+        return config
+    return replace(config, participant_id=participant_id)
 
 
 def _skill_pack_version_id(payload: dict[str, Any]) -> str:

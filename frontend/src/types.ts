@@ -14,6 +14,12 @@ export type MetricPlugin = {
   output_schema: Record<string, string>;
 };
 
+export type BatchTranscript = {
+  source_filename: string;
+  content: string;
+  metadata?: Record<string, string>;
+};
+
 export type PluginRequest = {
   id: string;
   title: string;
@@ -93,6 +99,7 @@ export type StudyBatchResponse = {
     created_at: string;
   };
   aggregate_results_json: string;
+  results: MetricResult[];
   exports: {
     metric_id: string;
     filename: string;

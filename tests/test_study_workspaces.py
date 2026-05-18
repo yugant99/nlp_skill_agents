@@ -142,6 +142,45 @@ def test_study_workspace_records_batch_failures_without_stopping(tmp_path: Path)
     ]
 
 
+def test_batch_participant_metadata_can_drive_default_prefix_parsing(
+    tmp_path: Path,
+) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Participant Prefix Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "participant_prefix_pack",
+            "name": "Participant Prefix Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [
+            {
+                "source_filename": "p1_week1.txt",
+                "metadata": {"participant_id": "P1", "condition": "home", "week": "week_1"},
+                "content": "P1_c: How did walking feel?\nP1_p: It hurt.",
+            }
+        ],
+    )
+
+    aggregate_payload = json.loads(
+        (batch.aggregate_dir / "aggregate_results.json").read_text(encoding="utf-8")
+    )
+
+    caregiver_row = aggregate_payload["results"][0]["rows"][0]
+    participant_row = aggregate_payload["results"][0]["rows"][1]
+    assert caregiver_row["speaker"] == "caregiver"
+    assert caregiver_row["turns"] == 1
+    assert participant_row["speaker"] == "participant"
+    assert participant_row["turns"] == 1
+
+
 def test_study_workspace_exports_reproducibility_bundle(tmp_path: Path) -> None:
     store = StudyWorkspaceStore(tmp_path)
     study = store.create_study({"name": "Bundle Study"})

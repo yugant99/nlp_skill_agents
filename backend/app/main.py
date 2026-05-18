@@ -752,6 +752,7 @@ def _study_batch_payload(batch) -> dict:
         "batch": _study_batch_summary_payload(batch),
         "aggregate_results_json": str(aggregate_results_json),
         "study_schema": aggregate_payload.get("study_schema"),
+        "failures": aggregate_payload.get("failures", []),
         "results": aggregate_payload["results"],
         "exports": exports,
     }

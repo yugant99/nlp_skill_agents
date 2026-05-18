@@ -1472,6 +1472,9 @@ function StudyWorkspacePanel({
               ) : null}
             </div>
           ) : null}
+          {batch && (batch.failures ?? []).length ? (
+            <BatchFailurePanel failures={batch.failures ?? []} />
+          ) : null}
           {batchRuns.length ? (
             <div className="mt-4 rounded-md border border-[#d9d4c5] bg-white/75">
               <div className="grid gap-1 border-b border-[#e4ded0] px-3 py-2">
@@ -1611,6 +1614,36 @@ function SourceEvidence({
           Showing 6 of {turns.length} parsed turns.
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function BatchFailurePanel({
+  failures
+}: {
+  failures: StudyBatchResponse["failures"];
+}) {
+  return (
+    <div className="mt-4 rounded-md border border-[#dec4a8] bg-[#fff8ef]">
+      <div className="grid gap-1 border-b border-[#ead7bd] px-3 py-2">
+        <div className="flex items-center gap-2 text-sm font-semibold text-[#6f3f17]">
+          <AlertTriangle size={16} />
+          Files needing review
+        </div>
+        <div className="text-xs text-[#8a6845]">
+          Successful files still generated aggregate tables; these files were skipped.
+        </div>
+      </div>
+      <div className="divide-y divide-[#ead7bd]">
+        {failures.map((failure) => (
+          <div key={failure.source_filename} className="grid gap-1 px-3 py-2">
+            <div className="font-mono text-xs font-semibold text-[#3f2a16]">
+              {failure.source_filename}
+            </div>
+            <div className="text-sm leading-6 text-[#6f3f17]">{failure.error}</div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -5,6 +5,7 @@ from docx import Document
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.storage.study_store import StudyWorkspaceStore
 
 
 def test_health_endpoint() -> None:
@@ -732,6 +733,40 @@ def test_study_batch_run_drilldown_api_lists_and_loads_one_run(
         "text": "Hello?",
     }
     assert loaded["results"][0]["metric_id"] == "base_metrics"
+
+
+def test_study_batch_api_includes_failed_file_details(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Failure API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "bad_metric_pack",
+            "name": "Bad Metric Pack",
+            "version": "1.0.0",
+            "metrics": ["not_registered"],
+        },
+        validate=False,
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "bad.txt", "content": "CG: Hello."}],
+    )
+    client = TestClient(app)
+
+    response = client.get(f"/api/studies/{study.id}/batches/{batch.batch_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["batch"]["failure_count"] == 1
+    assert payload["failures"] == [
+        {
+            "source_filename": "bad.txt",
+            "error": "Skill pack references unknown metric id(s): not_registered",
+        }
+    ]
 
 
 def test_library_approval_api_records_entries_and_audit(tmp_path, monkeypatch) -> None:

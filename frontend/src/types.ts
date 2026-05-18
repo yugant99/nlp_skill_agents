@@ -111,6 +111,10 @@ export type StudyBatchResponse = {
   };
   aggregate_results_json: string;
   study_schema: StudySchema | null;
+  failures: {
+    source_filename: string;
+    error: string;
+  }[];
   results: MetricResult[];
   exports: {
     metric_id: string;

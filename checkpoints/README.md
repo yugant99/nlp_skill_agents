@@ -43,6 +43,7 @@ Each checkpoint should record:
 - [2026-05-17 Study file assignment grid](2026-05-17-study-file-assignment-grid.md)
 - [2026-05-17 Batch file import inference](2026-05-17-batch-file-import-inference.md)
 - [2026-05-17 DOCX study batch upload](2026-05-17-docx-study-batch-upload.md)
+- [2026-05-17 Casebook design controls](2026-05-17-casebook-design-controls.md)
 
 ## Completion Bar
 

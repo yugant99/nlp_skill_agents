@@ -5,6 +5,7 @@ import {
   Database,
   FileCheck2,
   FileText,
+  FileUp,
   FlaskConical,
   Loader2,
   Play,
@@ -47,6 +48,7 @@ import {
   serializeBatchTranscriptText,
   updateBatchTranscriptMetadata
 } from "./batchTranscripts";
+import { exportCasebookCsv, parseCasebookCsv } from "./casebookCsv";
 import {
   CASEBOOK_TEMPLATES,
   buildCasebookOptions,
@@ -595,6 +597,40 @@ export function App() {
     setBatchParseError("");
   }
 
+  function exportCurrentCasebookCsv() {
+    const csv = exportCasebookCsv(batchTranscripts);
+    const blobUrl = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    const link = document.createElement("a");
+    link.href = blobUrl;
+    link.download = `${studyName.trim() || "study"}-casebook.csv`;
+    link.click();
+    URL.revokeObjectURL(blobUrl);
+    setBatchUploadStatus("Exported casebook CSV without transcript content.");
+  }
+
+  async function importCasebookCsv(files: FileList | null) {
+    const file = files?.[0];
+    if (!file) {
+      return;
+    }
+    try {
+      const metadataByFilename = parseCasebookCsv(await file.text());
+      const updated = batchTranscripts.map((transcript) => ({
+        ...transcript,
+        metadata: {
+          ...(transcript.metadata ?? {}),
+          ...(metadataByFilename[transcript.source_filename] ?? {})
+        }
+      }));
+      setBatchTranscripts(updated);
+      setBatchTranscriptText(serializeBatchTranscriptText(updated));
+      setBatchUploadStatus(`Imported casebook metadata for ${Object.keys(metadataByFilename).length} file(s).`);
+      setBatchParseError("");
+    } catch (err) {
+      setBatchParseError(err instanceof Error ? err.message : "Could not import casebook CSV.");
+    }
+  }
+
   function applyCasebookTemplate(templateId: string) {
     const template = CASEBOOK_TEMPLATES[templateId];
     if (!template) {
@@ -1018,6 +1054,8 @@ export function App() {
               onApplyCasebookTemplate={applyCasebookTemplate}
               onBatchTranscriptTextChange={updateBatchTranscriptText}
               onBatchFilesSelected={importBatchFiles}
+              onCasebookCsvExport={exportCurrentCasebookCsv}
+              onCasebookCsvImport={importCasebookCsv}
               onBatchAssignmentChange={updateBatchAssignment}
               onRunBatch={runStudyWorkspaceBatch}
             />
@@ -1089,6 +1127,8 @@ function StudyWorkspacePanel({
   onApplyCasebookTemplate,
   onBatchTranscriptTextChange,
   onBatchFilesSelected,
+  onCasebookCsvExport,
+  onCasebookCsvImport,
   onBatchAssignmentChange,
   onRunBatch
 }: {
@@ -1119,6 +1159,8 @@ function StudyWorkspacePanel({
   onApplyCasebookTemplate: (templateId: string) => void;
   onBatchTranscriptTextChange: (value: string) => void;
   onBatchFilesSelected: (files: FileList | null) => void;
+  onCasebookCsvExport: () => void;
+  onCasebookCsvImport: (files: FileList | null) => void;
   onBatchAssignmentChange: (index: number, key: string, value: string) => void;
   onRunBatch: () => void;
 }) {
@@ -1288,6 +1330,8 @@ function StudyWorkspacePanel({
             transcripts={batchTranscripts}
             options={casebookOptions}
             warnings={casebookWarnings}
+            onCsvExport={onCasebookCsvExport}
+            onCsvImport={onCasebookCsvImport}
             onAssignmentChange={onBatchAssignmentChange}
           />
           <button className="secondary-button" type="button" onClick={onRunBatch}>
@@ -1339,11 +1383,15 @@ function FileAssignmentGrid({
   transcripts,
   options,
   warnings,
+  onCsvExport,
+  onCsvImport,
   onAssignmentChange
 }: {
   transcripts: BatchTranscript[];
   options: CasebookOptions;
   warnings: string[];
+  onCsvExport: () => void;
+  onCsvImport: (files: FileList | null) => void;
   onAssignmentChange: (index: number, key: string, value: string) => void;
 }) {
   if (!transcripts.length) {
@@ -1371,8 +1419,29 @@ function FileAssignmentGrid({
             </div>
           ) : null}
         </div>
-        <div className="self-start rounded-full bg-[#eef5ec] px-2 py-1 font-mono text-xs text-[#2f5b50]">
-          {transcripts.length} file{transcripts.length === 1 ? "" : "s"}
+        <div className="flex flex-col items-end gap-2">
+          <div className="rounded-full bg-[#eef5ec] px-2 py-1 font-mono text-xs text-[#2f5b50]">
+            {transcripts.length} file{transcripts.length === 1 ? "" : "s"}
+          </div>
+          <div className="flex flex-wrap justify-end gap-2">
+            <button className="small-action-button" type="button" onClick={onCsvExport}>
+              <Download size={13} />
+              CSV
+            </button>
+            <label className="small-action-button cursor-pointer">
+              <input
+                className="sr-only"
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(event) => {
+                  void onCsvImport(event.target.files);
+                  event.target.value = "";
+                }}
+              />
+              <FileUp size={13} />
+              Import
+            </label>
+          </div>
         </div>
       </div>
       <datalist id="casebook-participants">

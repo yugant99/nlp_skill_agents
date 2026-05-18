@@ -118,7 +118,7 @@
   }
 
   .small-action-button {
-    @apply self-start rounded-md border border-[#cfc8b8] bg-white px-2 py-1.5 text-xs font-semibold text-[#253735] transition duration-200 hover:-translate-y-px hover:border-[#47615d] hover:bg-[#eef5ec] active:translate-y-0;
+    @apply inline-flex items-center gap-1.5 self-start rounded-md border border-[#cfc8b8] bg-white px-2 py-1.5 text-xs font-semibold text-[#253735] transition duration-200 hover:-translate-y-px hover:border-[#47615d] hover:bg-[#eef5ec] active:translate-y-0;
   }
 
   .secondary-button {

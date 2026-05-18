@@ -26,10 +26,13 @@ This makes the study workflow closer to an NVivo-style evidence path: aggregate 
 - Added Inspect action to render source-level metric tables for one transcript.
 - Stored parsed speaker turns in each local batch run artifact.
 - Added Source evidence preview for inspected transcript runs.
+- Passed batch failure details through the API.
+- Added Files needing review panel for skipped batch files.
 
 ## CLI Verification
 
 - `.venv/bin/pytest tests/test_api.py::test_study_batch_run_drilldown_api_lists_and_loads_one_run tests/test_study_workspaces.py::test_study_workspace_lists_and_loads_batch_run_drilldown -q`
+- `.venv/bin/pytest tests/test_api.py::test_study_batch_api_includes_failed_file_details -q`
 - `.venv/bin/pytest -q`
 - `cd frontend && npm run lint`
 - `cd frontend && npm run build`
@@ -44,15 +47,18 @@ This makes the study workflow closer to an NVivo-style evidence path: aggregate 
 - Smoke screenshot saved under ignored local storage: `local_data/tmp/batch-run-drilldown-smoke.png`.
 - Re-ran the browser flow after parsed-turn support and confirmed Source evidence rendered.
 - Smoke screenshot saved under ignored local storage: `local_data/tmp/source-evidence-smoke.png`.
+- Seeded a local failed batch and confirmed the Files needing review panel displayed the failed file and error.
+- Smoke screenshot saved under ignored local storage: `local_data/tmp/batch-failure-panel-smoke.png`.
 
 ## Git Commit
 
 - `c302c70 feat: expose batch run drilldown`
 - `3a5bfb1 feat: inspect batch transcript drilldowns`
 - `0263e0f feat: show source evidence in batch drilldown`
+- `a0a5733 feat: show batch failure details`
 
 ## Follow-Up Risks
 
-- Batch failures should eventually have their own inspectable error detail rows.
 - Longitudinal source browsing will need filters when batches contain dozens of files.
 - Source evidence currently previews parsed turns only; future versions can link metric rows directly to matching turn spans.
+- Failure recovery is informational only; future versions can offer rerun actions for corrected files.

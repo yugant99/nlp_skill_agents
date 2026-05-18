@@ -26,6 +26,7 @@ import {
   createStudyTextBatch,
   createTextAnalysisRun,
   draftSkillPack,
+  getStudySchema,
   listAgentJobs,
   listMetricPlugins,
   listPluginRequests,
@@ -50,6 +51,7 @@ import {
   CASEBOOK_TEMPLATES,
   buildCasebookOptions,
   casebookRequestFromControls,
+  schemaControlsFromStudySchema,
   validateBatchAssignments,
   type CasebookOptions
 } from "./casebookDesign";
@@ -162,6 +164,7 @@ export function App() {
     "Count the caregiver turn as one empathy response."
   );
   const [studies, setStudies] = useState<StudyWorkspace[]>([]);
+  const [selectedStudyId, setSelectedStudyId] = useState("");
   const [studyName, setStudyName] = useState("Demo Healthcare Batch");
   const [studyDescription, setStudyDescription] = useState(
     "Three-transcript demo workspace for aggregate prompting and care-plan metrics."
@@ -527,10 +530,18 @@ export function App() {
     }
     try {
       setError("");
-      const study = await createStudy({
-        name: studyName,
-        description: studyDescription
-      });
+      const study = selectedStudyId
+        ? studies.find((item) => item.id === selectedStudyId) ??
+          {
+            id: selectedStudyId,
+            name: studyName,
+            description: studyDescription,
+            created_at: new Date().toISOString()
+          }
+        : await createStudy({
+            name: studyName,
+            description: studyDescription
+          });
       const schema = await updateStudySchema(
         study.id,
         casebookRequestFromControls({
@@ -555,7 +566,7 @@ export function App() {
           });
       setStudyBatch(batch);
       setStudyWorkspaceStatus(
-        `Schema saved for ${schema.participants.length} participant(s); batch complete: ${batch.batch.run_count} run(s), ${batch.batch.failure_count} failure(s)`
+        `${selectedStudyId ? "Existing study reused" : "Study created"}; schema saved for ${schema.participants.length} participant(s); batch complete: ${batch.batch.run_count} run(s), ${batch.batch.failure_count} failure(s)`
       );
       setStudies(await listStudies());
     } catch (err) {
@@ -593,6 +604,28 @@ export function App() {
     setCasebookConditions(template.conditions);
     setCasebookWeekCount(template.weekCount);
     setCasebookCustomFields(template.customFields.join(", "));
+  }
+
+  async function selectExistingStudy(study: StudyWorkspace) {
+    setSelectedStudyId(study.id);
+    setStudyName(study.name);
+    setStudyDescription(study.description);
+    setStudyWorkspaceStatus(`Using existing study: ${study.name}`);
+    try {
+      const schema = await getStudySchema(study.id);
+      const controls = schemaControlsFromStudySchema(schema);
+      setCasebookParticipantCount(controls.participantCount);
+      setCasebookConditions(controls.conditions);
+      setCasebookWeekCount(controls.weekCount);
+      setCasebookCustomFields(controls.customFields);
+    } catch {
+      setStudyWorkspaceStatus(`Using existing study without saved schema: ${study.name}`);
+    }
+  }
+
+  function startNewStudy() {
+    setSelectedStudyId("");
+    setStudyWorkspaceStatus("");
   }
 
   async function importBatchFiles(files: FileList | null) {
@@ -959,6 +992,7 @@ export function App() {
             ))}
             <StudyWorkspacePanel
               studies={studies}
+              selectedStudyId={selectedStudyId}
               studyName={studyName}
               studyDescription={studyDescription}
               casebookParticipantCount={casebookParticipantCount}
@@ -975,6 +1009,8 @@ export function App() {
               status={studyWorkspaceStatus}
               onStudyNameChange={setStudyName}
               onStudyDescriptionChange={setStudyDescription}
+              onSelectStudy={selectExistingStudy}
+              onStartNewStudy={startNewStudy}
               onCasebookParticipantCountChange={setCasebookParticipantCount}
               onCasebookConditionsChange={setCasebookConditions}
               onCasebookWeekCountChange={setCasebookWeekCount}
@@ -1027,6 +1063,7 @@ function RecentRunsPanel({ runs }: { runs: RunHistoryItem[] }) {
 
 function StudyWorkspacePanel({
   studies,
+  selectedStudyId,
   studyName,
   studyDescription,
   casebookParticipantCount,
@@ -1043,6 +1080,8 @@ function StudyWorkspacePanel({
   status,
   onStudyNameChange,
   onStudyDescriptionChange,
+  onSelectStudy,
+  onStartNewStudy,
   onCasebookParticipantCountChange,
   onCasebookConditionsChange,
   onCasebookWeekCountChange,
@@ -1054,6 +1093,7 @@ function StudyWorkspacePanel({
   onRunBatch
 }: {
   studies: StudyWorkspace[];
+  selectedStudyId: string;
   studyName: string;
   studyDescription: string;
   casebookParticipantCount: number;
@@ -1070,6 +1110,8 @@ function StudyWorkspacePanel({
   status: string;
   onStudyNameChange: (value: string) => void;
   onStudyDescriptionChange: (value: string) => void;
+  onSelectStudy: (study: StudyWorkspace) => void;
+  onStartNewStudy: () => void;
   onCasebookParticipantCountChange: (value: number) => void;
   onCasebookConditionsChange: (value: string) => void;
   onCasebookWeekCountChange: (value: number) => void;
@@ -1105,16 +1147,34 @@ function StudyWorkspacePanel({
               {studies.slice(0, 3).map((study) => (
                 <div key={study.id} className="recent-run-row">
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-semibold text-[#171717]">
-                      {study.name}
+                    <div className="flex min-w-0 items-center gap-2">
+                      <div className="truncate text-sm font-semibold text-[#171717]">
+                        {study.name}
+                      </div>
+                      {selectedStudyId === study.id ? (
+                        <span className="casebook-pill">active</span>
+                      ) : null}
                     </div>
                     <div className="mt-1 truncate font-mono text-xs text-[#756f64]">
                       {study.id}
                     </div>
                   </div>
+                  <button
+                    className="small-action-button"
+                    type="button"
+                    onClick={() => onSelectStudy(study)}
+                  >
+                    Use
+                  </button>
                 </div>
               ))}
             </div>
+          ) : null}
+          {selectedStudyId ? (
+            <button className="secondary-button" type="button" onClick={onStartNewStudy}>
+              <FileCheck2 size={16} />
+              Start new study
+            </button>
           ) : null}
           <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1] p-3">
             <div className="text-sm font-semibold text-[#2f413f]">Casebook design</div>

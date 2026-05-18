@@ -1,4 +1,5 @@
 import type { BatchTranscript } from "./types";
+import type { StudySchema } from "./types";
 
 export type CasebookOptions = {
   participants: string[];
@@ -89,6 +90,15 @@ export function casebookRequestFromControls(
     conditions: normalizeConditionList(controls.conditions),
     week_count: Math.max(Math.trunc(controls.weekCount) || 1, 1),
     custom_fields: normalizeConditionList(controls.customFields)
+  };
+}
+
+export function schemaControlsFromStudySchema(schema: StudySchema): CasebookControls {
+  return {
+    participantCount: schema.participant_count,
+    conditions: schema.conditions.join(", "),
+    weekCount: schema.week_count,
+    customFields: schema.custom_fields.join(", ")
   };
 }
 

@@ -6,6 +6,7 @@ import {
   buildCasebookOptions,
   casebookRequestFromControls,
   normalizeConditionList,
+  schemaControlsFromStudySchema,
   validateBatchAssignments
 } from "../../local_data/tmp/frontend-tests/casebookDesign.js";
 
@@ -74,6 +75,27 @@ test("converts controls into backend schema request payload", () => {
       conditions: ["home", "lab"],
       week_count: 3,
       custom_fields: ["site", "arm"]
+    }
+  );
+});
+
+test("converts persisted backend schema into editable controls", () => {
+  assert.deepEqual(
+    schemaControlsFromStudySchema({
+      study_id: "demo",
+      participant_count: 3,
+      participants: ["P1", "P2", "P3"],
+      conditions: ["home", "lab"],
+      week_count: 2,
+      weeks: ["week_1", "week_2"],
+      custom_fields: ["site", "arm"],
+      updated_at: "2026-05-18T00:00:00Z"
+    }),
+    {
+      participantCount: 3,
+      conditions: "home, lab",
+      weekCount: 2,
+      customFields: "site, arm"
     }
   );
 });

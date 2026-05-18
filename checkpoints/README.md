@@ -40,6 +40,7 @@ Each checkpoint should record:
 - [2026-05-14 V6 deployment profiles](2026-05-14-v6-deployment-profiles.md)
 - [2026-05-14 Demo path and assets](2026-05-14-demo-path-and-assets.md)
 - [2026-05-17 NVivo-style casebook](2026-05-17-nvivo-style-casebook.md)
+- [2026-05-17 Study file assignment grid](2026-05-17-study-file-assignment-grid.md)
 
 ## Completion Bar
 

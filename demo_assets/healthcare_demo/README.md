@@ -13,13 +13,13 @@ Synthetic, non-identifiable assets for the professor demo.
 
 ## Casebook Setup
 
-The Study Workspace batch paste format now supports deterministic file assignment:
+The Study Workspace batch paste format supports deterministic file assignment:
 
 ```text
 filename.txt | participant_id=P1 | condition=home | week=week_1
 ```
 
-These metadata fields are copied into every aggregate metric row. This is the NVivo-like casebook layer: uploaded files become comparable cases across participants, conditions, weeks, and optional custom fields.
+After the paste block is parsed, the UI shows a file assignment grid. Researchers can correct participant, condition, and week before running the study batch. These metadata fields are copied into every aggregate metric row. This is the NVivo-like casebook layer: uploaded files become comparable cases across participants, conditions, weeks, and optional custom fields.
 
 ## Transcript Blocks For Batch Paste
 

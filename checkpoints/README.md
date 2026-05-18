@@ -47,6 +47,7 @@ Each checkpoint should record:
 - [2026-05-17 Persistent study schema](2026-05-17-persistent-study-schema.md)
 - [2026-05-17 NVivo gap slices](2026-05-17-nvivo-gap-slices.md)
 - [2026-05-17 Study batch history](2026-05-17-study-batch-history.md)
+- [2026-05-17 Batch run drilldown](2026-05-17-batch-run-drilldown.md)
 
 ## Completion Bar
 

@@ -287,6 +287,24 @@ class StudyWorkspaceStore:
             raise FileNotFoundError(batch_id)
         return _batch_run_from_payload(json.loads(batch_path.read_text(encoding="utf-8")))
 
+    def list_batch_runs(self, study_id: str, batch_id: str) -> list[dict[str, Any]]:
+        batch = self.load_batch(study_id, batch_id)
+        runs_dir = batch.aggregate_dir / "runs"
+        if not runs_dir.exists():
+            return []
+        runs = [
+            _batch_run_summary(json.loads(path.read_text(encoding="utf-8")))
+            for path in runs_dir.glob("*.json")
+        ]
+        return sorted(runs, key=lambda run: str(run["source_filename"]))
+
+    def load_batch_run(self, study_id: str, batch_id: str, run_id: str) -> dict[str, Any]:
+        batch = self.load_batch(study_id, batch_id)
+        run_path = batch.aggregate_dir / "runs" / f"{run_id}.json"
+        if not run_path.exists():
+            raise FileNotFoundError(run_id)
+        return json.loads(run_path.read_text(encoding="utf-8"))
+
     def export_study_bundle(self, study_id: str) -> StudyBundleExport:
         self._require_study(study_id)
         bundle_id = f"{study_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
@@ -398,6 +416,17 @@ def _batch_run_from_payload(payload: dict[str, Any]) -> StudyBatchRun:
         aggregate_dir=Path(str(payload["aggregate_dir"])),
         created_at=str(payload["created_at"]),
     )
+
+
+def _batch_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "run_id": payload["run_id"],
+        "source_filename": payload["source_filename"],
+        "metadata": payload.get("metadata", {}),
+        "created_at": payload["created_at"],
+        "turn_count": payload["turn_count"],
+        "metric_ids": [result["metric_id"] for result in payload.get("results", [])],
+    }
 
 
 def _study_config_from_skill_pack_payload(payload: dict[str, Any]) -> StudyConfig:

@@ -671,6 +671,62 @@ def test_study_batch_history_api_lists_and_loads_results(tmp_path, monkeypatch) 
     assert loaded["results"][0]["rows"][0]["source_filename"] == "one.txt"
 
 
+def test_study_batch_run_drilldown_api_lists_and_loads_one_run(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    study_response = client.post("/api/studies", json={"name": "Run Drilldown API Study"})
+    study_id = study_response.json()["study"]["id"]
+    pack_response = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json={
+            "id": "run_drilldown_api_pack",
+            "name": "Run Drilldown API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch_response = client.post(
+        f"/api/studies/{study_id}/batches/text",
+        json={
+            "skill_pack_version_id": pack_response.json()["version"]["version_id"],
+            "transcripts": [
+                {
+                    "source_filename": "P1_home_week1.txt",
+                    "metadata": {"participant_id": "P1", "condition": "home", "week": "week_1"},
+                    "content": "P1_c: Hello?\nP1_p: Hi.",
+                },
+                {
+                    "source_filename": "P2_lab_week1.txt",
+                    "metadata": {"participant_id": "P2", "condition": "lab", "week": "week_1"},
+                    "content": "P2_c: Again?\nP2_p: Yes.",
+                },
+            ],
+        },
+    )
+    batch_id = batch_response.json()["batch"]["batch_id"]
+
+    list_response = client.get(f"/api/studies/{study_id}/batches/{batch_id}/runs")
+    run_id = list_response.json()["runs"][0]["run_id"]
+    loaded_response = client.get(
+        f"/api/studies/{study_id}/batches/{batch_id}/runs/{run_id}"
+    )
+
+    assert list_response.status_code == 200
+    assert [run["source_filename"] for run in list_response.json()["runs"]] == [
+        "P1_home_week1.txt",
+        "P2_lab_week1.txt",
+    ]
+    assert list_response.json()["runs"][0]["metadata"]["participant_id"] == "P1"
+    assert loaded_response.status_code == 200
+    loaded = loaded_response.json()["run"]
+    assert loaded["source_filename"] == "P1_home_week1.txt"
+    assert loaded["results"][0]["metric_id"] == "base_metrics"
+
+
 def test_library_approval_api_records_entries_and_audit(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)

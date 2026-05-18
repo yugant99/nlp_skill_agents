@@ -345,6 +345,31 @@ def get_study_batch(study_id: str, batch_id: str) -> dict:
     return _study_batch_payload(batch)
 
 
+@app.get("/api/studies/{study_id}/batches/{batch_id}/runs")
+def list_study_batch_runs(study_id: str, batch_id: str) -> dict:
+    try:
+        runs = StudyWorkspaceStore(_local_data_root()).list_batch_runs(
+            study_id,
+            batch_id,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study batch not found") from exc
+    return {"runs": runs}
+
+
+@app.get("/api/studies/{study_id}/batches/{batch_id}/runs/{run_id}")
+def get_study_batch_run(study_id: str, batch_id: str, run_id: str) -> dict:
+    try:
+        run = StudyWorkspaceStore(_local_data_root()).load_batch_run(
+            study_id,
+            batch_id,
+            run_id,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study batch run not found") from exc
+    return {"run": run}
+
+
 @app.post("/api/studies/{study_id}/skill-pack-versions")
 def create_study_skill_pack_version(study_id: str, payload: dict) -> dict:
     try:

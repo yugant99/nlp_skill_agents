@@ -272,6 +272,48 @@ def test_study_workspace_lists_and_loads_batch_history(tmp_path: Path) -> None:
     assert (loaded.aggregate_dir / "aggregate_results.json").exists()
 
 
+def test_study_workspace_lists_and_loads_batch_run_drilldown(tmp_path: Path) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Run Drilldown Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "run_drilldown_pack",
+            "name": "Run Drilldown Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [
+            {
+                "source_filename": "P1_home_week1.txt",
+                "metadata": {"participant_id": "P1", "condition": "home", "week": "week_1"},
+                "content": "P1_c: Hello?\nP1_p: Hi.",
+            },
+            {
+                "source_filename": "P2_lab_week1.txt",
+                "metadata": {"participant_id": "P2", "condition": "lab", "week": "week_1"},
+                "content": "P2_c: Again?\nP2_p: Yes.",
+            },
+        ],
+    )
+
+    run_summaries = store.list_batch_runs(study.id, batch.batch_id)
+    loaded_run = store.load_batch_run(study.id, batch.batch_id, run_summaries[0]["run_id"])
+
+    assert [run["source_filename"] for run in run_summaries] == [
+        "P1_home_week1.txt",
+        "P2_lab_week1.txt",
+    ]
+    assert run_summaries[0]["metadata"]["participant_id"] == "P1"
+    assert run_summaries[0]["turn_count"] == 2
+    assert loaded_run["source_filename"] == "P1_home_week1.txt"
+    assert loaded_run["results"][0]["metric_id"] == "base_metrics"
+
+
 def test_study_workspace_exports_reproducibility_bundle(tmp_path: Path) -> None:
     store = StudyWorkspaceStore(tmp_path)
     study = store.create_study({"name": "Bundle Study"})

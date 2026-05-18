@@ -119,6 +119,8 @@ export type StudyBatchResponse = {
   }[];
 };
 
+export type StudyBatchSummary = StudyBatchResponse["batch"];
+
 export type RunResponse = {
   run_id: string;
   source_filename: string;

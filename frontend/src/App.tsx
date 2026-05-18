@@ -27,7 +27,9 @@ import {
   createStudyTextBatch,
   createTextAnalysisRun,
   draftSkillPack,
+  getStudyBatch,
   getStudySchema,
+  listStudyBatches,
   listAgentJobs,
   listMetricPlugins,
   listPluginRequests,
@@ -68,6 +70,7 @@ import type {
   RunResponse,
   SkillPack,
   StudyBatchResponse,
+  StudyBatchSummary,
   StudyWorkspace
 } from "./types";
 import type { MetricPlugin } from "./types";
@@ -183,6 +186,7 @@ export function App() {
   const [batchFiles, setBatchFiles] = useState<File[]>([]);
   const [batchParseError, setBatchParseError] = useState("");
   const [batchUploadStatus, setBatchUploadStatus] = useState("");
+  const [studyBatches, setStudyBatches] = useState<StudyBatchSummary[]>([]);
   const [studyBatch, setStudyBatch] = useState<StudyBatchResponse | null>(null);
   const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
   const [error, setError] = useState("");
@@ -572,6 +576,8 @@ export function App() {
         `${selectedStudyId ? "Existing study reused" : "Study created"}; schema saved for ${schema.participants.length} participant(s); batch complete: ${batch.batch.run_count} run(s), ${batch.batch.failure_count} failure(s)`
       );
       setStudies(await listStudies());
+      setSelectedStudyId(study.id);
+      setStudyBatches(await listStudyBatches(study.id));
     } catch (err) {
       setStudyWorkspaceStatus("");
       setError(err instanceof Error ? err.message : "Could not run study batch");
@@ -648,6 +654,7 @@ export function App() {
     setStudyName(study.name);
     setStudyDescription(study.description);
     setStudyWorkspaceStatus(`Using existing study: ${study.name}`);
+    setStudyBatches([]);
     try {
       const schema = await getStudySchema(study.id);
       const controls = schemaControlsFromStudySchema(schema);
@@ -658,11 +665,30 @@ export function App() {
     } catch {
       setStudyWorkspaceStatus(`Using existing study without saved schema: ${study.name}`);
     }
+    try {
+      setStudyBatches(await listStudyBatches(study.id));
+    } catch {
+      setStudyBatches([]);
+    }
   }
 
   function startNewStudy() {
     setSelectedStudyId("");
+    setStudyBatches([]);
     setStudyWorkspaceStatus("");
+  }
+
+  async function loadStudyBatch(batchId: string) {
+    if (!selectedStudyId) {
+      return;
+    }
+    try {
+      const batch = await getStudyBatch(selectedStudyId, batchId);
+      setStudyBatch(batch);
+      setStudyWorkspaceStatus(`Loaded batch ${batch.batch.batch_id.slice(0, 18)}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load study batch");
+    }
   }
 
   async function importBatchFiles(files: FileList | null) {
@@ -1042,6 +1068,7 @@ export function App() {
               batchTranscripts={batchTranscripts}
               batchParseError={batchParseError}
               batchUploadStatus={batchUploadStatus}
+              studyBatches={studyBatches}
               batch={studyBatch}
               status={studyWorkspaceStatus}
               onStudyNameChange={setStudyName}
@@ -1058,6 +1085,7 @@ export function App() {
               onCasebookCsvExport={exportCurrentCasebookCsv}
               onCasebookCsvImport={importCasebookCsv}
               onBatchAssignmentChange={updateBatchAssignment}
+              onLoadBatch={loadStudyBatch}
               onRunBatch={runStudyWorkspaceBatch}
             />
             <RecentRunsPanel runs={runHistory} />
@@ -1115,6 +1143,7 @@ function StudyWorkspacePanel({
   batchTranscripts,
   batchParseError,
   batchUploadStatus,
+  studyBatches,
   batch,
   status,
   onStudyNameChange,
@@ -1131,6 +1160,7 @@ function StudyWorkspacePanel({
   onCasebookCsvExport,
   onCasebookCsvImport,
   onBatchAssignmentChange,
+  onLoadBatch,
   onRunBatch
 }: {
   studies: StudyWorkspace[];
@@ -1147,6 +1177,7 @@ function StudyWorkspacePanel({
   batchTranscripts: BatchTranscript[];
   batchParseError: string;
   batchUploadStatus: string;
+  studyBatches: StudyBatchSummary[];
   batch: StudyBatchResponse | null;
   status: string;
   onStudyNameChange: (value: string) => void;
@@ -1163,6 +1194,7 @@ function StudyWorkspacePanel({
   onCasebookCsvExport: () => void;
   onCasebookCsvImport: (files: FileList | null) => void;
   onBatchAssignmentChange: (index: number, key: string, value: string) => void;
+  onLoadBatch: (batchId: string) => void;
   onRunBatch: () => void;
 }) {
   return (
@@ -1218,6 +1250,39 @@ function StudyWorkspacePanel({
               <FileCheck2 size={16} />
               Start new study
             </button>
+          ) : null}
+          {selectedStudyId && studyBatches.length ? (
+            <div className="rounded-md border border-[#d9d4c5] bg-white/70">
+              <div className="border-b border-[#e4ded0] px-3 py-2 text-sm font-semibold text-[#2f413f]">
+                Batch history
+              </div>
+              <div className="divide-y divide-[#e4ded0]">
+                {studyBatches.slice(0, 4).map((historyBatch) => (
+                  <div
+                    key={historyBatch.batch_id}
+                    className="grid grid-cols-[1fr_auto] items-center gap-3 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-mono text-xs text-[#2b2925]">
+                        {historyBatch.batch_id}
+                      </div>
+                      <div className="mt-1 text-xs text-[#756f64]">
+                        {historyBatch.run_count} run
+                        {historyBatch.run_count === 1 ? "" : "s"} ·{" "}
+                        {new Date(historyBatch.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                    <button
+                      className="small-action-button"
+                      type="button"
+                      onClick={() => onLoadBatch(historyBatch.batch_id)}
+                    >
+                      Load
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
           ) : null}
           <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1] p-3">
             <div className="text-sm font-semibold text-[#2f413f]">Casebook design</div>

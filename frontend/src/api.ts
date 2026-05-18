@@ -14,6 +14,7 @@ import type {
   SkillPackRefineResponse,
   SkillPackSummary,
   StudyBatchResponse,
+  StudyBatchSummary,
   StudySchema,
   StudySkillPackVersion,
   StudyWorkspace
@@ -205,6 +206,28 @@ export async function updateStudySchema(
   }
   const body = (await response.json()) as { schema: StudySchema };
   return body.schema;
+}
+
+export async function listStudyBatches(studyId: string): Promise<StudyBatchSummary[]> {
+  const response = await fetch(`${API_BASE}/api/studies/${studyId}/batches`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not load study batches");
+  }
+  const payload = (await response.json()) as { batches: StudyBatchSummary[] };
+  return payload.batches;
+}
+
+export async function getStudyBatch(
+  studyId: string,
+  batchId: string
+): Promise<StudyBatchResponse> {
+  const response = await fetch(`${API_BASE}/api/studies/${studyId}/batches/${batchId}`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not load study batch");
+  }
+  return response.json();
 }
 
 export async function addStudySkillPackVersion(

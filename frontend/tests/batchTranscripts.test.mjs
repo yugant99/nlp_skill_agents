@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createBatchTranscriptFromTextFile,
+  inferBatchMetadataFromFilename,
   parseBatchTranscriptText,
   serializeBatchTranscriptText,
   updateBatchTranscriptMetadata
@@ -55,5 +57,36 @@ test("serializes file assignments back into paste format", () => {
   assert.equal(
     text,
     "one.txt | participant_id=P1 | condition=home | week=week_1\nP1_c: Hello.\nP1_p: Hi."
+  );
+});
+
+test("infers participant condition and week from uploaded filenames", () => {
+  assert.deepEqual(inferBatchMetadataFromFilename("P1_home_week1.txt"), {
+    participant_id: "P1",
+    condition: "home",
+    week: "week_1"
+  });
+  assert.deepEqual(inferBatchMetadataFromFilename("participant_003_lab_week_2.txt"), {
+    participant_id: "P3",
+    condition: "lab",
+    week: "week_2"
+  });
+});
+
+test("creates a batch transcript from uploaded text file content", () => {
+  assert.deepEqual(
+    createBatchTranscriptFromTextFile(
+      "P2_clinic_week4.txt",
+      "P2_c: Did balance improve?\nP2_p: A little."
+    ),
+    {
+      source_filename: "P2_clinic_week4.txt",
+      content: "P2_c: Did balance improve?\nP2_p: A little.",
+      metadata: {
+        participant_id: "P2",
+        condition: "clinic",
+        week: "week_4"
+      }
+    }
   );
 });

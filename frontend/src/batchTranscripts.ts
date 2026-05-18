@@ -1,6 +1,7 @@
 import type { BatchTranscript } from "./types";
 
 const METADATA_ORDER = ["participant_id", "condition", "week"];
+const CONDITION_TOKENS = new Set(["home", "lab", "clinic", "telehealth"]);
 
 export function parseBatchTranscriptText(value: string): BatchTranscript[] {
   const transcripts = value
@@ -61,6 +62,39 @@ export function serializeBatchTranscriptText(transcripts: BatchTranscript[]): st
       return `${headerParts.join(" | ")}\n${transcript.content}`.trim();
     })
     .join("\n---\n");
+}
+
+export function inferBatchMetadataFromFilename(filename: string): Record<string, string> {
+  const stem = filename.replace(/\.[^.]+$/, "");
+  const metadata: Record<string, string> = {};
+  const participantMatch =
+    stem.match(/(?:^|[_\-\s])p(?:articipant)?[_\-\s]?0*(\d+)(?:[_\-\s]|$)/i) ??
+    stem.match(/participant[_\-\s]?0*(\d+)/i);
+  if (participantMatch?.[1]) {
+    metadata.participant_id = `P${Number(participantMatch[1])}`;
+  }
+  const weekMatch = stem.match(/week[_\-\s]?0*(\d+)/i);
+  if (weekMatch?.[1]) {
+    metadata.week = `week_${Number(weekMatch[1])}`;
+  }
+  const tokens = stem.toLowerCase().split(/[_\-\s]+/).filter(Boolean);
+  const condition = tokens.find((token) => CONDITION_TOKENS.has(token));
+  if (condition) {
+    metadata.condition = condition;
+  }
+  return orderedMetadata(metadata);
+}
+
+export function createBatchTranscriptFromTextFile(
+  sourceFilename: string,
+  content: string
+): BatchTranscript {
+  const metadata = inferBatchMetadataFromFilename(sourceFilename);
+  return {
+    source_filename: sourceFilename,
+    content: content.trim(),
+    ...(Object.keys(metadata).length ? { metadata } : {})
+  };
 }
 
 function parseHeaderMetadata(parts: string[]): Record<string, string> {

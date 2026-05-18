@@ -88,6 +88,17 @@ export type StudySkillPackVersion = {
   };
 };
 
+export type StudySchema = {
+  study_id: string;
+  participant_count: number;
+  participants: string[];
+  conditions: string[];
+  week_count: number;
+  weeks: string[];
+  custom_fields: string[];
+  updated_at: string;
+};
+
 export type StudyBatchResponse = {
   batch: {
     study_id: string;
@@ -99,6 +110,7 @@ export type StudyBatchResponse = {
     created_at: string;
   };
   aggregate_results_json: string;
+  study_schema: StudySchema | null;
   results: MetricResult[];
   exports: {
     metric_id: string;

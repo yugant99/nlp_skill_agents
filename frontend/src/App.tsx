@@ -33,6 +33,7 @@ import {
   listStudies,
   loadSkillPack,
   refineSkillPack,
+  updateStudySchema,
   updateAgentJobStatus,
   validateSkillPack,
   validateSkillPackText
@@ -46,7 +47,9 @@ import {
   updateBatchTranscriptMetadata
 } from "./batchTranscripts";
 import {
+  CASEBOOK_TEMPLATES,
   buildCasebookOptions,
+  casebookRequestFromControls,
   validateBatchAssignments,
   type CasebookOptions
 } from "./casebookDesign";
@@ -166,6 +169,7 @@ export function App() {
   const [casebookParticipantCount, setCasebookParticipantCount] = useState(3);
   const [casebookConditions, setCasebookConditions] = useState("home, lab");
   const [casebookWeekCount, setCasebookWeekCount] = useState(2);
+  const [casebookCustomFields, setCasebookCustomFields] = useState("site, study_arm");
   const [batchTranscriptText, setBatchTranscriptText] = useState(DEFAULT_BATCH_TRANSCRIPT_TEXT);
   const [batchTranscripts, setBatchTranscripts] = useState<BatchTranscript[]>(() =>
     parseBatchTranscriptText(DEFAULT_BATCH_TRANSCRIPT_TEXT)
@@ -527,6 +531,15 @@ export function App() {
         name: studyName,
         description: studyDescription
       });
+      const schema = await updateStudySchema(
+        study.id,
+        casebookRequestFromControls({
+          participantCount: casebookParticipantCount,
+          conditions: casebookConditions,
+          weekCount: casebookWeekCount,
+          customFields: casebookCustomFields
+        })
+      );
       const version = await addStudySkillPackVersion(study.id, skillPackPayload);
       const batch = batchFiles.length
         ? await createStudyFileBatch({
@@ -542,7 +555,7 @@ export function App() {
           });
       setStudyBatch(batch);
       setStudyWorkspaceStatus(
-        `Batch complete: ${batch.batch.run_count} run(s), ${batch.batch.failure_count} failure(s)`
+        `Schema saved for ${schema.participants.length} participant(s); batch complete: ${batch.batch.run_count} run(s), ${batch.batch.failure_count} failure(s)`
       );
       setStudies(await listStudies());
     } catch (err) {
@@ -569,6 +582,17 @@ export function App() {
     setBatchTranscripts(updated);
     setBatchTranscriptText(serializeBatchTranscriptText(updated));
     setBatchParseError("");
+  }
+
+  function applyCasebookTemplate(templateId: string) {
+    const template = CASEBOOK_TEMPLATES[templateId];
+    if (!template) {
+      return;
+    }
+    setCasebookParticipantCount(template.participantCount);
+    setCasebookConditions(template.conditions);
+    setCasebookWeekCount(template.weekCount);
+    setCasebookCustomFields(template.customFields.join(", "));
   }
 
   async function importBatchFiles(files: FileList | null) {
@@ -940,6 +964,7 @@ export function App() {
               casebookParticipantCount={casebookParticipantCount}
               casebookConditions={casebookConditions}
               casebookWeekCount={casebookWeekCount}
+              casebookCustomFields={casebookCustomFields}
               casebookOptions={casebookOptions}
               casebookWarnings={casebookWarnings}
               batchTranscriptText={batchTranscriptText}
@@ -953,6 +978,8 @@ export function App() {
               onCasebookParticipantCountChange={setCasebookParticipantCount}
               onCasebookConditionsChange={setCasebookConditions}
               onCasebookWeekCountChange={setCasebookWeekCount}
+              onCasebookCustomFieldsChange={setCasebookCustomFields}
+              onApplyCasebookTemplate={applyCasebookTemplate}
               onBatchTranscriptTextChange={updateBatchTranscriptText}
               onBatchFilesSelected={importBatchFiles}
               onBatchAssignmentChange={updateBatchAssignment}
@@ -1005,6 +1032,7 @@ function StudyWorkspacePanel({
   casebookParticipantCount,
   casebookConditions,
   casebookWeekCount,
+  casebookCustomFields,
   casebookOptions,
   casebookWarnings,
   batchTranscriptText,
@@ -1018,6 +1046,8 @@ function StudyWorkspacePanel({
   onCasebookParticipantCountChange,
   onCasebookConditionsChange,
   onCasebookWeekCountChange,
+  onCasebookCustomFieldsChange,
+  onApplyCasebookTemplate,
   onBatchTranscriptTextChange,
   onBatchFilesSelected,
   onBatchAssignmentChange,
@@ -1029,6 +1059,7 @@ function StudyWorkspacePanel({
   casebookParticipantCount: number;
   casebookConditions: string;
   casebookWeekCount: number;
+  casebookCustomFields: string;
   casebookOptions: CasebookOptions;
   casebookWarnings: string[];
   batchTranscriptText: string;
@@ -1042,6 +1073,8 @@ function StudyWorkspacePanel({
   onCasebookParticipantCountChange: (value: number) => void;
   onCasebookConditionsChange: (value: string) => void;
   onCasebookWeekCountChange: (value: number) => void;
+  onCasebookCustomFieldsChange: (value: string) => void;
+  onApplyCasebookTemplate: (templateId: string) => void;
   onBatchTranscriptTextChange: (value: string) => void;
   onBatchFilesSelected: (files: FileList | null) => void;
   onBatchAssignmentChange: (index: number, key: string, value: string) => void;
@@ -1085,6 +1118,18 @@ function StudyWorkspacePanel({
           ) : null}
           <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1] p-3">
             <div className="text-sm font-semibold text-[#2f413f]">Casebook design</div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+              {Object.values(CASEBOOK_TEMPLATES).map((template) => (
+                <button
+                  key={template.id}
+                  className="template-button"
+                  type="button"
+                  onClick={() => onApplyCasebookTemplate(template.id)}
+                >
+                  {template.label}
+                </button>
+              ))}
+            </div>
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
               <label className="field-label mt-0">
                 Participants
@@ -1117,7 +1162,15 @@ function StudyWorkspacePanel({
                   onChange={(event) => onCasebookWeekCountChange(Number(event.target.value))}
                 />
               </label>
-              <div className="sm:col-span-2">
+              <label className="field-label mt-0 sm:col-span-2">
+                Custom fields
+                <input
+                  className="field-input"
+                  value={casebookCustomFields}
+                  onChange={(event) => onCasebookCustomFieldsChange(event.target.value)}
+                />
+              </label>
+              <div className="sm:col-span-3">
                 <div className="text-xs font-semibold uppercase tracking-wide text-[#756f64]">
                   Active options
                 </div>
@@ -1192,6 +1245,13 @@ function StudyWorkspacePanel({
                 value={batch.exports.map((item) => item.filename).join(", ")}
                 wide
               />
+              {batch.study_schema ? (
+                <OutputFact
+                  label="Persisted schema"
+                  value={`${batch.study_schema.participants.join(", ")} · ${batch.study_schema.conditions.join(", ")} · ${batch.study_schema.weeks.length} week(s)`}
+                  wide
+                />
+              ) : null}
             </div>
           ) : null}
           {batch?.results.length ? (

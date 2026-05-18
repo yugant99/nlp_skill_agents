@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CASEBOOK_TEMPLATES,
   buildCasebookOptions,
+  casebookRequestFromControls,
   normalizeConditionList,
   validateBatchAssignments
 } from "../../local_data/tmp/frontend-tests/casebookDesign.js";
@@ -44,4 +46,34 @@ test("flags uploaded assignments outside the casebook design", () => {
     "P4_field_week3.txt uses condition field outside home, lab.",
     "P4_field_week3.txt uses week week_3 outside week_1-week_2."
   ]);
+});
+
+test("exposes professor-facing casebook templates", () => {
+  assert.deepEqual(Object.keys(CASEBOOK_TEMPLATES), [
+    "caregiver_mobility",
+    "interview",
+    "therapy_session"
+  ]);
+  assert.equal(CASEBOOK_TEMPLATES.caregiver_mobility.conditions, "home, lab, clinic");
+  assert.deepEqual(CASEBOOK_TEMPLATES.caregiver_mobility.customFields, [
+    "site",
+    "study_arm"
+  ]);
+});
+
+test("converts controls into backend schema request payload", () => {
+  assert.deepEqual(
+    casebookRequestFromControls({
+      participantCount: 4,
+      conditions: "home, lab, home",
+      weekCount: 3,
+      customFields: "site, arm, site"
+    }),
+    {
+      participant_count: 4,
+      conditions: ["home", "lab"],
+      week_count: 3,
+      custom_fields: ["site", "arm"]
+    }
+  );
 });

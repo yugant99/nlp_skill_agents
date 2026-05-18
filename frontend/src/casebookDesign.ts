@@ -6,6 +6,56 @@ export type CasebookOptions = {
   weeks: string[];
 };
 
+export type CasebookTemplate = {
+  id: string;
+  label: string;
+  participantCount: number;
+  conditions: string;
+  weekCount: number;
+  customFields: string[];
+};
+
+export type CasebookControls = {
+  participantCount: number;
+  conditions: string;
+  weekCount: number;
+  customFields: string;
+};
+
+export type StudySchemaRequestPayload = {
+  participant_count: number;
+  conditions: string[];
+  week_count: number;
+  custom_fields: string[];
+};
+
+export const CASEBOOK_TEMPLATES: Record<string, CasebookTemplate> = {
+  caregiver_mobility: {
+    id: "caregiver_mobility",
+    label: "Caregiver mobility",
+    participantCount: 4,
+    conditions: "home, lab, clinic",
+    weekCount: 4,
+    customFields: ["site", "study_arm"]
+  },
+  interview: {
+    id: "interview",
+    label: "Interview study",
+    participantCount: 4,
+    conditions: "baseline, followup",
+    weekCount: 2,
+    customFields: ["interviewer", "site"]
+  },
+  therapy_session: {
+    id: "therapy_session",
+    label: "Therapy session",
+    participantCount: 4,
+    conditions: "individual, group, telehealth",
+    weekCount: 8,
+    customFields: ["clinician", "session_type"]
+  }
+};
+
 export function buildCasebookOptions(
   participantCount: number,
   conditionText: string,
@@ -29,6 +79,17 @@ export function normalizeConditionList(value: string): string[] {
         .filter(Boolean)
     )
   );
+}
+
+export function casebookRequestFromControls(
+  controls: CasebookControls
+): StudySchemaRequestPayload {
+  return {
+    participant_count: Math.min(Math.max(Math.trunc(controls.participantCount) || 1, 1), 4),
+    conditions: normalizeConditionList(controls.conditions),
+    week_count: Math.max(Math.trunc(controls.weekCount) || 1, 1),
+    custom_fields: normalizeConditionList(controls.customFields)
+  };
 }
 
 export function validateBatchAssignments(

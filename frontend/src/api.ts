@@ -14,6 +14,7 @@ import type {
   SkillPackRefineResponse,
   SkillPackSummary,
   StudyBatchResponse,
+  StudySchema,
   StudySkillPackVersion,
   StudyWorkspace
 } from "./types";
@@ -170,6 +171,40 @@ export async function listStudies(): Promise<StudyWorkspace[]> {
   }
   const payload = (await response.json()) as { studies: StudyWorkspace[] };
   return payload.studies;
+}
+
+export async function getStudySchema(studyId: string): Promise<StudySchema> {
+  const response = await fetch(`${API_BASE}/api/studies/${studyId}/schema`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not load study schema");
+  }
+  const payload = (await response.json()) as { schema: StudySchema };
+  return payload.schema;
+}
+
+export async function updateStudySchema(
+  studyId: string,
+  payload: {
+    participant_count: number;
+    conditions: string[];
+    week_count: number;
+    custom_fields: string[];
+  }
+): Promise<StudySchema> {
+  const response = await fetch(`${API_BASE}/api/studies/${studyId}/schema`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not save study schema");
+  }
+  const body = (await response.json()) as { schema: StudySchema };
+  return body.schema;
 }
 
 export async function addStudySkillPackVersion(

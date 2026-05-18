@@ -236,6 +236,42 @@ def test_study_schema_is_saved_and_attached_to_batch_outputs(tmp_path: Path) -> 
     assert aggregate_payload["study_schema"]["custom_fields"] == ["site", "arm"]
 
 
+def test_study_workspace_lists_and_loads_batch_history(tmp_path: Path) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "History Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "history_pack",
+            "name": "History Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    first_batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "one.txt", "content": "CG: Hello.\nP: Hi."}],
+    )
+    second_batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "two.txt", "content": "CG: Again?\nP: Yes."}],
+    )
+
+    batches = store.list_batches(study.id)
+    loaded = store.load_batch(study.id, first_batch.batch_id)
+
+    assert [batch.batch_id for batch in batches] == [
+        second_batch.batch_id,
+        first_batch.batch_id,
+    ]
+    assert batches[0].run_count == 1
+    assert batches[0].failure_count == 0
+    assert loaded.batch_id == first_batch.batch_id
+    assert (loaded.aggregate_dir / "aggregate_results.json").exists()
+
+
 def test_study_workspace_exports_reproducibility_bundle(tmp_path: Path) -> None:
     store = StudyWorkspaceStore(tmp_path)
     study = store.create_study({"name": "Bundle Study"})

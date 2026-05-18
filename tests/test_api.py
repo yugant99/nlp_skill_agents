@@ -622,6 +622,55 @@ def test_study_schema_api_persists_casebook_design(tmp_path, monkeypatch) -> Non
     assert read_response.json()["schema"] == schema
 
 
+def test_study_batch_history_api_lists_and_loads_results(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    study_response = client.post("/api/studies", json={"name": "History API Study"})
+    study_id = study_response.json()["study"]["id"]
+    pack_response = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json={
+            "id": "history_api_pack",
+            "name": "History API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    version_id = pack_response.json()["version"]["version_id"]
+    first_response = client.post(
+        f"/api/studies/{study_id}/batches/text",
+        json={
+            "skill_pack_version_id": version_id,
+            "transcripts": [{"source_filename": "one.txt", "content": "CG: Hello.\nP: Hi."}],
+        },
+    )
+    second_response = client.post(
+        f"/api/studies/{study_id}/batches/text",
+        json={
+            "skill_pack_version_id": version_id,
+            "transcripts": [{"source_filename": "two.txt", "content": "CG: Again?\nP: Yes."}],
+        },
+    )
+
+    list_response = client.get(f"/api/studies/{study_id}/batches")
+    loaded_response = client.get(
+        f"/api/studies/{study_id}/batches/{first_response.json()['batch']['batch_id']}"
+    )
+
+    assert list_response.status_code == 200
+    batch_ids = [batch["batch_id"] for batch in list_response.json()["batches"]]
+    assert batch_ids == [
+        second_response.json()["batch"]["batch_id"],
+        first_response.json()["batch"]["batch_id"],
+    ]
+    assert loaded_response.status_code == 200
+    loaded = loaded_response.json()
+    assert loaded["batch"]["batch_id"] == first_response.json()["batch"]["batch_id"]
+    assert loaded["results"][0]["metric_id"] == "base_metrics"
+    assert loaded["results"][0]["rows"][0]["source_filename"] == "one.txt"
+
+
 def test_library_approval_api_records_entries_and_audit(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)

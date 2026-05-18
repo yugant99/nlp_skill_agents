@@ -327,6 +327,24 @@ def get_study_schema(study_id: str) -> dict:
     return {"schema": _study_schema_payload(schema)}
 
 
+@app.get("/api/studies/{study_id}/batches")
+def list_study_batches(study_id: str) -> dict:
+    try:
+        batches = StudyWorkspaceStore(_local_data_root()).list_batches(study_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    return {"batches": [_study_batch_summary_payload(batch) for batch in batches]}
+
+
+@app.get("/api/studies/{study_id}/batches/{batch_id}")
+def get_study_batch(study_id: str, batch_id: str) -> dict:
+    try:
+        batch = StudyWorkspaceStore(_local_data_root()).load_batch(study_id, batch_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study batch not found") from exc
+    return _study_batch_payload(batch)
+
+
 @app.post("/api/studies/{study_id}/skill-pack-versions")
 def create_study_skill_pack_version(study_id: str, payload: dict) -> dict:
     try:
@@ -682,6 +700,18 @@ def _study_schema_payload(schema) -> dict:
     }
 
 
+def _study_batch_summary_payload(batch) -> dict:
+    return {
+        "study_id": batch.study_id,
+        "batch_id": batch.batch_id,
+        "skill_pack_version_id": batch.skill_pack_version_id,
+        "run_count": batch.run_count,
+        "failure_count": batch.failure_count,
+        "aggregate_dir": str(batch.aggregate_dir),
+        "created_at": batch.created_at,
+    }
+
+
 def _study_batch_payload(batch) -> dict:
     aggregate_results_json = batch.aggregate_dir / "aggregate_results.json"
     aggregate_payload = json.loads(aggregate_results_json.read_text(encoding="utf-8"))
@@ -694,15 +724,7 @@ def _study_batch_payload(batch) -> dict:
         for path in sorted(batch.aggregate_dir.glob("*.csv"))
     ]
     return {
-        "batch": {
-            "study_id": batch.study_id,
-            "batch_id": batch.batch_id,
-            "skill_pack_version_id": batch.skill_pack_version_id,
-            "run_count": batch.run_count,
-            "failure_count": batch.failure_count,
-            "aggregate_dir": str(batch.aggregate_dir),
-            "created_at": batch.created_at,
-        },
+        "batch": _study_batch_summary_payload(batch),
         "aggregate_results_json": str(aggregate_results_json),
         "study_schema": aggregate_payload.get("study_schema"),
         "results": aggregate_payload["results"],

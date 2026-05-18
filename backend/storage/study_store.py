@@ -269,6 +269,24 @@ class StudyWorkspaceStore:
         )
         return batch
 
+    def list_batches(self, study_id: str) -> list[StudyBatchRun]:
+        self._require_study(study_id)
+        batches_dir = self._study_dir(study_id) / "batches"
+        if not batches_dir.exists():
+            return []
+        batches = [
+            _batch_run_from_payload(json.loads(path.read_text(encoding="utf-8")))
+            for path in batches_dir.glob("*/batch.json")
+        ]
+        return sorted(batches, key=lambda batch: batch.created_at, reverse=True)
+
+    def load_batch(self, study_id: str, batch_id: str) -> StudyBatchRun:
+        self._require_study(study_id)
+        batch_path = self._study_dir(study_id) / "batches" / batch_id / "batch.json"
+        if not batch_path.exists():
+            raise FileNotFoundError(batch_id)
+        return _batch_run_from_payload(json.loads(batch_path.read_text(encoding="utf-8")))
+
     def export_study_bundle(self, study_id: str) -> StudyBundleExport:
         self._require_study(study_id)
         bundle_id = f"{study_id}-{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}"
@@ -368,6 +386,18 @@ def _aggregate_batch_payload(
         "failures": failures,
         "results": list(results_by_metric.values()),
     }
+
+
+def _batch_run_from_payload(payload: dict[str, Any]) -> StudyBatchRun:
+    return StudyBatchRun(
+        study_id=str(payload["study_id"]),
+        batch_id=str(payload["batch_id"]),
+        skill_pack_version_id=str(payload["skill_pack_version_id"]),
+        run_count=int(payload["run_count"]),
+        failure_count=int(payload["failure_count"]),
+        aggregate_dir=Path(str(payload["aggregate_dir"])),
+        created_at=str(payload["created_at"]),
+    )
 
 
 def _study_config_from_skill_pack_payload(payload: dict[str, Any]) -> StudyConfig:

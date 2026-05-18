@@ -36,6 +36,11 @@ import {
   validateSkillPack,
   validateSkillPackText
 } from "./api";
+import {
+  parseBatchTranscriptText,
+  serializeBatchTranscriptText,
+  updateBatchTranscriptMetadata
+} from "./batchTranscripts";
 import type {
   AgentJob,
   BatchTranscript,
@@ -77,6 +82,13 @@ const orderedMetrics: MetricId[] = [
 ];
 
 const DEFAULT_OPENROUTER_MODEL = "openai/gpt-oss-120b";
+const DEFAULT_BATCH_TRANSCRIPT_TEXT =
+  "participant_001.txt | participant_id=P1 | condition=home | week=week_1\n" +
+  "P1_c: How did walking feel today?\nP1_p: It hurt after lunch.\n---\n" +
+  "participant_002.txt | participant_id=P2 | condition=lab | week=week_1\n" +
+  "P2_c: Did medication help last night?\nP2_p: Yes, I slept better.\n---\n" +
+  "participant_003.txt | participant_id=P3 | condition=home | week=week_2\n" +
+  "P3_c: I will call the clinic tomorrow.\nP3_p: Thank you.";
 
 export function App() {
   const [skillPack, setSkillPack] = useState<SkillPack | null>(null);
@@ -131,14 +143,11 @@ export function App() {
   const [studyDescription, setStudyDescription] = useState(
     "Three-transcript demo workspace for aggregate prompting and care-plan metrics."
   );
-  const [batchTranscriptText, setBatchTranscriptText] = useState(
-    "participant_001.txt | participant_id=P1 | condition=home | week=week_1\n" +
-      "P1_c: How did walking feel today?\nP1_p: It hurt after lunch.\n---\n" +
-      "participant_002.txt | participant_id=P2 | condition=lab | week=week_1\n" +
-      "P2_c: Did medication help last night?\nP2_p: Yes, I slept better.\n---\n" +
-      "participant_003.txt | participant_id=P3 | condition=home | week=week_2\n" +
-      "P3_c: I will call the clinic tomorrow.\nP3_p: Thank you."
+  const [batchTranscriptText, setBatchTranscriptText] = useState(DEFAULT_BATCH_TRANSCRIPT_TEXT);
+  const [batchTranscripts, setBatchTranscripts] = useState<BatchTranscript[]>(() =>
+    parseBatchTranscriptText(DEFAULT_BATCH_TRANSCRIPT_TEXT)
   );
+  const [batchParseError, setBatchParseError] = useState("");
   const [studyBatch, setStudyBatch] = useState<StudyBatchResponse | null>(null);
   const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
   const [error, setError] = useState("");
@@ -469,9 +478,12 @@ export function App() {
       setError("Activate a skill pack before running a study batch.");
       return;
     }
+    if (batchParseError || !batchTranscripts.length) {
+      setError(batchParseError || "Add at least one transcript before running a batch.");
+      return;
+    }
     try {
       setError("");
-      const transcripts = parseBatchTranscripts(batchTranscriptText);
       const study = await createStudy({
         name: studyName,
         description: studyDescription
@@ -480,7 +492,7 @@ export function App() {
       const batch = await createStudyTextBatch({
         studyId: study.id,
         skillPackVersionId: version.version_id,
-        transcripts
+        transcripts: batchTranscripts
       });
       setStudyBatch(batch);
       setStudyWorkspaceStatus(
@@ -491,6 +503,24 @@ export function App() {
       setStudyWorkspaceStatus("");
       setError(err instanceof Error ? err.message : "Could not run study batch");
     }
+  }
+
+  function updateBatchTranscriptText(value: string) {
+    setBatchTranscriptText(value);
+    try {
+      setBatchTranscripts(parseBatchTranscriptText(value));
+      setBatchParseError("");
+    } catch (err) {
+      setBatchTranscripts([]);
+      setBatchParseError(err instanceof Error ? err.message : "Could not parse batch text.");
+    }
+  }
+
+  function updateBatchAssignment(index: number, key: string, value: string) {
+    const updated = updateBatchTranscriptMetadata(batchTranscripts, index, key, value);
+    setBatchTranscripts(updated);
+    setBatchTranscriptText(serializeBatchTranscriptText(updated));
+    setBatchParseError("");
   }
 
   return (
@@ -828,11 +858,14 @@ export function App() {
               studyName={studyName}
               studyDescription={studyDescription}
               batchTranscriptText={batchTranscriptText}
+              batchTranscripts={batchTranscripts}
+              batchParseError={batchParseError}
               batch={studyBatch}
               status={studyWorkspaceStatus}
               onStudyNameChange={setStudyName}
               onStudyDescriptionChange={setStudyDescription}
-              onBatchTranscriptTextChange={setBatchTranscriptText}
+              onBatchTranscriptTextChange={updateBatchTranscriptText}
+              onBatchAssignmentChange={updateBatchAssignment}
               onRunBatch={runStudyWorkspaceBatch}
             />
             <RecentRunsPanel runs={runHistory} />
@@ -880,22 +913,28 @@ function StudyWorkspacePanel({
   studyName,
   studyDescription,
   batchTranscriptText,
+  batchTranscripts,
+  batchParseError,
   batch,
   status,
   onStudyNameChange,
   onStudyDescriptionChange,
   onBatchTranscriptTextChange,
+  onBatchAssignmentChange,
   onRunBatch
 }: {
   studies: StudyWorkspace[];
   studyName: string;
   studyDescription: string;
   batchTranscriptText: string;
+  batchTranscripts: BatchTranscript[];
+  batchParseError: string;
   batch: StudyBatchResponse | null;
   status: string;
   onStudyNameChange: (value: string) => void;
   onStudyDescriptionChange: (value: string) => void;
   onBatchTranscriptTextChange: (value: string) => void;
+  onBatchAssignmentChange: (index: number, key: string, value: string) => void;
   onRunBatch: () => void;
 }) {
   return (
@@ -947,6 +986,11 @@ function StudyWorkspacePanel({
               Separate files with `---`; first line can be `filename | participant_id=P1 | condition=home | week=week_1`.
             </span>
           </label>
+          {batchParseError ? <p className="error-text">{batchParseError}</p> : null}
+          <FileAssignmentGrid
+            transcripts={batchTranscripts}
+            onAssignmentChange={onBatchAssignmentChange}
+          />
           <button className="secondary-button" type="button" onClick={onRunBatch}>
             <Play size={16} />
             Run study batch
@@ -982,6 +1026,85 @@ function StudyWorkspacePanel({
         </div>
       </div>
     </Panel>
+  );
+}
+
+function FileAssignmentGrid({
+  transcripts,
+  onAssignmentChange
+}: {
+  transcripts: BatchTranscript[];
+  onAssignmentChange: (index: number, key: string, value: string) => void;
+}) {
+  if (!transcripts.length) {
+    return (
+      <div className="rounded-md border border-dashed border-[#c7c0af] bg-[#faf8f1] px-3 py-4 text-sm text-[#676157]">
+        File assignments will appear after the batch text contains at least one transcript.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-white/70">
+      <div className="grid grid-cols-[1fr_auto] gap-3 border-b border-[#e4ded0] px-3 py-2">
+        <div>
+          <div className="text-sm font-semibold text-[#2f413f]">File assignment</div>
+          <div className="mt-1 text-xs text-[#756f64]">
+            Map every transcript to the study casebook before analysis.
+          </div>
+        </div>
+        <div className="self-start rounded-full bg-[#eef5ec] px-2 py-1 font-mono text-xs text-[#2f5b50]">
+          {transcripts.length} file{transcripts.length === 1 ? "" : "s"}
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[720px] border-collapse text-left text-sm">
+          <thead>
+            <tr>
+              <th className="table-head">File</th>
+              <th className="table-head">Participant</th>
+              <th className="table-head">Condition</th>
+              <th className="table-head">Week</th>
+              <th className="table-head">Turns preview</th>
+            </tr>
+          </thead>
+          <tbody>
+            {transcripts.map((transcript, index) => (
+              <tr key={`${transcript.source_filename}-${index}`} className="border-t border-[#e4ded0]">
+                <td className="table-cell font-mono text-xs">{transcript.source_filename}</td>
+                <td className="px-2 py-2">
+                  <input
+                    className="assignment-input"
+                    value={transcript.metadata?.participant_id ?? ""}
+                    onChange={(event) =>
+                      onAssignmentChange(index, "participant_id", event.target.value)
+                    }
+                  />
+                </td>
+                <td className="px-2 py-2">
+                  <input
+                    className="assignment-input"
+                    value={transcript.metadata?.condition ?? ""}
+                    onChange={(event) =>
+                      onAssignmentChange(index, "condition", event.target.value)
+                    }
+                  />
+                </td>
+                <td className="px-2 py-2">
+                  <input
+                    className="assignment-input"
+                    value={transcript.metadata?.week ?? ""}
+                    onChange={(event) => onAssignmentChange(index, "week", event.target.value)}
+                  />
+                </td>
+                <td className="table-cell text-xs text-[#756f64]">
+                  {transcript.content.split("\n").slice(0, 2).join(" / ")}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -1395,37 +1518,6 @@ function formatCell(value: unknown): string {
 
 function metricLabel(metricId: string): string {
   return metricLabels[metricId] ?? metricId.replaceAll("_", " ");
-}
-
-function parseBatchTranscripts(value: string): BatchTranscript[] {
-  const transcripts = value
-    .split(/\n---+\n/g)
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .map((block, index) => {
-      const [headerLine, ...contentLines] = block.split("\n");
-      const [filenamePart, ...metadataParts] = headerLine
-        .split("|")
-        .map((part) => part.trim());
-      const metadata = Object.fromEntries(
-        metadataParts
-          .map((part) => {
-            const [key, ...valueParts] = part.split("=");
-            return [key?.trim() ?? "", valueParts.join("=").trim()];
-          })
-          .filter(([key, value]) => key && value)
-      );
-      return {
-        source_filename: filenamePart || `transcript_${index + 1}.txt`,
-        content: contentLines.join("\n").trim(),
-        ...(Object.keys(metadata).length ? { metadata } : {})
-      };
-    })
-    .filter((item) => item.content);
-  if (!transcripts.length) {
-    throw new Error("Add at least one transcript block with a filename and content.");
-  }
-  return transcripts;
 }
 
 function metricDescription(metricId: string): string {

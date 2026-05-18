@@ -19,7 +19,7 @@ The Study Workspace batch paste format supports deterministic file assignment:
 filename.txt | participant_id=P1 | condition=home | week=week_1
 ```
 
-Researchers can either paste transcript blocks or select multiple TXT files. Filenames like `P1_home_week1.txt` auto-fill participant, condition, and week in the file assignment grid. Researchers can correct those fields before running the study batch. These metadata fields are copied into every aggregate metric row. This is the NVivo-like casebook layer: uploaded files become comparable cases across participants, conditions, weeks, and optional custom fields.
+Researchers can either paste transcript blocks or select multiple TXT/DOCX files. Filenames like `P1_home_week1.docx` auto-fill participant, condition, and week in the file assignment grid. Researchers can correct those fields before running the study batch. These metadata fields are copied into every aggregate metric row. This is the NVivo-like casebook layer: uploaded files become comparable cases across participants, conditions, weeks, and optional custom fields.
 
 ## Transcript Blocks For Batch Paste
 

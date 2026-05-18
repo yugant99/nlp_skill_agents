@@ -42,6 +42,7 @@ Each checkpoint should record:
 - [2026-05-17 NVivo-style casebook](2026-05-17-nvivo-style-casebook.md)
 - [2026-05-17 Study file assignment grid](2026-05-17-study-file-assignment-grid.md)
 - [2026-05-17 Batch file import inference](2026-05-17-batch-file-import-inference.md)
+- [2026-05-17 DOCX study batch upload](2026-05-17-docx-study-batch-upload.md)
 
 ## Completion Bar
 

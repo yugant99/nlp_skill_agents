@@ -45,6 +45,11 @@ import {
   serializeBatchTranscriptText,
   updateBatchTranscriptMetadata
 } from "./batchTranscripts";
+import {
+  buildCasebookOptions,
+  validateBatchAssignments,
+  type CasebookOptions
+} from "./casebookDesign";
 import type {
   AgentJob,
   BatchTranscript,
@@ -158,6 +163,9 @@ export function App() {
   const [studyDescription, setStudyDescription] = useState(
     "Three-transcript demo workspace for aggregate prompting and care-plan metrics."
   );
+  const [casebookParticipantCount, setCasebookParticipantCount] = useState(3);
+  const [casebookConditions, setCasebookConditions] = useState("home, lab");
+  const [casebookWeekCount, setCasebookWeekCount] = useState(2);
   const [batchTranscriptText, setBatchTranscriptText] = useState(DEFAULT_BATCH_TRANSCRIPT_TEXT);
   const [batchTranscripts, setBatchTranscripts] = useState<BatchTranscript[]>(() =>
     parseBatchTranscriptText(DEFAULT_BATCH_TRANSCRIPT_TEXT)
@@ -169,6 +177,20 @@ export function App() {
   const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
+
+  const casebookOptions = useMemo(
+    () =>
+      buildCasebookOptions(
+        casebookParticipantCount,
+        casebookConditions,
+        casebookWeekCount
+      ),
+    [casebookConditions, casebookParticipantCount, casebookWeekCount]
+  );
+  const casebookWarnings = useMemo(
+    () => validateBatchAssignments(batchTranscripts, casebookOptions),
+    [batchTranscripts, casebookOptions]
+  );
 
   useEffect(() => {
     loadSkillPack()
@@ -915,6 +937,11 @@ export function App() {
               studies={studies}
               studyName={studyName}
               studyDescription={studyDescription}
+              casebookParticipantCount={casebookParticipantCount}
+              casebookConditions={casebookConditions}
+              casebookWeekCount={casebookWeekCount}
+              casebookOptions={casebookOptions}
+              casebookWarnings={casebookWarnings}
               batchTranscriptText={batchTranscriptText}
               batchTranscripts={batchTranscripts}
               batchParseError={batchParseError}
@@ -923,6 +950,9 @@ export function App() {
               status={studyWorkspaceStatus}
               onStudyNameChange={setStudyName}
               onStudyDescriptionChange={setStudyDescription}
+              onCasebookParticipantCountChange={setCasebookParticipantCount}
+              onCasebookConditionsChange={setCasebookConditions}
+              onCasebookWeekCountChange={setCasebookWeekCount}
               onBatchTranscriptTextChange={updateBatchTranscriptText}
               onBatchFilesSelected={importBatchFiles}
               onBatchAssignmentChange={updateBatchAssignment}
@@ -972,6 +1002,11 @@ function StudyWorkspacePanel({
   studies,
   studyName,
   studyDescription,
+  casebookParticipantCount,
+  casebookConditions,
+  casebookWeekCount,
+  casebookOptions,
+  casebookWarnings,
   batchTranscriptText,
   batchTranscripts,
   batchParseError,
@@ -980,6 +1015,9 @@ function StudyWorkspacePanel({
   status,
   onStudyNameChange,
   onStudyDescriptionChange,
+  onCasebookParticipantCountChange,
+  onCasebookConditionsChange,
+  onCasebookWeekCountChange,
   onBatchTranscriptTextChange,
   onBatchFilesSelected,
   onBatchAssignmentChange,
@@ -988,6 +1026,11 @@ function StudyWorkspacePanel({
   studies: StudyWorkspace[];
   studyName: string;
   studyDescription: string;
+  casebookParticipantCount: number;
+  casebookConditions: string;
+  casebookWeekCount: number;
+  casebookOptions: CasebookOptions;
+  casebookWarnings: string[];
   batchTranscriptText: string;
   batchTranscripts: BatchTranscript[];
   batchParseError: string;
@@ -996,6 +1039,9 @@ function StudyWorkspacePanel({
   status: string;
   onStudyNameChange: (value: string) => void;
   onStudyDescriptionChange: (value: string) => void;
+  onCasebookParticipantCountChange: (value: number) => void;
+  onCasebookConditionsChange: (value: string) => void;
+  onCasebookWeekCountChange: (value: number) => void;
   onBatchTranscriptTextChange: (value: string) => void;
   onBatchFilesSelected: (files: FileList | null) => void;
   onBatchAssignmentChange: (index: number, key: string, value: string) => void;
@@ -1037,6 +1083,56 @@ function StudyWorkspacePanel({
               ))}
             </div>
           ) : null}
+          <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1] p-3">
+            <div className="text-sm font-semibold text-[#2f413f]">Casebook design</div>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <label className="field-label mt-0">
+                Participants
+                <input
+                  className="field-input"
+                  min={1}
+                  max={4}
+                  type="number"
+                  value={casebookParticipantCount}
+                  onChange={(event) =>
+                    onCasebookParticipantCountChange(Number(event.target.value))
+                  }
+                />
+              </label>
+              <label className="field-label mt-0 sm:col-span-2">
+                Conditions
+                <input
+                  className="field-input"
+                  value={casebookConditions}
+                  onChange={(event) => onCasebookConditionsChange(event.target.value)}
+                />
+              </label>
+              <label className="field-label mt-0">
+                Weeks
+                <input
+                  className="field-input"
+                  min={1}
+                  type="number"
+                  value={casebookWeekCount}
+                  onChange={(event) => onCasebookWeekCountChange(Number(event.target.value))}
+                />
+              </label>
+              <div className="sm:col-span-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[#756f64]">
+                  Active options
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {[...casebookOptions.participants, ...casebookOptions.conditions, ...casebookOptions.weeks].map(
+                    (item) => (
+                      <span key={item} className="casebook-pill">
+                        {item}
+                      </span>
+                    )
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
         <div className="space-y-3">
           <label className="batch-upload-zone">
@@ -1077,6 +1173,8 @@ function StudyWorkspacePanel({
           {batchParseError ? <p className="error-text">{batchParseError}</p> : null}
           <FileAssignmentGrid
             transcripts={batchTranscripts}
+            options={casebookOptions}
+            warnings={casebookWarnings}
             onAssignmentChange={onBatchAssignmentChange}
           />
           <button className="secondary-button" type="button" onClick={onRunBatch}>
@@ -1119,9 +1217,13 @@ function StudyWorkspacePanel({
 
 function FileAssignmentGrid({
   transcripts,
+  options,
+  warnings,
   onAssignmentChange
 }: {
   transcripts: BatchTranscript[];
+  options: CasebookOptions;
+  warnings: string[];
   onAssignmentChange: (index: number, key: string, value: string) => void;
 }) {
   if (!transcripts.length) {
@@ -1139,11 +1241,35 @@ function FileAssignmentGrid({
           <div className="mt-1 text-xs text-[#756f64]">
             Map every transcript to the study casebook before analysis.
           </div>
+          {warnings.length ? (
+            <div className="mt-2 space-y-1">
+              {warnings.slice(0, 4).map((warning) => (
+                <div key={warning} className="text-xs font-medium text-[#8a4b24]">
+                  {warning}
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
         <div className="self-start rounded-full bg-[#eef5ec] px-2 py-1 font-mono text-xs text-[#2f5b50]">
           {transcripts.length} file{transcripts.length === 1 ? "" : "s"}
         </div>
       </div>
+      <datalist id="casebook-participants">
+        {options.participants.map((item) => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
+      <datalist id="casebook-conditions">
+        {options.conditions.map((item) => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
+      <datalist id="casebook-weeks">
+        {options.weeks.map((item) => (
+          <option key={item} value={item} />
+        ))}
+      </datalist>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] border-collapse text-left text-sm">
           <thead>
@@ -1162,6 +1288,7 @@ function FileAssignmentGrid({
                 <td className="px-2 py-2">
                   <input
                     className="assignment-input"
+                    list="casebook-participants"
                     value={transcript.metadata?.participant_id ?? ""}
                     onChange={(event) =>
                       onAssignmentChange(index, "participant_id", event.target.value)
@@ -1171,6 +1298,7 @@ function FileAssignmentGrid({
                 <td className="px-2 py-2">
                   <input
                     className="assignment-input"
+                    list="casebook-conditions"
                     value={transcript.metadata?.condition ?? ""}
                     onChange={(event) =>
                       onAssignmentChange(index, "condition", event.target.value)
@@ -1180,6 +1308,7 @@ function FileAssignmentGrid({
                 <td className="px-2 py-2">
                   <input
                     className="assignment-input"
+                    list="casebook-weeks"
                     value={transcript.metadata?.week ?? ""}
                     onChange={(event) => onAssignmentChange(index, "week", event.target.value)}
                   />

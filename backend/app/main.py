@@ -112,6 +112,7 @@ class StudyCreateRequest(BaseModel):
 class StudyTextTranscript(BaseModel):
     source_filename: str = Field(min_length=1)
     content: str = Field(min_length=1)
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class StudyTextBatchRequest(BaseModel):
@@ -584,6 +585,7 @@ def _study_skill_pack_version_payload(version) -> dict:
 
 def _study_batch_payload(batch) -> dict:
     aggregate_results_json = batch.aggregate_dir / "aggregate_results.json"
+    aggregate_payload = json.loads(aggregate_results_json.read_text(encoding="utf-8"))
     exports = [
         {
             "metric_id": path.stem,
@@ -603,6 +605,7 @@ def _study_batch_payload(batch) -> dict:
             "created_at": batch.created_at,
         },
         "aggregate_results_json": str(aggregate_results_json),
+        "results": aggregate_payload["results"],
         "exports": exports,
     }
 

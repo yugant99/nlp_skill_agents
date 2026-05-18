@@ -442,10 +442,20 @@ def test_study_workspace_batch_api_creates_aggregate_outputs(tmp_path, monkeypat
             "transcripts": [
                 {
                     "source_filename": "one.txt",
+                    "metadata": {
+                        "participant_id": "P1",
+                        "condition": "home",
+                        "week": "week_1",
+                    },
                     "content": "CG: How are you?\nP: Fine.",
                 },
                 {
                     "source_filename": "two.txt",
+                    "metadata": {
+                        "participant_id": "P2",
+                        "condition": "lab",
+                        "week": "week_1",
+                    },
                     "content": "CG: Did sleep improve?\nP: Yes.",
                 },
             ],
@@ -457,6 +467,12 @@ def test_study_workspace_batch_api_creates_aggregate_outputs(tmp_path, monkeypat
     assert payload["batch"]["run_count"] == 2
     assert payload["batch"]["failure_count"] == 0
     assert payload["aggregate_results_json"].endswith("aggregate_results.json")
+    assert payload["results"][0]["metric_id"] == "question_type_metrics"
+    assert payload["results"][0]["rows"][0]["participant_id"] == "P1"
+    assert payload["results"][0]["rows"][0]["condition"] == "home"
+    assert payload["results"][0]["rows"][0]["week"] == "week_1"
+    assert payload["results"][0]["rows"][3]["participant_id"] == "P2"
+    assert payload["results"][0]["rows"][3]["condition"] == "lab"
     assert payload["exports"] == [
         {
             "metric_id": "question_type_metrics",

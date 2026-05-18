@@ -33,10 +33,21 @@ def test_study_workspace_runs_text_batch_with_aggregate_exports(tmp_path: Path) 
         [
             {
                 "source_filename": "one.txt",
+                "metadata": {
+                    "participant_id": "P1",
+                    "condition": "home",
+                    "week": "week_1",
+                },
                 "content": "CG: How did walking feel?\nP: It hurt.",
             },
             {
                 "source_filename": "two.txt",
+                "metadata": {
+                    "participant_id": "P2",
+                    "condition": "lab",
+                    "week": "week_1",
+                    "site": "clinic_a",
+                },
                 "content": "CG: Did medication help?\nP: Yes.",
             },
         ],
@@ -62,15 +73,37 @@ def test_study_workspace_runs_text_batch_with_aggregate_exports(tmp_path: Path) 
         "question_type_metrics",
     ]
     assert aggregate_payload["results"][0]["rows"][0]["source_filename"] == "one.txt"
+    assert aggregate_payload["results"][0]["rows"][0]["participant_id"] == "P1"
+    assert aggregate_payload["results"][0]["rows"][0]["condition"] == "home"
+    assert aggregate_payload["results"][0]["rows"][0]["week"] == "week_1"
+    assert aggregate_payload["results"][0]["rows"][3]["participant_id"] == "P2"
+    assert aggregate_payload["results"][0]["rows"][3]["site"] == "clinic_a"
+
+    run_payload = json.loads(next((batch.aggregate_dir / "runs").glob("*.json")).read_text())
+    assert run_payload["metadata"]["participant_id"] in {"P1", "P2"}
 
     with (batch.aggregate_dir / "question_type_metrics.csv").open(
         newline="",
         encoding="utf-8",
     ) as csv_file:
         rows = list(csv.DictReader(csv_file))
+        assert csv_file.name.endswith("question_type_metrics.csv")
+    assert rows[0].keys() >= {
+        "participant_id",
+        "condition",
+        "week",
+        "source_filename",
+        "run_id",
+    }
+    assert rows[0]["participant_id"] == "P1"
+    assert rows[0]["condition"] == "home"
+    assert rows[0]["week"] == "week_1"
     assert rows[0]["source_filename"] == "one.txt"
     assert rows[0]["speaker"] == "caregiver"
     assert rows[0]["open_question_turns"] == "1"
+    assert rows[3]["participant_id"] == "P2"
+    assert rows[3]["condition"] == "lab"
+    assert rows[3]["site"] == "clinic_a"
     assert rows[3]["source_filename"] == "two.txt"
     assert rows[3]["yes_no_question_turns"] == "1"
 

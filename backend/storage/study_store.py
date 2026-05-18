@@ -138,7 +138,7 @@ class StudyWorkspaceStore:
         self,
         study_id: str,
         skill_pack_version_id: str,
-        transcripts: list[dict[str, str]],
+        transcripts: list[dict[str, Any]],
     ) -> StudyBatchRun:
         self._require_study(study_id)
         skill_pack_payload = self._load_skill_pack_version(
@@ -154,6 +154,7 @@ class StudyWorkspaceStore:
         failures = []
         for item in transcripts:
             source_filename = _required_string(item, "source_filename")
+            metadata = _normalized_metadata(item.get("metadata", {}))
             try:
                 run = execute_analysis(
                     _required_string(item, "content"),
@@ -172,6 +173,7 @@ class StudyWorkspaceStore:
             run_payload = {
                 "run_id": run.run_id,
                 "source_filename": run.source_filename,
+                "metadata": metadata,
                 "created_at": run.created_at,
                 "turn_count": len(run.transcript.turns),
                 "results": [asdict(result) for result in run.results],
@@ -301,6 +303,7 @@ def _aggregate_batch_payload(
             )
             aggregate["rows"].extend(
                 {
+                    **_ordered_metadata(run.get("metadata", {})),
                     "source_filename": run["source_filename"],
                     "run_id": run["run_id"],
                     **row,
@@ -353,6 +356,30 @@ def _required_string(payload: dict[str, Any], key: str) -> str:
     if not value:
         raise ValueError(f"{key} is required")
     return value
+
+
+def _normalized_metadata(payload: Any) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        return {}
+    metadata: dict[str, str] = {}
+    for key, value in payload.items():
+        normalized_key = str(key).strip()
+        normalized_value = str(value).strip()
+        if normalized_key and normalized_value:
+            metadata[normalized_key] = normalized_value
+    return metadata
+
+
+def _ordered_metadata(metadata: dict[str, Any]) -> dict[str, str]:
+    normalized = _normalized_metadata(metadata)
+    ordered: dict[str, str] = {}
+    for key in ["participant_id", "condition", "week"]:
+        if key in normalized:
+            ordered[key] = normalized[key]
+    for key in sorted(normalized):
+        if key not in ordered:
+            ordered[key] = normalized[key]
+    return ordered
 
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:

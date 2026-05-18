@@ -213,6 +213,29 @@ export async function createStudyTextBatch(params: {
   return response.json();
 }
 
+export async function createStudyFileBatch(params: {
+  studyId: string;
+  skillPackVersionId: string;
+  files: File[];
+  metadataByFilename: Record<string, Record<string, string>>;
+}): Promise<StudyBatchResponse> {
+  const formData = new FormData();
+  formData.append("skill_pack_version_id", params.skillPackVersionId);
+  formData.append("metadata", JSON.stringify(params.metadataByFilename));
+  for (const file of params.files) {
+    formData.append("files", file);
+  }
+  const response = await fetch(`${API_BASE}/api/studies/${params.studyId}/batches/files`, {
+    method: "POST",
+    body: formData
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not run study file batch");
+  }
+  return response.json();
+}
+
 export async function validateSkillPack(payload: unknown): Promise<SkillPackSummary> {
   const response = await fetch(`${API_BASE}/api/skill-packs/validate`, {
     method: "POST",

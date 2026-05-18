@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  createBatchTranscriptFromFilePreview,
   createBatchTranscriptFromTextFile,
   inferBatchMetadataFromFilename,
+  isSupportedBatchTranscriptFile,
   parseBatchTranscriptText,
   serializeBatchTranscriptText,
   updateBatchTranscriptMetadata
@@ -89,4 +91,22 @@ test("creates a batch transcript from uploaded text file content", () => {
       }
     }
   );
+});
+
+test("creates a preview row for selected docx uploads", () => {
+  assert.deepEqual(createBatchTranscriptFromFilePreview("P4_lab_week6.docx"), {
+    source_filename: "P4_lab_week6.docx",
+    content: "[DOCX selected; transcript text is extracted locally during the run.]",
+    metadata: {
+      participant_id: "P4",
+      condition: "lab",
+      week: "week_6"
+    }
+  });
+});
+
+test("recognizes supported batch transcript upload extensions", () => {
+  assert.equal(isSupportedBatchTranscriptFile("p1.txt"), true);
+  assert.equal(isSupportedBatchTranscriptFile("p1.docx"), true);
+  assert.equal(isSupportedBatchTranscriptFile("p1.pdf"), false);
 });

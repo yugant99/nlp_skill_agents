@@ -22,6 +22,7 @@ import {
   createPluginBuildJob,
   createPluginRequest,
   createStudy,
+  createStudyFileBatch,
   createStudyTextBatch,
   createTextAnalysisRun,
   draftSkillPack,
@@ -37,7 +38,9 @@ import {
   validateSkillPackText
 } from "./api";
 import {
+  createBatchTranscriptFromFilePreview,
   createBatchTranscriptFromTextFile,
+  isSupportedBatchTranscriptFile,
   parseBatchTranscriptText,
   serializeBatchTranscriptText,
   updateBatchTranscriptMetadata
@@ -90,6 +93,17 @@ const DEFAULT_BATCH_TRANSCRIPT_TEXT =
   "P2_c: Did medication help last night?\nP2_p: Yes, I slept better.\n---\n" +
   "participant_003.txt | participant_id=P3 | condition=home | week=week_2\n" +
   "P3_c: I will call the clinic tomorrow.\nP3_p: Thank you.";
+
+function metadataBySourceFilename(
+  transcripts: BatchTranscript[]
+): Record<string, Record<string, string>> {
+  return Object.fromEntries(
+    transcripts.map((transcript) => [
+      transcript.source_filename,
+      transcript.metadata ?? {}
+    ])
+  );
+}
 
 export function App() {
   const [skillPack, setSkillPack] = useState<SkillPack | null>(null);
@@ -148,6 +162,7 @@ export function App() {
   const [batchTranscripts, setBatchTranscripts] = useState<BatchTranscript[]>(() =>
     parseBatchTranscriptText(DEFAULT_BATCH_TRANSCRIPT_TEXT)
   );
+  const [batchFiles, setBatchFiles] = useState<File[]>([]);
   const [batchParseError, setBatchParseError] = useState("");
   const [batchUploadStatus, setBatchUploadStatus] = useState("");
   const [studyBatch, setStudyBatch] = useState<StudyBatchResponse | null>(null);
@@ -491,11 +506,18 @@ export function App() {
         description: studyDescription
       });
       const version = await addStudySkillPackVersion(study.id, skillPackPayload);
-      const batch = await createStudyTextBatch({
-        studyId: study.id,
-        skillPackVersionId: version.version_id,
-        transcripts: batchTranscripts
-      });
+      const batch = batchFiles.length
+        ? await createStudyFileBatch({
+            studyId: study.id,
+            skillPackVersionId: version.version_id,
+            files: batchFiles,
+            metadataByFilename: metadataBySourceFilename(batchTranscripts)
+          })
+        : await createStudyTextBatch({
+            studyId: study.id,
+            skillPackVersionId: version.version_id,
+            transcripts: batchTranscripts
+          });
       setStudyBatch(batch);
       setStudyWorkspaceStatus(
         `Batch complete: ${batch.batch.run_count} run(s), ${batch.batch.failure_count} failure(s)`
@@ -508,6 +530,8 @@ export function App() {
   }
 
   function updateBatchTranscriptText(value: string) {
+    setBatchFiles([]);
+    setBatchUploadStatus("");
     setBatchTranscriptText(value);
     try {
       setBatchTranscripts(parseBatchTranscriptText(value));
@@ -531,22 +555,27 @@ export function App() {
     }
     try {
       const fileArray = Array.from(files);
-      const unsupported = fileArray.filter((item) => !item.name.toLowerCase().endsWith(".txt"));
+      const unsupported = fileArray.filter((item) => !isSupportedBatchTranscriptFile(item.name));
       if (unsupported.length) {
-        throw new Error("Study batch file import currently supports TXT files.");
+        throw new Error("Study batch file import supports TXT and DOCX files.");
       }
       const transcripts = await Promise.all(
-        fileArray.map(async (item) =>
-          createBatchTranscriptFromTextFile(item.name, await item.text())
-        )
+        fileArray.map(async (item) => {
+          if (item.name.toLowerCase().endsWith(".txt")) {
+            return createBatchTranscriptFromTextFile(item.name, await item.text());
+          }
+          return createBatchTranscriptFromFilePreview(item.name);
+        })
       );
+      setBatchFiles(fileArray);
       setBatchTranscripts(transcripts);
       setBatchTranscriptText(serializeBatchTranscriptText(transcripts));
       setBatchParseError("");
       setBatchUploadStatus(
-        `Imported ${transcripts.length} TXT file${transcripts.length === 1 ? "" : "s"}`
+        `Imported ${transcripts.length} transcript file${transcripts.length === 1 ? "" : "s"} for local extraction`
       );
     } catch (err) {
+      setBatchFiles([]);
       setBatchUploadStatus("");
       setBatchParseError(err instanceof Error ? err.message : "Could not import batch files.");
     }
@@ -1014,7 +1043,7 @@ function StudyWorkspacePanel({
             <input
               className="sr-only"
               type="file"
-              accept=".txt,text/plain"
+              accept=".txt,.docx,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               multiple
               onChange={(event) => {
                 void onBatchFilesSelected(event.target.files);
@@ -1026,10 +1055,10 @@ function StudyWorkspacePanel({
             </span>
             <span className="min-w-0">
               <span className="block text-sm font-semibold text-[#253735]">
-                Select transcript TXT files
+                Select transcript TXT or DOCX files
               </span>
               <span className="mt-1 block text-xs leading-5 text-[#756f64]">
-                Filenames like `P1_home_week1.txt` auto-fill participant, condition, and week.
+                Filenames like `P1_home_week1.docx` auto-fill participant, condition, and week.
               </span>
             </span>
           </label>

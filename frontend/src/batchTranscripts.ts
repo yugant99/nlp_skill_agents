@@ -2,6 +2,8 @@ import type { BatchTranscript } from "./types";
 
 const METADATA_ORDER = ["participant_id", "condition", "week"];
 const CONDITION_TOKENS = new Set(["home", "lab", "clinic", "telehealth"]);
+const DOCX_PREVIEW =
+  "[DOCX selected; transcript text is extracted locally during the run.]";
 
 export function parseBatchTranscriptText(value: string): BatchTranscript[] {
   const transcripts = value
@@ -89,12 +91,23 @@ export function createBatchTranscriptFromTextFile(
   sourceFilename: string,
   content: string
 ): BatchTranscript {
+  return createBatchTranscriptFromFilePreview(sourceFilename, content.trim());
+}
+
+export function createBatchTranscriptFromFilePreview(
+  sourceFilename: string,
+  content = DOCX_PREVIEW
+): BatchTranscript {
   const metadata = inferBatchMetadataFromFilename(sourceFilename);
   return {
     source_filename: sourceFilename,
-    content: content.trim(),
+    content: content.trim() || DOCX_PREVIEW,
     ...(Object.keys(metadata).length ? { metadata } : {})
   };
+}
+
+export function isSupportedBatchTranscriptFile(filename: string): boolean {
+  return /\.(txt|docx)$/i.test(filename);
 }
 
 function parseHeaderMetadata(parts: string[]): Record<string, string> {

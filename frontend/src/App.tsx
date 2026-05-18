@@ -57,6 +57,7 @@ import {
   validateBatchAssignments,
   type CasebookOptions
 } from "./casebookDesign";
+import { buildMetricMatrix } from "./matrixView";
 import type {
   AgentJob,
   BatchTranscript,
@@ -1369,7 +1370,10 @@ function StudyWorkspacePanel({
                 </p>
               </div>
               {batch.results.map((result) => (
-                <BatchMetricTable key={result.metric_id} result={result} />
+                <div key={result.metric_id} className="space-y-3">
+                  <BatchMetricTable result={result} />
+                  <MetricMatrixPreview result={result} />
+                </div>
               ))}
             </div>
           ) : null}
@@ -1910,6 +1914,78 @@ function BatchMetricTable({ result }: { result: MetricResult }) {
       </div>
     </div>
   );
+}
+
+function MetricMatrixPreview({ result }: { result: MetricResult }) {
+  const valueKey = firstNumericMetricKey(result);
+  if (!valueKey) {
+    return null;
+  }
+  const matrix = buildMetricMatrix(result, valueKey);
+  if (!matrix.rows.length || !matrix.weekColumns.length) {
+    return null;
+  }
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1]">
+      <div className="grid gap-1 border-b border-[#e4ded0] px-3 py-2">
+        <div className="text-sm font-semibold text-[#2f413f]">
+          Matrix view: {valueKey.replaceAll("_", " ")}
+        </div>
+        <div className="text-xs text-[#756f64]">
+          Participant and condition rows compared across study weeks.
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[520px] border-collapse text-left text-xs">
+          <thead>
+            <tr>
+              <th className="table-head">Participant</th>
+              <th className="table-head">Condition</th>
+              {matrix.weekColumns.map((week) => (
+                <th key={week} className="table-head">
+                  {week.replaceAll("_", " ")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.rows.map((row) => (
+              <tr
+                key={`${row.participant_id}-${row.condition}`}
+                className="border-t border-[#e4ded0]"
+              >
+                <td className="table-cell font-mono text-xs">{row.participant_id}</td>
+                <td className="table-cell">{row.condition}</td>
+                {matrix.weekColumns.map((week) => (
+                  <td key={week} className="table-cell font-mono text-xs">
+                    {formatCell(row.cells[week])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function firstNumericMetricKey(result: MetricResult): string | null {
+  const excluded = new Set([
+    "participant_id",
+    "condition",
+    "week",
+    "source_filename",
+    "run_id"
+  ]);
+  for (const row of result.rows) {
+    for (const [key, value] of Object.entries(row)) {
+      if (!excluded.has(key) && typeof value === "number" && Number.isFinite(value)) {
+        return key;
+      }
+    }
+  }
+  return null;
 }
 
 function formatCell(value: unknown): string {

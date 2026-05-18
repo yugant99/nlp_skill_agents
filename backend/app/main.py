@@ -109,6 +109,13 @@ class StudyCreateRequest(BaseModel):
     description: str = Field(default="")
 
 
+class StudySchemaRequest(BaseModel):
+    participant_count: int = Field(default=1, ge=1, le=4)
+    conditions: list[str] | str = Field(default_factory=lambda: ["home", "lab"])
+    week_count: int = Field(default=1, ge=1, le=52)
+    custom_fields: list[str] = Field(default_factory=list)
+
+
 class StudyTextTranscript(BaseModel):
     source_filename: str = Field(min_length=1)
     content: str = Field(min_length=1)
@@ -297,6 +304,27 @@ def list_studies() -> dict:
             for study in StudyWorkspaceStore(_local_data_root()).list_studies()
         ]
     }
+
+
+@app.put("/api/studies/{study_id}/schema")
+def update_study_schema(study_id: str, request: StudySchemaRequest) -> dict:
+    try:
+        schema = StudyWorkspaceStore(_local_data_root()).save_study_schema(
+            study_id,
+            request.model_dump(),
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    return {"schema": _study_schema_payload(schema)}
+
+
+@app.get("/api/studies/{study_id}/schema")
+def get_study_schema(study_id: str) -> dict:
+    try:
+        schema = StudyWorkspaceStore(_local_data_root()).load_study_schema(study_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study schema not found") from exc
+    return {"schema": _study_schema_payload(schema)}
 
 
 @app.post("/api/studies/{study_id}/skill-pack-versions")
@@ -641,6 +669,19 @@ def _study_skill_pack_version_payload(version) -> dict:
     }
 
 
+def _study_schema_payload(schema) -> dict:
+    return {
+        "study_id": schema.study_id,
+        "participant_count": schema.participant_count,
+        "participants": schema.participants,
+        "conditions": schema.conditions,
+        "week_count": schema.week_count,
+        "weeks": schema.weeks,
+        "custom_fields": schema.custom_fields,
+        "updated_at": schema.updated_at,
+    }
+
+
 def _study_batch_payload(batch) -> dict:
     aggregate_results_json = batch.aggregate_dir / "aggregate_results.json"
     aggregate_payload = json.loads(aggregate_results_json.read_text(encoding="utf-8"))
@@ -663,6 +704,7 @@ def _study_batch_payload(batch) -> dict:
             "created_at": batch.created_at,
         },
         "aggregate_results_json": str(aggregate_results_json),
+        "study_schema": aggregate_payload.get("study_schema"),
         "results": aggregate_payload["results"],
         "exports": exports,
     }

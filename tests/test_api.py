@@ -590,6 +590,38 @@ def test_study_workspace_file_batch_api_accepts_txt_and_docx(
     assert rows[3]["turns"] == 1
 
 
+def test_study_schema_api_persists_casebook_design(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    study_response = client.post(
+        "/api/studies",
+        json={"name": "Schema API Study"},
+    )
+    study_id = study_response.json()["study"]["id"]
+
+    update_response = client.put(
+        f"/api/studies/{study_id}/schema",
+        json={
+            "participant_count": 4,
+            "conditions": ["home", "lab", "clinic"],
+            "week_count": 3,
+            "custom_fields": ["site", "arm"],
+        },
+    )
+    read_response = client.get(f"/api/studies/{study_id}/schema")
+
+    assert update_response.status_code == 200
+    schema = update_response.json()["schema"]
+    assert schema["study_id"] == study_id
+    assert schema["participants"] == ["P1", "P2", "P3", "P4"]
+    assert schema["conditions"] == ["home", "lab", "clinic"]
+    assert schema["weeks"] == ["week_1", "week_2", "week_3"]
+    assert schema["custom_fields"] == ["site", "arm"]
+    assert read_response.status_code == 200
+    assert read_response.json()["schema"] == schema
+
+
 def test_library_approval_api_records_entries_and_audit(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)

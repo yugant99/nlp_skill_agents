@@ -181,6 +181,61 @@ def test_batch_participant_metadata_can_drive_default_prefix_parsing(
     assert participant_row["turns"] == 1
 
 
+def test_study_schema_is_saved_and_attached_to_batch_outputs(tmp_path: Path) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Schema Study"})
+
+    schema = store.save_study_schema(
+        study.id,
+        {
+            "participant_count": 4,
+            "conditions": "home, lab, clinic",
+            "week_count": 3,
+            "custom_fields": ["site", "arm"],
+        },
+    )
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "schema_pack",
+            "name": "Schema Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [
+            {
+                "source_filename": "P1_home_week1.txt",
+                "metadata": {
+                    "participant_id": "P1",
+                    "condition": "home",
+                    "week": "week_1",
+                    "site": "north",
+                },
+                "content": "P1_c: Hello?\nP1_p: Hi.",
+            }
+        ],
+    )
+
+    schema_path = tmp_path / "studies" / study.id / "study_schema.json"
+    assert schema_path.exists()
+    assert schema.participants == ["P1", "P2", "P3", "P4"]
+    assert schema.conditions == ["home", "lab", "clinic"]
+    assert schema.weeks == ["week_1", "week_2", "week_3"]
+    assert schema.custom_fields == ["site", "arm"]
+
+    aggregate_payload = json.loads(
+        (batch.aggregate_dir / "aggregate_results.json").read_text(encoding="utf-8")
+    )
+    assert aggregate_payload["study_schema"]["participant_count"] == 4
+    assert aggregate_payload["study_schema"]["conditions"] == ["home", "lab", "clinic"]
+    assert aggregate_payload["study_schema"]["weeks"] == ["week_1", "week_2", "week_3"]
+    assert aggregate_payload["study_schema"]["custom_fields"] == ["site", "arm"]
+
+
 def test_study_workspace_exports_reproducibility_bundle(tmp_path: Path) -> None:
     store = StudyWorkspaceStore(tmp_path)
     study = store.create_study({"name": "Bundle Study"})

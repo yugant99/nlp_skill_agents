@@ -34,6 +34,18 @@ class StudySkillPackVersion:
 
 
 @dataclass(frozen=True)
+class StudySchema:
+    study_id: str
+    participant_count: int
+    participants: list[str]
+    conditions: list[str]
+    week_count: int
+    weeks: list[str]
+    custom_fields: list[str] = field(default_factory=list)
+    updated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
+@dataclass(frozen=True)
 class StudyBatchRun:
     study_id: str
     batch_id: str
@@ -88,6 +100,33 @@ class StudyWorkspaceStore:
             for path in self.studies_dir.glob("*/study.json")
         ]
         return sorted(studies, key=lambda study: study.created_at, reverse=True)
+
+    def save_study_schema(self, study_id: str, payload: dict[str, Any]) -> StudySchema:
+        self._require_study(study_id)
+        schema = _study_schema_from_payload(study_id, payload)
+        (self._study_dir(study_id) / "study_schema.json").write_text(
+            json.dumps(asdict(schema), indent=2),
+            encoding="utf-8",
+        )
+        self.audit_log.record(
+            "study.schema.updated",
+            "study",
+            study_id,
+            {
+                "participant_count": schema.participant_count,
+                "conditions": schema.conditions,
+                "week_count": schema.week_count,
+                "custom_fields": schema.custom_fields,
+            },
+        )
+        return schema
+
+    def load_study_schema(self, study_id: str) -> StudySchema:
+        self._require_study(study_id)
+        path = self._study_dir(study_id) / "study_schema.json"
+        if not path.exists():
+            raise FileNotFoundError("study_schema.json")
+        return StudySchema(**json.loads(path.read_text(encoding="utf-8")))
 
     def add_skill_pack_version(
         self,
@@ -188,6 +227,7 @@ class StudyWorkspaceStore:
             study_id,
             batch_id,
             skill_pack_version_id,
+            self._load_optional_study_schema(study_id),
             successes,
             failures,
         )
@@ -282,11 +322,18 @@ class StudyWorkspaceStore:
             raise FileNotFoundError(skill_pack_version_id)
         return json.loads(path.read_text(encoding="utf-8"))
 
+    def _load_optional_study_schema(self, study_id: str) -> StudySchema | None:
+        path = self._study_dir(study_id) / "study_schema.json"
+        if not path.exists():
+            return None
+        return StudySchema(**json.loads(path.read_text(encoding="utf-8")))
+
 
 def _aggregate_batch_payload(
     study_id: str,
     batch_id: str,
     skill_pack_version_id: str,
+    study_schema: StudySchema | None,
     runs: list[dict[str, Any]],
     failures: list[dict[str, str]],
 ) -> dict[str, Any]:
@@ -314,6 +361,7 @@ def _aggregate_batch_payload(
         "study_id": study_id,
         "batch_id": batch_id,
         "skill_pack_version_id": skill_pack_version_id,
+        "study_schema": asdict(study_schema) if study_schema else None,
         "created_at": datetime.now(UTC).isoformat(),
         "run_count": len(runs),
         "failure_count": len(failures),
@@ -379,6 +427,45 @@ def _normalized_metadata(payload: Any) -> dict[str, str]:
         if normalized_key and normalized_value:
             metadata[normalized_key] = normalized_value
     return metadata
+
+
+def _study_schema_from_payload(study_id: str, payload: dict[str, Any]) -> StudySchema:
+    participant_count = _bounded_positive_int(payload.get("participant_count"), 1, 4)
+    week_count = _bounded_positive_int(payload.get("week_count"), 1, 52)
+    conditions = _normalized_string_list(payload.get("conditions")) or ["home", "lab"]
+    custom_fields = _normalized_string_list(payload.get("custom_fields"))
+    return StudySchema(
+        study_id=study_id,
+        participant_count=participant_count,
+        participants=[f"P{index + 1}" for index in range(participant_count)],
+        conditions=conditions,
+        week_count=week_count,
+        weeks=[f"week_{index + 1}" for index in range(week_count)],
+        custom_fields=custom_fields,
+    )
+
+
+def _bounded_positive_int(value: Any, default: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return min(max(parsed, 1), maximum)
+
+
+def _normalized_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = value.split(",")
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = []
+    normalized: list[str] = []
+    for item in raw_items:
+        text = str(item).strip().lower()
+        if text and text not in normalized:
+            normalized.append(text)
+    return normalized
 
 
 def _ordered_metadata(metadata: dict[str, Any]) -> dict[str, str]:

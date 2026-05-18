@@ -1,5 +1,7 @@
 import json
+from io import BytesIO
 
+from docx import Document
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
@@ -502,6 +504,90 @@ def test_study_workspace_batch_api_creates_aggregate_outputs(tmp_path, monkeypat
         "batch.completed",
         "bundle.exported",
     ]
+
+
+def test_study_workspace_file_batch_api_accepts_txt_and_docx(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    study_response = client.post(
+        "/api/studies",
+        json={"name": "Multipart Study"},
+    )
+    study_id = study_response.json()["study"]["id"]
+    pack_response = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json={
+            "id": "multipart_pack",
+            "name": "Multipart Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    version_id = pack_response.json()["version"]["version_id"]
+
+    docx_buffer = BytesIO()
+    doc = Document()
+    doc.add_paragraph("P2_c: Did balance improve?")
+    doc.add_paragraph("P2_p: It improved a little.")
+    doc.save(docx_buffer)
+    docx_buffer.seek(0)
+
+    response = client.post(
+        f"/api/studies/{study_id}/batches/files",
+        data={
+            "skill_pack_version_id": version_id,
+            "metadata": json.dumps(
+                {
+                    "P1_home_week1.txt": {
+                        "participant_id": "P1",
+                        "condition": "home",
+                        "week": "week_1",
+                    },
+                    "P2_lab_week2.docx": {
+                        "participant_id": "P2",
+                        "condition": "lab",
+                        "week": "week_2",
+                    },
+                }
+            ),
+        },
+        files=[
+            (
+                "files",
+                (
+                    "P1_home_week1.txt",
+                    b"P1_c: How did walking feel?\nP1_p: It felt steady.",
+                    "text/plain",
+                ),
+            ),
+            (
+                "files",
+                (
+                    "P2_lab_week2.docx",
+                    docx_buffer.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+            ),
+        ],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["batch"]["run_count"] == 2
+    assert payload["batch"]["failure_count"] == 0
+    rows = payload["results"][0]["rows"]
+    assert rows[0]["participant_id"] == "P1"
+    assert rows[0]["condition"] == "home"
+    assert rows[0]["week"] == "week_1"
+    assert rows[0]["turns"] == 1
+    assert rows[3]["participant_id"] == "P2"
+    assert rows[3]["condition"] == "lab"
+    assert rows[3]["week"] == "week_2"
+    assert rows[3]["turns"] == 1
 
 
 def test_library_approval_api_records_entries_and_audit(tmp_path, monkeypatch) -> None:

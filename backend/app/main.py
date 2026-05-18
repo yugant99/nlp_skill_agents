@@ -328,6 +328,35 @@ def create_study_text_batch(study_id: str, request: StudyTextBatchRequest) -> di
     return _study_batch_payload(batch)
 
 
+@app.post("/api/studies/{study_id}/batches/files")
+async def create_study_file_batch(
+    study_id: str,
+    skill_pack_version_id: Annotated[str, Form()],
+    files: Annotated[list[UploadFile], File()],
+    metadata: Annotated[str, Form()] = "{}",
+) -> dict:
+    try:
+        parsed_metadata = _batch_metadata_from_json(metadata)
+        transcripts = [
+            {
+                "source_filename": file.filename or f"transcript_{index + 1}",
+                "content": await _extract_upload_text(file),
+                "metadata": parsed_metadata.get(file.filename or "", {}),
+            }
+            for index, file in enumerate(files)
+        ]
+        batch = StudyWorkspaceStore(_local_data_root()).run_text_batch(
+            study_id,
+            skill_pack_version_id,
+            transcripts,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study artifact not found") from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _study_batch_payload(batch)
+
+
 @app.post("/api/studies/{study_id}/bundle")
 def export_study_bundle(study_id: str) -> dict:
     try:
@@ -485,6 +514,35 @@ def _execute_or_400(content: str, config: StudyConfig, source_filename: str):
         return execute_analysis(content, config, source_filename)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _batch_metadata_from_json(raw_metadata: str) -> dict[str, dict[str, str]]:
+    payload = json.loads(raw_metadata or "{}")
+    if not isinstance(payload, dict):
+        raise ValueError("metadata must be a JSON object keyed by filename")
+    normalized: dict[str, dict[str, str]] = {}
+    for filename, metadata in payload.items():
+        if not isinstance(metadata, dict):
+            continue
+        normalized[str(filename)] = {
+            str(key): str(value)
+            for key, value in metadata.items()
+            if str(key).strip() and str(value).strip()
+        }
+    return normalized
+
+
+async def _extract_upload_text(file: UploadFile) -> str:
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in {".txt", ".docx"}:
+        raise ValueError("Only DOCX and TXT uploads are supported")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(await file.read())
+        tmp_path = Path(tmp.name)
+    try:
+        return extract_transcript_text(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _study_config_from_payload(payload: dict) -> StudyConfig:

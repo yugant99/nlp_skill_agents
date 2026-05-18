@@ -311,6 +311,22 @@ def test_study_workspace_lists_and_loads_batch_run_drilldown(tmp_path: Path) -> 
     assert run_summaries[0]["metadata"]["participant_id"] == "P1"
     assert run_summaries[0]["turn_count"] == 2
     assert loaded_run["source_filename"] == "P1_home_week1.txt"
+    assert loaded_run["turns"] == [
+        {
+            "turn_index": 0,
+            "role": "caregiver",
+            "speaker_label": "Caregiver",
+            "raw_prefix": "P1_c",
+            "text": "Hello?",
+        },
+        {
+            "turn_index": 1,
+            "role": "participant",
+            "speaker_label": "Participant",
+            "raw_prefix": "P1_p",
+            "text": "Hi.",
+        },
+    ]
     assert loaded_run["results"][0]["metric_id"] == "base_metrics"
 
 

@@ -131,6 +131,13 @@ export type StudyBatchRunSummary = {
 };
 
 export type StudyBatchRunDetail = StudyBatchRunSummary & {
+  turns: {
+    turn_index: number;
+    role: string;
+    speaker_label: string;
+    raw_prefix: string;
+    text: string;
+  }[];
   results: MetricResult[];
 };
 

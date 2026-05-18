@@ -1531,6 +1531,7 @@ function StudyWorkspacePanel({
                   value={batchRunMetadataLine(selectedBatchRun.metadata) || "No metadata"}
                 />
               </div>
+              <SourceEvidence turns={selectedBatchRun.turns} />
               {selectedBatchRun.results.map((result) => (
                 <BatchMetricTable key={result.metric_id} result={result} />
               ))}
@@ -1568,6 +1569,50 @@ function batchRunMetadataLine(metadata: Record<string, string>): string {
     .filter(([key, value]) => value && !["participant_id", "condition", "week"].includes(key))
     .map(([key, value]) => `${key}: ${value}`);
   return [...preferred, ...extras].join(" / ");
+}
+
+function SourceEvidence({
+  turns
+}: {
+  turns: StudyBatchRunDetail["turns"];
+}) {
+  if (!turns.length) {
+    return (
+      <div className="rounded-md border border-dashed border-[#c7c0af] bg-[#faf8f1] px-3 py-4 text-sm text-[#676157]">
+        No parsed turns were stored for this transcript.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1]">
+      <div className="border-b border-[#e4ded0] px-3 py-2">
+        <div className="text-sm font-semibold text-[#2f413f]">Source evidence</div>
+        <div className="mt-1 text-xs text-[#756f64]">
+          First parsed turns from this transcript. Full content remains local.
+        </div>
+      </div>
+      <div className="divide-y divide-[#e4ded0]">
+        {turns.slice(0, 6).map((turn) => (
+          <div key={turn.turn_index} className="grid gap-2 px-3 py-2 md:grid-cols-[150px_1fr]">
+            <div className="min-w-0">
+              <div className="truncate text-xs font-semibold uppercase tracking-wide text-[#47615d]">
+                {turn.speaker_label}
+              </div>
+              <div className="mt-1 font-mono text-xs text-[#756f64]">
+                {turn.raw_prefix} · turn {turn.turn_index + 1}
+              </div>
+            </div>
+            <div className="text-sm leading-6 text-[#2b2925]">{turn.text}</div>
+          </div>
+        ))}
+      </div>
+      {turns.length > 6 ? (
+        <div className="border-t border-[#e4ded0] px-3 py-2 text-xs text-[#756f64]">
+          Showing 6 of {turns.length} parsed turns.
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function FileAssignmentGrid({

@@ -215,6 +215,7 @@ class StudyWorkspaceStore:
                 "metadata": metadata,
                 "created_at": run.created_at,
                 "turn_count": len(run.transcript.turns),
+                "turns": [asdict(turn) for turn in run.transcript.turns],
                 "results": [asdict(result) for result in run.results],
             }
             (runs_dir / f"{run.run_id}.json").write_text(

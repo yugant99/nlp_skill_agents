@@ -724,6 +724,13 @@ def test_study_batch_run_drilldown_api_lists_and_loads_one_run(
     assert loaded_response.status_code == 200
     loaded = loaded_response.json()["run"]
     assert loaded["source_filename"] == "P1_home_week1.txt"
+    assert loaded["turns"][0] == {
+        "turn_index": 0,
+        "role": "caregiver",
+        "speaker_label": "Caregiver",
+        "raw_prefix": "P1_c",
+        "text": "Hello?",
+    }
     assert loaded["results"][0]["metric_id"] == "base_metrics"
 
 

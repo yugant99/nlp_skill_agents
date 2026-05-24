@@ -33,6 +33,7 @@ from backend.extensions.agent_jobs import (
     agent_job_evidence_to_payload,
     agent_job_to_payload,
     create_metric_plugin_build_job,
+    create_segmentation_rewrite_job,
 )
 from backend.extensions.plugin_requests import (
     PluginRequestStore,
@@ -329,6 +330,20 @@ def evaluate_segmentation_draft(request: SegmentationEvaluateRequest) -> dict:
         "case_id": case.case_id,
         "source": "synthetic",
         "evaluation": asdict(evaluation),
+    }
+
+
+@app.post("/api/segmentation/cases/{case_id}/rewrite-job")
+def create_segmentation_rewrite_job_endpoint(case_id: str) -> dict:
+    try:
+        build_synthetic_case(case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation case not found") from exc
+    job_store = AgentJobStore(_local_data_root())
+    job = create_segmentation_rewrite_job(case_id, store=job_store)
+    return {
+        "job": agent_job_to_payload(job),
+        "artifact_path": str(job_store.jobs_dir / f"{job.id}.json"),
     }
 
 

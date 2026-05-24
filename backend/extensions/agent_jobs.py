@@ -58,7 +58,12 @@ class AgentJobStore:
         )
         runbook_path = Path(job.runbook_path)
         runbook_path.parent.mkdir(parents=True, exist_ok=True)
-        runbook_path.write_text(build_agent_job_runbook(job), encoding="utf-8")
+        runbook = (
+            build_agent_job_runbook_html(job)
+            if runbook_path.suffix == ".html"
+            else build_agent_job_runbook(job)
+        )
+        runbook_path.write_text(runbook, encoding="utf-8")
         return StoredAgentJob(
             job=job,
             artifact_path=artifact_path,
@@ -154,6 +159,50 @@ def create_metric_plugin_build_job(
     return job
 
 
+def create_segmentation_rewrite_job(
+    case_id: str,
+    store: AgentJobStore | None = None,
+) -> AgentJob:
+    store = store or AgentJobStore()
+    safe_case_id = _safe_gate_name(case_id)
+    job_id = f"rewrite_{safe_case_id}"
+    job_dir = store.jobs_dir / job_id
+    prompt_path = job_dir / "rewrite_prompt.html"
+    job_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path.write_text(
+        build_segmentation_rewrite_prompt_html(safe_case_id),
+        encoding="utf-8",
+    )
+    job = AgentJob(
+        id=job_id,
+        job_type="segmentation_rewrite",
+        status="queued",
+        source_request_id=safe_case_id,
+        branch_name=f"codex/segmentation-{safe_case_id.replace('_', '-')}",
+        prompt_path=str(prompt_path),
+        runbook_path=str(job_dir / "runbook.html"),
+        allowed_files=[
+            "backend/segmentation/",
+            "backend/segmentation/evaluator.py",
+            "backend/segmentation/synthetic.py",
+            "backend/app/main.py",
+            "frontend/src/",
+            "tests/test_segmentation_core.py",
+            "tests/test_api.py",
+            "tests/test_agent_jobs.py",
+            "checkpoints/",
+        ],
+        verification_commands=[
+            ".venv/bin/pytest tests/test_segmentation_core.py -q",
+            ".venv/bin/pytest tests/test_api.py -k segmentation -q",
+            ".venv/bin/pytest tests/test_agent_jobs.py -k segmentation -q",
+            "cd frontend && npm run build",
+        ],
+    )
+    store.persist(job)
+    return job
+
+
 def agent_job_to_payload(job: AgentJob) -> dict[str, Any]:
     return asdict(job)
 
@@ -205,6 +254,105 @@ Run every command before committing:
 
 ## Delivery
 Commit the focused change, push `{job.branch_name}`, and open a PR against `master`.
+"""
+
+
+def build_agent_job_runbook_html(job: AgentJob) -> str:
+    allowed_files = "".join(f"<li><code>{path}</code></li>" for path in job.allowed_files)
+    verification_commands = "".join(
+        f"<li><code>{command}</code></li>" for command in job.verification_commands
+    )
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Job Runbook: {job.id}</title>
+    <style>
+      body {{
+        margin: 0;
+        background: #f7f4ea;
+        color: #24312f;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }}
+      main {{
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 36px 24px;
+      }}
+      section {{
+        border: 1px solid #d9d4c5;
+        border-radius: 8px;
+        background: #fffdf8;
+        margin-top: 16px;
+        padding: 16px;
+      }}
+      h1 {{
+        margin: 0 0 8px;
+        font-size: 30px;
+      }}
+      h2 {{
+        margin: 0 0 10px;
+        font-size: 17px;
+      }}
+      code {{
+        border: 1px solid #d9d4c5;
+        border-radius: 4px;
+        background: #f0eee4;
+        padding: 1px 5px;
+      }}
+      li {{
+        margin: 6px 0;
+      }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Agent Job Runbook: {job.id}</h1>
+      <p>Branch: <code>{job.branch_name}</code></p>
+      <section>
+        <h2>Purpose</h2>
+        <p>Run a rule-scoped segmentation rewrite agent for synthetic case <code>{job.source_request_id}</code>, then verify the candidate with machine-checkable evaluator artifacts.</p>
+      </section>
+      <section>
+        <h2>Prompt</h2>
+        <p>Open <code>{job.prompt_path}</code> before editing. Do not use official transcript text or official expected outputs.</p>
+      </section>
+      <section>
+        <h2>Allowed Files</h2>
+        <ul>{allowed_files}</ul>
+      </section>
+      <section>
+        <h2>Evaluator Gate</h2>
+        <p>Run the deterministic evaluator and treat <code>official-source-guard</code> failures as blocking.</p>
+        <ul>{verification_commands}</ul>
+      </section>
+    </main>
+  </body>
+</html>
+"""
+
+
+def build_segmentation_rewrite_prompt_html(case_id: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Segmentation Rewrite Prompt</title>
+  </head>
+  <body>
+    <main>
+      <h1>Synthetic case: {case_id}</h1>
+      <p>Rewrite only synthetic segmentation drafts for this case. Use rule-scoped edits, return the revised draft plus evaluator evidence, and never introduce official transcript names, titles, copied lines, or paraphrased official source content.</p>
+      <ul>
+        <li>Start from <code>GET /api/segmentation/cases/{case_id}</code>.</li>
+        <li>Evaluate with <code>POST /api/segmentation/evaluate</code>.</li>
+        <li>Blocking guard: <code>official-source-guard</code>.</li>
+      </ul>
+    </main>
+  </body>
+</html>
 """
 
 

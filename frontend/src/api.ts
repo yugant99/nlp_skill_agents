@@ -190,6 +190,19 @@ export async function evaluateSegmentationDraft(params: {
   return response.json();
 }
 
+export async function createSegmentationRewriteJob(
+  caseId: string
+): Promise<AgentJobResponse> {
+  const response = await fetch(`${API_BASE}/api/segmentation/cases/${caseId}/rewrite-job`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not queue segmentation rewrite job");
+  }
+  return response.json();
+}
+
 export async function createStudy(params: {
   name: string;
   description: string;

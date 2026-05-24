@@ -22,6 +22,7 @@ import {
   createAgentJobEvidence,
   createPluginBuildJob,
   createPluginRequest,
+  createSegmentationRewriteJob,
   createStudy,
   createStudyFileBatch,
   createStudyTextBatch,
@@ -591,6 +592,24 @@ export function App() {
     } catch (err) {
       setSegmentationStatus("");
       setError(err instanceof Error ? err.message : "Could not evaluate draft");
+    }
+  }
+
+  async function queueSegmentationRewriteJob() {
+    if (!selectedSegmentationCaseId) {
+      setError("Select a synthetic case before queueing a rewrite agent.");
+      return;
+    }
+    try {
+      setError("");
+      const response = await createSegmentationRewriteJob(selectedSegmentationCaseId);
+      setSegmentationStatus(
+        `Queued rewrite agent: ${response.job.id} -> ${response.job.runbook_path}`
+      );
+      setAgentJobs(await listAgentJobs());
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not queue rewrite agent");
     }
   }
 
@@ -1207,6 +1226,7 @@ export function App() {
                   : undefined
               }
               onEvaluate={runSegmentationEvaluation}
+              onQueueRewriteJob={queueSegmentationRewriteJob}
             />
             <RecentRunsPanel runs={runHistory} />
           </section>
@@ -1226,7 +1246,8 @@ function SegmentationDemoPanel({
   onSelectCase,
   onDraftChange,
   onUseGoldDraft,
-  onEvaluate
+  onEvaluate,
+  onQueueRewriteJob
 }: {
   cases: SegmentationCase[];
   selectedCase: SegmentationCase | null;
@@ -1238,6 +1259,7 @@ function SegmentationDemoPanel({
   onDraftChange: (value: string) => void;
   onUseGoldDraft: () => void;
   onEvaluate: () => void;
+  onQueueRewriteJob: () => void;
 }) {
   return (
     <Panel title="6. C-Unit Segmentation Lab" icon={<Braces size={18} />}>
@@ -1301,6 +1323,14 @@ function SegmentationDemoPanel({
               Run verifier
             </button>
           </div>
+          <button
+            className="secondary-button mt-0"
+            type="button"
+            onClick={onQueueRewriteJob}
+          >
+            <Sparkles size={16} />
+            Queue rewrite agent
+          </button>
           {status ? <div className="success-text">{status}</div> : null}
           {evaluation ? <SegmentationEvaluationPanel evaluation={evaluation} /> : null}
         </div>

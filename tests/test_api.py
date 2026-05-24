@@ -814,3 +814,71 @@ def test_deployment_profile_endpoint_reports_secure_offline_status(
     assert response.status_code == 200
     assert response.json()["ready"] is True
     assert response.json()["checks"][1]["id"] == "network_llm_disabled"
+
+
+def test_segmentation_api_lists_and_returns_synthetic_cases() -> None:
+    client = TestClient(app)
+
+    list_response = client.get("/api/segmentation/cases")
+    case_response = client.get("/api/segmentation/cases/pause_overlap_repair")
+
+    assert list_response.status_code == 200
+    cases = list_response.json()["cases"]
+    assert [case["case_id"] for case in cases] == [
+        "pause_overlap_repair",
+        "redaction_omission_nonverbal",
+    ]
+    assert cases[0]["source"] == "synthetic"
+    assert cases[0]["forbidden_source_tokens"] == []
+
+    assert case_response.status_code == 200
+    payload = case_response.json()["case"]
+    assert payload["case_id"] == "pause_overlap_repair"
+    assert "[00:00:00]" in payload["descript_text"]
+    assert "([FP])" in payload["gold_text"]
+
+
+def test_segmentation_api_evaluates_draft_against_synthetic_rules() -> None:
+    client = TestClient(app)
+    case = client.get("/api/segmentation/cases/redaction_omission_nonverbal").json()[
+        "case"
+    ]
+
+    good_response = client.post(
+        "/api/segmentation/evaluate",
+        json={
+            "case_id": "redaction_omission_nonverbal",
+            "draft_text": case["gold_text"],
+        },
+    )
+    bad_response = client.post(
+        "/api/segmentation/evaluate",
+        json={
+            "case_id": "redaction_omission_nonverbal",
+            "draft_text": "P: I saw Nala [redacted]",
+        },
+    )
+
+    assert good_response.status_code == 200
+    assert good_response.json()["evaluation"]["score"] == 100
+    assert good_response.json()["evaluation"]["failures"] == []
+
+    assert bad_response.status_code == 200
+    failures = {
+        failure["rule_id"]
+        for failure in bad_response.json()["evaluation"]["failures"]
+    }
+    assert failures >= {"redaction-comments", "official-source-guard"}
+
+
+def test_segmentation_api_rejects_unknown_synthetic_case() -> None:
+    client = TestClient(app)
+
+    response = client.get("/api/segmentation/cases/not-real")
+    evaluate_response = client.post(
+        "/api/segmentation/evaluate",
+        json={"case_id": "not-real", "draft_text": "P: Hello."},
+    )
+
+    assert response.status_code == 404
+    assert evaluate_response.status_code == 404

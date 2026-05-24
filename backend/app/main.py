@@ -41,6 +41,9 @@ from backend.extensions.plugin_requests import (
     plugin_request_to_payload,
 )
 from backend.llm.openrouter import OpenRouterError
+from backend.segmentation.evaluator import evaluate_segmented_draft
+from backend.segmentation.models import SyntheticSegmentationCase
+from backend.segmentation.synthetic import build_synthetic_case, list_synthetic_cases
 from backend.storage.local_store import LocalRunStore, StoredRun
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.deployment_profiles import check_deployment_profile
@@ -102,6 +105,11 @@ class AgentJobEvidenceCreateRequest(BaseModel):
     command: str = Field(default="")
     status: str = Field(min_length=1)
     summary: str = Field(default="")
+
+
+class SegmentationEvaluateRequest(BaseModel):
+    case_id: str = Field(min_length=1)
+    draft_text: str = Field(min_length=1)
 
 
 class StudyCreateRequest(BaseModel):
@@ -287,6 +295,40 @@ def list_agent_job_evidence(job_id: str) -> dict:
             agent_job_evidence_to_payload(item)
             for item in evidence
         ]
+    }
+
+
+@app.get("/api/segmentation/cases")
+def list_segmentation_cases() -> dict:
+    return {
+        "cases": [_segmentation_case_payload(case) for case in list_synthetic_cases()]
+    }
+
+
+@app.get("/api/segmentation/cases/{case_id}")
+def get_segmentation_case(case_id: str) -> dict:
+    try:
+        case = build_synthetic_case(case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation case not found") from exc
+    return {"case": _segmentation_case_payload(case)}
+
+
+@app.post("/api/segmentation/evaluate")
+def evaluate_segmentation_draft(request: SegmentationEvaluateRequest) -> dict:
+    try:
+        case = build_synthetic_case(request.case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation case not found") from exc
+    evaluation = evaluate_segmented_draft(
+        request.draft_text,
+        expected_rule_ids=case.rule_ids,
+        forbidden_tokens=case.official_source_guard_tokens,
+    )
+    return {
+        "case_id": case.case_id,
+        "source": "synthetic",
+        "evaluation": asdict(evaluation),
     }
 
 
@@ -683,6 +725,12 @@ def _study_payload(study) -> dict:
         "description": study.description,
         "created_at": study.created_at,
     }
+
+
+def _segmentation_case_payload(case: SyntheticSegmentationCase) -> dict:
+    payload = asdict(case)
+    payload["source"] = "synthetic"
+    return payload
 
 
 def _library_entry_payload(entry) -> dict:

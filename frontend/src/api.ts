@@ -9,6 +9,8 @@ import type {
   PluginRequestResponse,
   RunHistoryItem,
   RunResponse,
+  SegmentationCase,
+  SegmentationEvaluationResponse,
   SkillPack,
   SkillPackDraftResponse,
   SkillPackRefineResponse,
@@ -146,6 +148,46 @@ export async function createAgentJobEvidence(params: {
   }
   const payload = (await response.json()) as { evidence: AgentJobEvidence };
   return payload.evidence;
+}
+
+export async function listSegmentationCases(): Promise<SegmentationCase[]> {
+  const response = await fetch(`${API_BASE}/api/segmentation/cases`);
+  if (!response.ok) {
+    throw new Error("Could not load segmentation cases");
+  }
+  const payload = (await response.json()) as { cases: SegmentationCase[] };
+  return payload.cases;
+}
+
+export async function getSegmentationCase(caseId: string): Promise<SegmentationCase> {
+  const response = await fetch(`${API_BASE}/api/segmentation/cases/${caseId}`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not load segmentation case");
+  }
+  const payload = (await response.json()) as { case: SegmentationCase };
+  return payload.case;
+}
+
+export async function evaluateSegmentationDraft(params: {
+  caseId: string;
+  draftText: string;
+}): Promise<SegmentationEvaluationResponse> {
+  const response = await fetch(`${API_BASE}/api/segmentation/evaluate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      case_id: params.caseId,
+      draft_text: params.draftText
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not evaluate segmentation draft");
+  }
+  return response.json();
 }
 
 export async function createStudy(params: {

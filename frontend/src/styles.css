@@ -85,6 +85,10 @@
     @apply rounded-full border border-[#c9d6c5] bg-white px-2 py-1 font-mono text-xs font-semibold text-[#2f5b50];
   }
 
+  .casebook-pill.muted {
+    @apply border-[#d9d4c5] text-[#756f64];
+  }
+
   .metric-toggle {
     @apply flex cursor-pointer items-center justify-between rounded-md border border-[#d9d4c5] bg-[#faf8f1] px-3 py-2 text-sm font-medium transition duration-200 hover:-translate-y-px hover:border-[#b8c3b3] hover:bg-white active:translate-y-0;
   }
@@ -123,6 +127,10 @@
 
   .secondary-button {
     @apply mt-3 flex w-full items-center justify-center gap-2 rounded-md border border-[#cfc8b8] bg-[#f7f4ea] px-4 py-2 text-sm font-semibold text-[#253735] transition duration-200 hover:-translate-y-px hover:border-[#47615d] hover:bg-[#ece8dc] active:translate-y-0;
+  }
+
+  .primary-button {
+    @apply mt-3 flex w-full items-center justify-center gap-2 rounded-md bg-[#253735] px-4 py-2 text-sm font-semibold text-white transition duration-200 hover:-translate-y-px hover:bg-[#344b47] active:translate-y-0;
   }
 
   .run-button {
@@ -174,6 +182,14 @@
   }
 
   .diagnostic-warning {
+    @apply flex items-start gap-2 rounded-md border border-[#e0aaa1] bg-[#fff0ee] px-3 py-2 text-sm text-[#8a2d24];
+  }
+
+  .transcript-preview {
+    @apply max-h-64 overflow-auto whitespace-pre-wrap rounded border border-[#e4ded0] bg-white/80 px-3 py-2 font-mono text-xs leading-5 text-[#2b2925];
+  }
+
+  .error-row {
     @apply flex items-start gap-2 rounded-md border border-[#e0aaa1] bg-[#fff0ee] px-3 py-2 text-sm text-[#8a2d24];
   }
 

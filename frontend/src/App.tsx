@@ -27,9 +27,12 @@ import {
   createStudyTextBatch,
   createTextAnalysisRun,
   draftSkillPack,
+  evaluateSegmentationDraft,
+  getSegmentationCase,
   getStudyBatch,
   getStudyBatchRun,
   getStudySchema,
+  listSegmentationCases,
   listStudyBatchRuns,
   listStudyBatches,
   listAgentJobs,
@@ -70,6 +73,8 @@ import type {
   PluginRequest,
   RunHistoryItem,
   RunResponse,
+  SegmentationCase,
+  SegmentationEvaluation,
   SkillPack,
   StudyBatchResponse,
   StudyBatchRunDetail,
@@ -195,6 +200,14 @@ export function App() {
   const [batchRuns, setBatchRuns] = useState<StudyBatchRunSummary[]>([]);
   const [selectedBatchRun, setSelectedBatchRun] = useState<StudyBatchRunDetail | null>(null);
   const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
+  const [segmentationCases, setSegmentationCases] = useState<SegmentationCase[]>([]);
+  const [selectedSegmentationCaseId, setSelectedSegmentationCaseId] = useState("");
+  const [selectedSegmentationCase, setSelectedSegmentationCase] =
+    useState<SegmentationCase | null>(null);
+  const [segmentationDraft, setSegmentationDraft] = useState("");
+  const [segmentationEvaluation, setSegmentationEvaluation] =
+    useState<SegmentationEvaluation | null>(null);
+  const [segmentationStatus, setSegmentationStatus] = useState("");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
@@ -236,6 +249,16 @@ export function App() {
     listStudies()
       .then(setStudies)
       .catch(() => setStudies([]));
+    listSegmentationCases()
+      .then((cases) => {
+        setSegmentationCases(cases);
+        if (cases[0]) {
+          setSelectedSegmentationCaseId(cases[0].case_id);
+          setSelectedSegmentationCase(cases[0]);
+          setSegmentationDraft(cases[0].gold_text);
+        }
+      })
+      .catch(() => setSegmentationStatus("Could not load segmentation cases."));
   }, []);
 
   const disfluencyTokens = useMemo(
@@ -529,6 +552,45 @@ export function App() {
     } catch (err) {
       setPluginJobStatus("");
       setError(err instanceof Error ? err.message : "Could not record evidence");
+    }
+  }
+
+  async function selectSegmentationCase(caseId: string) {
+    try {
+      setError("");
+      setSegmentationStatus("");
+      const cachedCase = segmentationCases.find((item) => item.case_id === caseId);
+      const nextCase = cachedCase ?? (await getSegmentationCase(caseId));
+      setSelectedSegmentationCaseId(nextCase.case_id);
+      setSelectedSegmentationCase(nextCase);
+      setSegmentationDraft(nextCase.gold_text);
+      setSegmentationEvaluation(null);
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not load segmentation case");
+    }
+  }
+
+  async function runSegmentationEvaluation() {
+    if (!selectedSegmentationCaseId || !segmentationDraft.trim()) {
+      setError("Select a synthetic case and draft before evaluating.");
+      return;
+    }
+    try {
+      setError("");
+      const response = await evaluateSegmentationDraft({
+        caseId: selectedSegmentationCaseId,
+        draftText: segmentationDraft
+      });
+      setSegmentationEvaluation(response.evaluation);
+      setSegmentationStatus(
+        response.evaluation.failures.length
+          ? `${response.evaluation.failures.length} rule issue detected.`
+          : "Verifier accepted this synthetic draft."
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not evaluate draft");
     }
   }
 
@@ -1130,6 +1192,22 @@ export function App() {
               onLoadBatchRun={loadStudyBatchRun}
               onRunBatch={runStudyWorkspaceBatch}
             />
+            <SegmentationDemoPanel
+              cases={segmentationCases}
+              selectedCase={selectedSegmentationCase}
+              selectedCaseId={selectedSegmentationCaseId}
+              draft={segmentationDraft}
+              evaluation={segmentationEvaluation}
+              status={segmentationStatus}
+              onSelectCase={selectSegmentationCase}
+              onDraftChange={setSegmentationDraft}
+              onUseGoldDraft={() =>
+                selectedSegmentationCase
+                  ? setSegmentationDraft(selectedSegmentationCase.gold_text)
+                  : undefined
+              }
+              onEvaluate={runSegmentationEvaluation}
+            />
             <RecentRunsPanel runs={runHistory} />
           </section>
         </section>
@@ -1138,9 +1216,159 @@ export function App() {
   );
 }
 
+function SegmentationDemoPanel({
+  cases,
+  selectedCase,
+  selectedCaseId,
+  draft,
+  evaluation,
+  status,
+  onSelectCase,
+  onDraftChange,
+  onUseGoldDraft,
+  onEvaluate
+}: {
+  cases: SegmentationCase[];
+  selectedCase: SegmentationCase | null;
+  selectedCaseId: string;
+  draft: string;
+  evaluation: SegmentationEvaluation | null;
+  status: string;
+  onSelectCase: (caseId: string) => void;
+  onDraftChange: (value: string) => void;
+  onUseGoldDraft: () => void;
+  onEvaluate: () => void;
+}) {
+  return (
+    <Panel title="6. C-Unit Segmentation Lab" icon={<Braces size={18} />}>
+      <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+        <div className="space-y-3">
+          <label className="field-label mt-0">
+            Synthetic case
+            <select
+              className="field-input"
+              value={selectedCaseId}
+              onChange={(event) => onSelectCase(event.target.value)}
+            >
+              {cases.map((item) => (
+                <option key={item.case_id} value={item.case_id}>
+                  {item.title}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedCase ? (
+            <>
+              <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1] p-3">
+                <div className="mb-2 flex flex-wrap gap-2">
+                  <span className="casebook-pill">{selectedCase.source}</span>
+                  {selectedCase.rule_ids.slice(0, 5).map((ruleId) => (
+                    <span key={ruleId} className="casebook-pill muted">
+                      {ruleId}
+                    </span>
+                  ))}
+                </div>
+                <pre className="transcript-preview">{selectedCase.descript_text}</pre>
+              </div>
+              <div className="rounded-md border border-[#d9d4c5] bg-white/70 p-3">
+                <div className="mb-2 text-sm font-semibold text-[#2f413f]">
+                  Synthetic gold target
+                </div>
+                <pre className="transcript-preview">{selectedCase.gold_text}</pre>
+              </div>
+            </>
+          ) : (
+            <div className="text-sm text-[#676157]">No synthetic cases loaded.</div>
+          )}
+        </div>
+
+        <div className="space-y-3">
+          <label className="field-label mt-0">
+            Draft to verify
+            <textarea
+              className="field-input min-h-72 resize-y font-mono text-xs"
+              value={draft}
+              onChange={(event) => onDraftChange(event.target.value)}
+            />
+          </label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button className="secondary-button mt-0" type="button" onClick={onUseGoldDraft}>
+              <FileCheck2 size={16} />
+              Use gold draft
+            </button>
+            <button className="primary-button mt-0" type="button" onClick={onEvaluate}>
+              <Play size={16} />
+              Run verifier
+            </button>
+          </div>
+          {status ? <div className="success-text">{status}</div> : null}
+          {evaluation ? <SegmentationEvaluationPanel evaluation={evaluation} /> : null}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function SegmentationEvaluationPanel({
+  evaluation
+}: {
+  evaluation: SegmentationEvaluation;
+}) {
+  const metrics = evaluation.metrics;
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+      <div className="grid gap-3 sm:grid-cols-4">
+        <OutputFact label="Score" value={String(evaluation.score)} />
+        <OutputFact label="Utterances" value={String(metrics.utterance_count)} />
+        <OutputFact label="Times" value={String(metrics.time_marker_count)} />
+        <OutputFact label="Pauses" value={String(metrics.pause_marker_count)} />
+      </div>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <div>
+          <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+            Speakers
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(metrics.speaker_counts).map(([speaker, count]) => (
+              <span key={speaker} className="casebook-pill">
+                {speaker}: {count}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+            Notation
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(metrics.special_notation_counts).map(([key, count]) => (
+              <span key={key} className="casebook-pill muted">
+                {key}: {count}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+      {evaluation.failures.length ? (
+        <div className="mt-3 space-y-2">
+          {evaluation.failures.map((failure, index) => (
+            <div key={`${failure.rule_id}-${index}`} className="error-row">
+              <AlertTriangle size={15} />
+              <div>
+                <div className="font-semibold">{failure.rule_id}</div>
+                <div>{failure.message}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RecentRunsPanel({ runs }: { runs: RunHistoryItem[] }) {
   return (
-    <Panel title="5. Recent Local Runs" icon={<Database size={18} />}>
+    <Panel title="7. Recent Local Runs" icon={<Database size={18} />}>
       {runs.length ? (
         <div className="recent-runs-list">
           {runs.slice(0, 5).map((item) => (

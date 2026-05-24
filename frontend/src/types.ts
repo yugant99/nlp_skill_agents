@@ -68,6 +68,44 @@ export type AgentJobEvidence = {
   created_at: string;
 };
 
+export type SegmentationCase = {
+  case_id: string;
+  title: string;
+  descript_text: string;
+  gold_text: string;
+  rule_ids: string[];
+  official_source_guard_tokens: string[];
+  forbidden_source_tokens: string[];
+  source: "synthetic";
+};
+
+export type SegmentationMetrics = {
+  line_count: number;
+  utterance_count: number;
+  time_marker_count: number;
+  pause_marker_count: number;
+  speaker_counts: Record<string, number>;
+  special_notation_counts: Record<string, number>;
+};
+
+export type SegmentationRuleFailure = {
+  rule_id: string;
+  message: string;
+  line_number?: number | null;
+};
+
+export type SegmentationEvaluation = {
+  score: number;
+  metrics: SegmentationMetrics;
+  failures: SegmentationRuleFailure[];
+};
+
+export type SegmentationEvaluationResponse = {
+  case_id: string;
+  source: "synthetic";
+  evaluation: SegmentationEvaluation;
+};
+
 export type StudyWorkspace = {
   id: string;
   name: string;

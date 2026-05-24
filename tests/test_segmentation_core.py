@@ -1,0 +1,109 @@
+from backend.segmentation.descript import extract_descript_events
+from backend.segmentation.evaluator import evaluate_segmented_draft
+from backend.segmentation.synthetic import build_synthetic_case, list_synthetic_cases
+
+
+def test_synthetic_case_contains_descript_input_gold_target_and_no_official_tokens() -> None:
+    case = build_synthetic_case("pause_overlap_repair")
+
+    assert case.case_id == "pause_overlap_repair"
+    assert "[00:00:00]" in case.descript_text
+    assert "P:" in case.descript_text
+    assert "-0:00" in case.gold_text
+    assert "; :02" in case.gold_text
+    assert "([FP])" in case.gold_text
+    assert "<" in case.gold_text
+    assert ">" in case.gold_text
+    assert case.forbidden_source_tokens == []
+
+    combined = f"{case.descript_text}\n{case.gold_text}".lower()
+    for token in ["nala", "james", "falcon", "lady bird", "call me"]:
+        assert token not in combined
+
+
+def test_list_synthetic_cases_returns_demo_ready_rule_coverage() -> None:
+    cases = list_synthetic_cases()
+
+    assert [case.case_id for case in cases] == [
+        "pause_overlap_repair",
+        "redaction_omission_nonverbal",
+    ]
+    assert all(case.gold_text.strip() for case in cases)
+    assert {rule for case in cases for rule in case.rule_ids} >= {
+        "speaker-markers",
+        "timestamp-markers",
+        "pause-markers",
+        "filled-pauses",
+        "overlap-markers",
+        "abandoned-utterance",
+        "redaction-comments",
+        "omission-markers",
+        "communicative-nonverbal",
+    }
+
+
+def test_extract_descript_events_reads_timestamped_speaker_turns() -> None:
+    events = extract_descript_events(
+        """
+        [00:00:00] P: Good morning, Mira. I am [redacted].
+        [00:00:04] Av: Uh, yes, start here.
+        [00:00:09] P: We are going to get up now.
+        """,
+        source_filename="synthetic_descript.txt",
+    )
+
+    assert [(event.timestamp_seconds, event.speaker, event.text) for event in events] == [
+        (0, "P", "Good morning, Mira. I am [redacted]."),
+        (4, "Av", "Uh, yes, start here."),
+        (9, "P", "We are going to get up now."),
+    ]
+
+
+def test_evaluator_scores_clean_synthetic_gold_and_exposes_machine_checks() -> None:
+    case = build_synthetic_case("redaction_omission_nonverbal")
+
+    evaluation = evaluate_segmented_draft(
+        case.gold_text,
+        expected_rule_ids=case.rule_ids,
+        forbidden_tokens=case.official_source_guard_tokens,
+    )
+
+    assert evaluation.score == 100
+    assert evaluation.failures == []
+    assert evaluation.metrics.utterance_count == 6
+    assert evaluation.metrics.time_marker_count == 2
+    assert evaluation.metrics.pause_marker_count == 2
+    assert evaluation.metrics.speaker_counts == {"P": 3, "Av": 2, "AvN": 1}
+    assert evaluation.metrics.special_notation_counts["redaction_comments"] == 1
+    assert evaluation.metrics.special_notation_counts["omission_markers"] == 2
+    assert evaluation.metrics.special_notation_counts["filled_pauses"] == 1
+
+
+def test_evaluator_flags_rule_failures_and_official_source_leakage() -> None:
+    bad_draft = """
+    Synthetic scenario
+    ; :02
+    P: I want to see Nala [redacted]
+    avatar: uh okay
+    """
+
+    evaluation = evaluate_segmented_draft(
+        bad_draft,
+        expected_rule_ids=[
+            "timestamp-markers",
+            "redaction-comments",
+            "speaker-markers",
+            "filled-pauses",
+        ],
+        forbidden_tokens=["nala", "james"],
+    )
+
+    failure_ids = {failure.rule_id for failure in evaluation.failures}
+    assert evaluation.score < 100
+    assert failure_ids >= {
+        "timestamp-markers",
+        "redaction-comments",
+        "speaker-markers",
+        "filled-pauses",
+        "official-source-guard",
+    }

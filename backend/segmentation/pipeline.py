@@ -98,11 +98,18 @@ class SegmentationRunStore:
         if not events:
             raise ValueError("No timestamped Descript speaker events were found")
 
+        run_id = uuid4().hex
         rule_plan = plan_rule_work(normalized_rule_ids)
         specialist_outputs = [
             build_specialist_output(packet, events)
             for packet in rule_plan
         ]
+        specialist_outputs = self._write_specialist_artifacts(
+            run_id,
+            source_filename,
+            events,
+            specialist_outputs,
+        )
         merged_draft, merge_evidence = merge_specialist_outputs(
             source_filename,
             events,
@@ -116,7 +123,7 @@ class SegmentationRunStore:
         failure_routes = route_failures(evaluation.failures)
         status = _status_from_evaluation(evaluation, merge_evidence)
         run = SegmentationRun(
-            run_id=uuid4().hex,
+            run_id=run_id,
             source_filename=source_filename,
             descript_text=descript_text,
             events=events,
@@ -196,6 +203,35 @@ class SegmentationRunStore:
             encoding="utf-8",
         )
         return evidence_path
+
+    def _write_specialist_artifacts(
+        self,
+        run_id: str,
+        source_filename: str,
+        events: list[RawTranscriptEvent],
+        outputs: list[SpecialistOutput],
+    ) -> list[SpecialistOutput]:
+        specialist_dir = self.runs_dir / run_id / "specialists"
+        specialist_dir.mkdir(parents=True, exist_ok=True)
+        return [
+            SpecialistOutput(
+                specialist_id=output.specialist_id,
+                rule_ids=output.rule_ids,
+                patches=output.patches,
+                evidence={
+                    **output.evidence,
+                    "artifact_path": str(
+                        _write_specialist_artifact(
+                            specialist_dir,
+                            source_filename,
+                            events,
+                            output,
+                        )
+                    ),
+                },
+            )
+            for output in outputs
+        ]
 
 
 def plan_rule_work(rule_ids: list[str]) -> list[RuleWorkPacket]:
@@ -287,6 +323,55 @@ def route_failures(
             }
         )
     return routes
+
+
+def _write_specialist_artifact(
+    specialist_dir: Path,
+    source_filename: str,
+    events: list[RawTranscriptEvent],
+    output: SpecialistOutput,
+) -> Path:
+    artifact_path = specialist_dir / f"{output.specialist_id}.html"
+    rule_items = "".join(f"<li><code>{rule_id}</code></li>" for rule_id in output.rule_ids)
+    patch_items = "".join(
+        "<li>"
+        f"<code>{patch.operation}</code> event <code>{patch.event_index}</code>: "
+        f"<code>{patch.text}</code> - {patch.reason}"
+        "</li>"
+        for patch in output.patches
+    )
+    event_items = "".join(
+        "<li>"
+        f"<code>{index}</code> [{event.timestamp_seconds}s] "
+        f"<code>{event.speaker}</code>: {event.text}"
+        "</li>"
+        for index, event in enumerate(events)
+    )
+    artifact_path.write_text(
+        f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Segmentation Specialist Packet: {output.specialist_id}</title>
+  </head>
+  <body>
+    <main>
+      <h1>{output.specialist_id}</h1>
+      <p>Source file: <code>{source_filename}</code></p>
+      <p>Do not rewrite the full transcript. Return only rule-scoped patches for this specialist.</p>
+      <h2>Rules</h2>
+      <ul>{rule_items}</ul>
+      <h2>Source Events</h2>
+      <ul>{event_items}</ul>
+      <h2>Deterministic Patch Stub</h2>
+      <ul>{patch_items}</ul>
+    </main>
+  </body>
+</html>
+""",
+        encoding="utf-8",
+    )
+    return artifact_path
 
 
 def segmentation_run_to_payload(run: SegmentationRun) -> dict[str, Any]:

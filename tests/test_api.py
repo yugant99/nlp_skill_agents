@@ -911,6 +911,9 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
     assert run["status"] == "verified"
     assert run["rule_plan"][0]["specialist_id"] == "speaker_turn"
     assert run["specialist_outputs"][0]["patches"]
+    assert run["specialist_outputs"][0]["evidence"]["artifact_path"].endswith(
+        "specialists/speaker_turn.html"
+    )
 
     fetch_response = client.get(f"/api/segmentation/runs/{run['run_id']}")
 

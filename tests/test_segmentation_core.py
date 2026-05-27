@@ -166,6 +166,12 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     assert run.evaluation is not None
     assert run.evaluation.score == 100
     assert all(output.patches for output in run.specialist_outputs)
+    for output in run.specialist_outputs:
+        artifact_path = Path(str(output.evidence["artifact_path"]))
+        assert artifact_path.exists()
+        assert "Do not rewrite the full transcript" in artifact_path.read_text(
+            encoding="utf-8"
+        )
     assert (tmp_path / "segmentation_runs" / f"{run.run_id}.json").exists()
 
     loaded = store.load_run(run.run_id)

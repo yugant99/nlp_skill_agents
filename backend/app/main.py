@@ -46,6 +46,7 @@ from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import SyntheticSegmentationCase
 from backend.segmentation.pipeline import (
     SegmentationRunStore,
+    segmentation_corpus_run_to_payload,
     segmentation_run_to_payload,
 )
 from backend.segmentation.synthetic import build_synthetic_case, list_synthetic_cases
@@ -121,6 +122,10 @@ class SegmentationRunCreateRequest(BaseModel):
     source_filename: str = Field(default="descript_export.txt", min_length=1)
     descript_text: str = Field(min_length=1)
     rule_ids: list[str] = Field(default_factory=list)
+
+
+class SegmentationCorpusRunCreateRequest(BaseModel):
+    seed: int = Field(default=0, ge=0)
 
 
 class StudyCreateRequest(BaseModel):
@@ -368,6 +373,26 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"run": segmentation_run_to_payload(run)}
+
+
+@app.post("/api/segmentation/corpus-runs")
+def create_segmentation_corpus_run(
+    request: SegmentationCorpusRunCreateRequest,
+) -> dict:
+    corpus_run = SegmentationRunStore(_local_data_root()).create_corpus_run(
+        seed=request.seed,
+    )
+    return {"corpus_run": segmentation_corpus_run_to_payload(corpus_run)}
+
+
+@app.get("/api/segmentation/corpus-runs")
+def list_segmentation_corpus_runs() -> dict:
+    return {
+        "corpus_runs": [
+            segmentation_corpus_run_to_payload(corpus_run)
+            for corpus_run in SegmentationRunStore(_local_data_root()).list_corpus_runs()
+        ]
+    }
 
 
 @app.get("/api/segmentation/runs")

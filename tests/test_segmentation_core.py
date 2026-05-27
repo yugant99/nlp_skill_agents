@@ -204,3 +204,45 @@ def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) ->
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["run_id"] == run.run_id
     assert evidence["evaluation"]["score"] == 100
+
+
+def test_segmentation_corpus_run_store_runs_generated_cases_and_summarizes_coverage(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import SegmentationRunStore
+
+    store = SegmentationRunStore(tmp_path)
+    corpus_run = store.create_corpus_run(seed=11)
+
+    assert corpus_run.status == "passed"
+    assert corpus_run.total_case_count == 4
+    assert corpus_run.regression_pass_count == 4
+    assert corpus_run.regression_fail_count == 0
+    assert set(corpus_run.rule_coverage) >= {
+        "speaker-markers",
+        "timestamp-markers",
+        "pause-markers",
+        "filled-pauses",
+        "overlap-markers",
+        "abandoned-utterance",
+        "redaction-comments",
+        "omission-markers",
+        "communicative-nonverbal",
+        "official-source-guard",
+    }
+
+    guard_result = next(
+        result
+        for result in corpus_run.results
+        if result.case_id == "corpus_official_source_leakage_negative"
+    )
+    assert guard_result.expected_status == "failed"
+    assert guard_result.status == "failed"
+    assert guard_result.outcome == "passed"
+    assert guard_result.failed_rule_ids == ["official-source-guard"]
+
+    loaded = store.load_corpus_run(corpus_run.corpus_run_id)
+    listed = store.list_corpus_runs()
+
+    assert loaded.corpus_run_id == corpus_run.corpus_run_id
+    assert [item.corpus_run_id for item in listed] == [corpus_run.corpus_run_id]

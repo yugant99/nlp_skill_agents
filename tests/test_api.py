@@ -1085,3 +1085,33 @@ def test_segmentation_run_api_lists_runs_and_downloads_exports(
     assert evidence_response.json()["evaluation"]["score"] == 100
     assert specialist_response.status_code == 200
     assert "Do not rewrite the full transcript" in specialist_response.text
+
+
+def test_segmentation_corpus_run_api_creates_and_lists_regression_batch(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/api/segmentation/corpus-runs",
+        json={"seed": 19},
+    )
+    list_response = client.get("/api/segmentation/corpus-runs")
+
+    assert create_response.status_code == 200
+    corpus_run = create_response.json()["corpus_run"]
+    assert corpus_run["status"] == "passed"
+    assert corpus_run["seed"] == 19
+    assert corpus_run["total_case_count"] == 4
+    assert corpus_run["regression_fail_count"] == 0
+    assert any(
+        result["expected_status"] == "failed"
+        and result["failed_rule_ids"] == ["official-source-guard"]
+        for result in corpus_run["results"]
+    )
+    assert list_response.status_code == 200
+    assert list_response.json()["corpus_runs"][0]["corpus_run_id"] == corpus_run[
+        "corpus_run_id"
+    ]

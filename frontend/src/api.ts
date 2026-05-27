@@ -10,6 +10,8 @@ import type {
   RunHistoryItem,
   RunResponse,
   SegmentationCase,
+  SegmentationCorpusRun,
+  SegmentationCorpusRunResponse,
   SegmentationEvaluationResponse,
   SegmentationRun,
   SegmentationRunResponse,
@@ -236,6 +238,33 @@ export async function listSegmentationRuns(): Promise<SegmentationRun[]> {
   }
   const payload = (await response.json()) as { runs: SegmentationRun[] };
   return payload.runs;
+}
+
+export async function createSegmentationCorpusRun(
+  seed: number
+): Promise<SegmentationCorpusRun> {
+  const response = await fetch(`${API_BASE}/api/segmentation/corpus-runs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ seed })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not run synthetic segmentation corpus");
+  }
+  const payload = (await response.json()) as SegmentationCorpusRunResponse;
+  return payload.corpus_run;
+}
+
+export async function listSegmentationCorpusRuns(): Promise<SegmentationCorpusRun[]> {
+  const response = await fetch(`${API_BASE}/api/segmentation/corpus-runs`);
+  if (!response.ok) {
+    throw new Error("Could not load segmentation corpus runs");
+  }
+  const payload = (await response.json()) as { corpus_runs: SegmentationCorpusRun[] };
+  return payload.corpus_runs;
 }
 
 export async function createSegmentationFileRun(params: {

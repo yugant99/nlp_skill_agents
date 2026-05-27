@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from backend.segmentation.corpus import generate_synthetic_corpus
 from backend.segmentation.descript import extract_descript_events
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import (
@@ -79,10 +80,38 @@ class SegmentationRun:
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
+@dataclass(frozen=True)
+class SegmentationCorpusCaseResult:
+    case_id: str
+    title: str
+    run_id: str
+    status: str
+    expected_status: str
+    outcome: str
+    score: int
+    rule_ids: list[str]
+    failed_rule_ids: list[str]
+
+
+@dataclass(frozen=True)
+class SegmentationCorpusRun:
+    corpus_run_id: str
+    seed: int
+    status: str
+    total_case_count: int
+    regression_pass_count: int
+    regression_fail_count: int
+    rule_coverage: list[str]
+    results: list[SegmentationCorpusCaseResult]
+    source: str = "synthetic"
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+
+
 class SegmentationRunStore:
     def __init__(self, root: Path | str = "local_data") -> None:
         self.root = Path(root)
         self.runs_dir = self.root / "segmentation_runs"
+        self.corpus_runs_dir = self.root / "segmentation_corpus_runs"
 
     def create_run(
         self,
@@ -139,6 +168,53 @@ class SegmentationRunStore:
         self.persist_run(run)
         return run
 
+    def create_corpus_run(self, *, seed: int = 0) -> SegmentationCorpusRun:
+        cases = generate_synthetic_corpus(seed=seed)
+        results: list[SegmentationCorpusCaseResult] = []
+        rule_coverage: set[str] = set()
+        for case in cases:
+            rule_coverage.update(case.rule_ids)
+            run = self.create_run(
+                source_filename=f"{case.case_id}.txt",
+                descript_text=case.descript_text,
+                rule_ids=case.rule_ids,
+            )
+            expected_status = _expected_status_for_case(case)
+            failed_rule_ids = (
+                [failure.rule_id for failure in run.evaluation.failures]
+                if run.evaluation
+                else []
+            )
+            outcome = "passed" if run.status == expected_status else "failed"
+            results.append(
+                SegmentationCorpusCaseResult(
+                    case_id=case.case_id,
+                    title=case.title,
+                    run_id=run.run_id,
+                    status=run.status,
+                    expected_status=expected_status,
+                    outcome=outcome,
+                    score=run.evaluation.score if run.evaluation else 0,
+                    rule_ids=case.rule_ids,
+                    failed_rule_ids=failed_rule_ids,
+                )
+            )
+
+        regression_pass_count = sum(1 for result in results if result.outcome == "passed")
+        regression_fail_count = len(results) - regression_pass_count
+        corpus_run = SegmentationCorpusRun(
+            corpus_run_id=uuid4().hex,
+            seed=seed,
+            status="passed" if regression_fail_count == 0 else "failed",
+            total_case_count=len(results),
+            regression_pass_count=regression_pass_count,
+            regression_fail_count=regression_fail_count,
+            rule_coverage=sorted(rule_coverage),
+            results=results,
+        )
+        self.persist_corpus_run(corpus_run)
+        return corpus_run
+
     def verify_run(self, run_id: str) -> SegmentationRun:
         run = self.load_run(run_id)
         evaluation = evaluate_segmented_draft(
@@ -168,12 +244,27 @@ class SegmentationRunStore:
             encoding="utf-8",
         )
 
+    def persist_corpus_run(self, corpus_run: SegmentationCorpusRun) -> None:
+        self.corpus_runs_dir.mkdir(parents=True, exist_ok=True)
+        (self.corpus_runs_dir / f"{corpus_run.corpus_run_id}.json").write_text(
+            json.dumps(segmentation_corpus_run_to_payload(corpus_run), indent=2),
+            encoding="utf-8",
+        )
+
     def load_run(self, run_id: str) -> SegmentationRun:
         run_path = self.runs_dir / f"{run_id}.json"
         if not run_path.exists():
             raise FileNotFoundError(run_id)
         return segmentation_run_from_payload(
             json.loads(run_path.read_text(encoding="utf-8"))
+        )
+
+    def load_corpus_run(self, corpus_run_id: str) -> SegmentationCorpusRun:
+        corpus_run_path = self.corpus_runs_dir / f"{corpus_run_id}.json"
+        if not corpus_run_path.exists():
+            raise FileNotFoundError(corpus_run_id)
+        return segmentation_corpus_run_from_payload(
+            json.loads(corpus_run_path.read_text(encoding="utf-8"))
         )
 
     def list_runs(self) -> list[SegmentationRun]:
@@ -184,6 +275,17 @@ class SegmentationRunStore:
             for path in self.runs_dir.glob("*.json")
         ]
         return sorted(runs, key=lambda run: run.created_at, reverse=True)
+
+    def list_corpus_runs(self) -> list[SegmentationCorpusRun]:
+        if not self.corpus_runs_dir.exists():
+            return []
+        corpus_runs = [
+            segmentation_corpus_run_from_payload(
+                json.loads(path.read_text(encoding="utf-8"))
+            )
+            for path in self.corpus_runs_dir.glob("*.json")
+        ]
+        return sorted(corpus_runs, key=lambda run: run.created_at, reverse=True)
 
     def write_final_transcript(self, run_id: str) -> Path:
         run = self.load_run(run_id)
@@ -378,6 +480,12 @@ def segmentation_run_to_payload(run: SegmentationRun) -> dict[str, Any]:
     return asdict(run)
 
 
+def segmentation_corpus_run_to_payload(
+    corpus_run: SegmentationCorpusRun,
+) -> dict[str, Any]:
+    return asdict(corpus_run)
+
+
 def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
     return SegmentationRun(
         run_id=str(payload["run_id"]),
@@ -436,6 +544,43 @@ def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
                 "message": str(route.get("message") or ""),
             }
             for route in payload.get("failure_routes", [])
+        ],
+        source=str(payload.get("source") or "synthetic"),
+        created_at=str(payload.get("created_at") or datetime.now(UTC).isoformat()),
+    )
+
+
+def segmentation_corpus_run_from_payload(
+    payload: dict[str, Any],
+) -> SegmentationCorpusRun:
+    return SegmentationCorpusRun(
+        corpus_run_id=str(payload["corpus_run_id"]),
+        seed=int(payload.get("seed", 0)),
+        status=str(payload.get("status") or "failed"),
+        total_case_count=int(payload.get("total_case_count", 0)),
+        regression_pass_count=int(payload.get("regression_pass_count", 0)),
+        regression_fail_count=int(payload.get("regression_fail_count", 0)),
+        rule_coverage=[
+            str(rule_id) for rule_id in payload.get("rule_coverage", [])
+        ],
+        results=[
+            SegmentationCorpusCaseResult(
+                case_id=str(result["case_id"]),
+                title=str(result.get("title") or ""),
+                run_id=str(result["run_id"]),
+                status=str(result.get("status") or "failed"),
+                expected_status=str(result.get("expected_status") or "verified"),
+                outcome=str(result.get("outcome") or "failed"),
+                score=int(result.get("score", 0)),
+                rule_ids=[
+                    str(rule_id) for rule_id in result.get("rule_ids", [])
+                ],
+                failed_rule_ids=[
+                    str(rule_id)
+                    for rule_id in result.get("failed_rule_ids", [])
+                ],
+            )
+            for result in payload.get("results", [])
         ],
         source=str(payload.get("source") or "synthetic"),
         created_at=str(payload.get("created_at") or datetime.now(UTC).isoformat()),
@@ -553,6 +698,17 @@ def _status_from_evaluation(
     if any(failure.rule_id == "official-source-guard" for failure in evaluation.failures):
         return "failed"
     return "verified" if not evaluation.failures else "needs_rewrite"
+
+
+def _expected_status_for_case(case) -> str:
+    combined = f"{case.descript_text}\n{case.gold_text}".lower()
+    has_guard_leak = any(
+        token.lower() in combined
+        for token in case.official_source_guard_tokens
+    )
+    if "official-source-guard" in case.rule_ids and has_guard_leak:
+        return "failed"
+    return "verified"
 
 
 def _evaluation_from_payload(payload: dict[str, Any] | None) -> SegmentationEvaluation | None:

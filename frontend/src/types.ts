@@ -164,6 +164,35 @@ export type SegmentationRunResponse = {
   run: SegmentationRun;
 };
 
+export type SegmentationCorpusCaseResult = {
+  case_id: string;
+  title: string;
+  run_id: string;
+  status: string;
+  expected_status: string;
+  outcome: string;
+  score: number;
+  rule_ids: string[];
+  failed_rule_ids: string[];
+};
+
+export type SegmentationCorpusRun = {
+  corpus_run_id: string;
+  seed: number;
+  status: string;
+  total_case_count: number;
+  regression_pass_count: number;
+  regression_fail_count: number;
+  rule_coverage: string[];
+  results: SegmentationCorpusCaseResult[];
+  source: "synthetic";
+  created_at: string;
+};
+
+export type SegmentationCorpusRunResponse = {
+  corpus_run: SegmentationCorpusRun;
+};
+
 export type StudyWorkspace = {
   id: string;
   name: string;

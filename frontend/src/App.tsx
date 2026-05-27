@@ -22,6 +22,7 @@ import {
   createAgentJobEvidence,
   createPluginBuildJob,
   createPluginRequest,
+  createSegmentationCorpusRun,
   createSegmentationFileRun,
   createSegmentationRun,
   createSegmentationRunRewriteJob,
@@ -44,6 +45,7 @@ import {
   listPluginRequests,
   listRuns,
   listStudies,
+  listSegmentationCorpusRuns,
   listSegmentationRuns,
   loadSkillPack,
   refineSkillPack,
@@ -80,6 +82,7 @@ import type {
   RunHistoryItem,
   RunResponse,
   SegmentationCase,
+  SegmentationCorpusRun,
   SegmentationEvaluation,
   SegmentationRun,
   SkillPack,
@@ -225,6 +228,10 @@ export function App() {
   const [segmentationRunFile, setSegmentationRunFile] = useState<File | null>(null);
   const [segmentationRun, setSegmentationRun] = useState<SegmentationRun | null>(null);
   const [segmentationRuns, setSegmentationRuns] = useState<SegmentationRun[]>([]);
+  const [segmentationCorpusSeed, setSegmentationCorpusSeed] = useState(0);
+  const [segmentationCorpusRuns, setSegmentationCorpusRuns] = useState<
+    SegmentationCorpusRun[]
+  >([]);
   const [segmentationStatus, setSegmentationStatus] = useState("");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -270,6 +277,9 @@ export function App() {
     listSegmentationRuns()
       .then(setSegmentationRuns)
       .catch(() => setSegmentationRuns([]));
+    listSegmentationCorpusRuns()
+      .then(setSegmentationCorpusRuns)
+      .catch(() => setSegmentationCorpusRuns([]));
     listSegmentationCases()
       .then((cases) => {
         setSegmentationCases(cases);
@@ -699,6 +709,24 @@ export function App() {
     } catch (err) {
       setSegmentationStatus("");
       setError(err instanceof Error ? err.message : "Could not queue targeted rewrite");
+    }
+  }
+
+  async function runSyntheticSegmentationCorpus() {
+    try {
+      setError("");
+      setSegmentationStatus("");
+      const nextCorpusRun = await createSegmentationCorpusRun(segmentationCorpusSeed);
+      setSegmentationCorpusRuns(await listSegmentationCorpusRuns());
+      setSegmentationRuns(await listSegmentationRuns());
+      setSegmentationStatus(
+        `Synthetic corpus ${nextCorpusRun.status}: ${nextCorpusRun.regression_pass_count}/${nextCorpusRun.total_case_count} regression checks passed.`
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(
+        err instanceof Error ? err.message : "Could not run synthetic segmentation corpus"
+      );
     }
   }
 
@@ -1310,6 +1338,8 @@ export function App() {
               runFile={segmentationRunFile}
               run={segmentationRun}
               runs={segmentationRuns}
+              corpusSeed={segmentationCorpusSeed}
+              corpusRuns={segmentationCorpusRuns}
               status={segmentationStatus}
               onSelectCase={selectSegmentationCase}
               onDraftChange={setSegmentationDraft}
@@ -1329,6 +1359,8 @@ export function App() {
               onVerifyRun={verifyCurrentSegmentationRun}
               onQueueRewriteJob={queueSegmentationRewriteJob}
               onQueueRunRewriteJob={queueSegmentationRunRewriteJob}
+              onCorpusSeedChange={setSegmentationCorpusSeed}
+              onRunCorpus={runSyntheticSegmentationCorpus}
             />
             <RecentRunsPanel runs={runHistory} />
           </section>
@@ -1348,6 +1380,8 @@ function SegmentationDemoPanel({
   runFile,
   run,
   runs,
+  corpusSeed,
+  corpusRuns,
   status,
   onSelectCase,
   onDraftChange,
@@ -1359,7 +1393,9 @@ function SegmentationDemoPanel({
   onRunPipeline,
   onVerifyRun,
   onQueueRewriteJob,
-  onQueueRunRewriteJob
+  onQueueRunRewriteJob,
+  onCorpusSeedChange,
+  onRunCorpus
 }: {
   cases: SegmentationCase[];
   selectedCase: SegmentationCase | null;
@@ -1370,6 +1406,8 @@ function SegmentationDemoPanel({
   runFile: File | null;
   run: SegmentationRun | null;
   runs: SegmentationRun[];
+  corpusSeed: number;
+  corpusRuns: SegmentationCorpusRun[];
   status: string;
   onSelectCase: (caseId: string) => void;
   onDraftChange: (value: string) => void;
@@ -1382,6 +1420,8 @@ function SegmentationDemoPanel({
   onVerifyRun: () => void;
   onQueueRewriteJob: () => void;
   onQueueRunRewriteJob: () => void;
+  onCorpusSeedChange: (seed: number) => void;
+  onRunCorpus: () => void;
 }) {
   return (
     <Panel title="6. C-Unit Segmentation Lab" icon={<Braces size={18} />}>
@@ -1424,6 +1464,37 @@ function SegmentationDemoPanel({
           ) : (
             <div className="text-sm text-[#676157]">No synthetic cases loaded.</div>
           )}
+          <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+            <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[#2f413f]">
+              <FlaskConical size={16} />
+              Synthetic corpus
+            </div>
+            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+              <label className="field-label mt-0">
+                Seed
+                <input
+                  className="field-input"
+                  min={0}
+                  type="number"
+                  value={corpusSeed}
+                  onChange={(event) =>
+                    onCorpusSeedChange(Number(event.target.value || 0))
+                  }
+                />
+              </label>
+              <button
+                className="primary-button self-end"
+                type="button"
+                onClick={onRunCorpus}
+              >
+                <Activity size={16} />
+                Run corpus
+              </button>
+            </div>
+            {corpusRuns[0] ? (
+              <SegmentationCorpusRunPanel corpusRun={corpusRuns[0]} />
+            ) : null}
+          </div>
         </div>
 
         <div className="space-y-3">
@@ -1540,6 +1611,49 @@ function SegmentationDemoPanel({
         </div>
       </div>
     </Panel>
+  );
+}
+
+function SegmentationCorpusRunPanel({
+  corpusRun
+}: {
+  corpusRun: SegmentationCorpusRun;
+}) {
+  return (
+    <div className="mt-3 space-y-2">
+      <div className="flex flex-wrap gap-2 text-xs">
+        <span className="casebook-pill">{corpusRun.status}</span>
+        <span className="casebook-pill muted">
+          {corpusRun.regression_pass_count}/{corpusRun.total_case_count} checks
+        </span>
+        <span className="casebook-pill muted">
+          {corpusRun.rule_coverage.length} rules
+        </span>
+      </div>
+      <div className="space-y-2">
+        {corpusRun.results.map((result) => (
+          <div
+            key={`${corpusRun.corpus_run_id}-${result.case_id}`}
+            className="rounded-md border border-[#e3ded2] bg-white/70 p-2"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0 text-sm font-semibold text-[#2f413f]">
+                {result.case_id}
+              </div>
+              <div className="font-mono text-xs text-[#756f64]">
+                {result.outcome} · {result.status}/{result.expected_status} ·{" "}
+                {result.score}
+              </div>
+            </div>
+            {result.failed_rule_ids.length ? (
+              <div className="mt-1 text-xs text-[#756f64]">
+                {result.failed_rule_ids.join(", ")}
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

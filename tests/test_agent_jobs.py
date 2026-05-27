@@ -140,6 +140,28 @@ def test_create_segmentation_rewrite_job_uses_html_runbook_and_evaluator_gate(
     assert "official-source-guard" in runbook
 
 
+def test_segmentation_rewrite_job_includes_failed_rules_and_specialists(
+    tmp_path: Path,
+) -> None:
+    job = create_segmentation_rewrite_job(
+        "run_123",
+        failed_rule_ids=["pause-markers"],
+        target_specialist_ids=["timing_pause"],
+        store=AgentJobStore(tmp_path),
+    )
+
+    prompt = (tmp_path / "agent_jobs" / job.id / "rewrite_prompt.html").read_text(
+        encoding="utf-8"
+    )
+    runbook = (tmp_path / "agent_jobs" / job.id / "runbook.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pause-markers" in prompt
+    assert "timing_pause" in prompt
+    assert "targeted segmentation rewrite" in runbook
+
+
 def test_agent_job_api_creates_and_lists_build_jobs(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)

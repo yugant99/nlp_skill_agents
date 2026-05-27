@@ -949,3 +949,42 @@ def test_segmentation_run_api_rejects_invalid_input(tmp_path, monkeypatch) -> No
     assert "descript_text" in empty_response.json()["detail"]
     assert unknown_rule_response.status_code == 400
     assert "not-a-rule" in unknown_rule_response.json()["detail"]
+
+
+def test_segmentation_run_rewrite_job_uses_failed_rule_routing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "needs_rewrite.txt",
+            "descript_text": "[00:00:00] P: Good morning.",
+            "rule_ids": ["speaker-markers", "overlap-markers"],
+        },
+    )
+    run = create_response.json()["run"]
+
+    assert run["status"] == "needs_rewrite"
+    assert run["failure_routes"] == [
+        {
+            "rule_id": "overlap-markers",
+            "specialist_id": "repair_overlap",
+            "message": "Expected overlapping speech to be marked with angle brackets.",
+        }
+    ]
+
+    rewrite_response = client.post(
+        f"/api/segmentation/runs/{run['run_id']}/rewrite-job"
+    )
+
+    assert rewrite_response.status_code == 200
+    payload = rewrite_response.json()
+    assert payload["job"]["id"] == f"rewrite_{run['run_id']}"
+    assert payload["job"]["source_request_id"] == run["run_id"]
+    prompt_path = tmp_path / "agent_jobs" / payload["job"]["id"] / "rewrite_prompt.html"
+    prompt = prompt_path.read_text(encoding="utf-8")
+    assert "overlap-markers" in prompt
+    assert "repair_overlap" in prompt

@@ -388,6 +388,32 @@ def verify_segmentation_run(run_id: str) -> dict:
     return {"run": segmentation_run_to_payload(run)}
 
 
+@app.post("/api/segmentation/runs/{run_id}/rewrite-job")
+def create_segmentation_run_rewrite_job(run_id: str) -> dict:
+    try:
+        run = SegmentationRunStore(_local_data_root()).load_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    if not run.failure_routes:
+        raise HTTPException(
+            status_code=400,
+            detail="Segmentation run has no failed rules to rewrite",
+        )
+    job_store = AgentJobStore(_local_data_root())
+    job = create_segmentation_rewrite_job(
+        run.run_id,
+        failed_rule_ids=[route["rule_id"] for route in run.failure_routes],
+        target_specialist_ids=[
+            route["specialist_id"] for route in run.failure_routes
+        ],
+        store=job_store,
+    )
+    return {
+        "job": agent_job_to_payload(job),
+        "artifact_path": str(job_store.jobs_dir / f"{job.id}.json"),
+    }
+
+
 @app.post("/api/studies")
 def create_study(request: StudyCreateRequest) -> dict:
     study = StudyWorkspaceStore(_local_data_root()).create_study(request.model_dump())

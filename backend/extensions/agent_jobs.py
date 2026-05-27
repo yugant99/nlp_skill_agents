@@ -161,6 +161,9 @@ def create_metric_plugin_build_job(
 
 def create_segmentation_rewrite_job(
     case_id: str,
+    *,
+    failed_rule_ids: list[str] | None = None,
+    target_specialist_ids: list[str] | None = None,
     store: AgentJobStore | None = None,
 ) -> AgentJob:
     store = store or AgentJobStore()
@@ -170,7 +173,11 @@ def create_segmentation_rewrite_job(
     prompt_path = job_dir / "rewrite_prompt.html"
     job_dir.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(
-        build_segmentation_rewrite_prompt_html(safe_case_id),
+        build_segmentation_rewrite_prompt_html(
+            safe_case_id,
+            failed_rule_ids=failed_rule_ids or [],
+            target_specialist_ids=target_specialist_ids or [],
+        ),
         encoding="utf-8",
     )
     job = AgentJob(
@@ -312,7 +319,7 @@ def build_agent_job_runbook_html(job: AgentJob) -> str:
       <p>Branch: <code>{job.branch_name}</code></p>
       <section>
         <h2>Purpose</h2>
-        <p>Run a rule-scoped segmentation rewrite agent for synthetic case <code>{job.source_request_id}</code>, then verify the candidate with machine-checkable evaluator artifacts.</p>
+        <p>Run a targeted segmentation rewrite agent for synthetic case or run <code>{job.source_request_id}</code>, then verify the candidate with machine-checkable evaluator artifacts.</p>
       </section>
       <section>
         <h2>Prompt</h2>
@@ -333,7 +340,29 @@ def build_agent_job_runbook_html(job: AgentJob) -> str:
 """
 
 
-def build_segmentation_rewrite_prompt_html(case_id: str) -> str:
+def build_segmentation_rewrite_prompt_html(
+    case_id: str,
+    *,
+    failed_rule_ids: list[str] | None = None,
+    target_specialist_ids: list[str] | None = None,
+) -> str:
+    failed_rules = "".join(
+        f"<li><code>{rule_id}</code></li>" for rule_id in (failed_rule_ids or [])
+    )
+    target_specialists = "".join(
+        f"<li><code>{specialist_id}</code></li>"
+        for specialist_id in (target_specialist_ids or [])
+    )
+    routing_section = ""
+    if failed_rules or target_specialists:
+        routing_section = f"""
+      <h2>Targeted Repair Scope</h2>
+      <p>Only patch the failed rule scope. Do not rewrite the whole transcript.</p>
+      <h3>Failed Rules</h3>
+      <ul>{failed_rules or "<li><code>none</code></li>"}</ul>
+      <h3>Target Specialists</h3>
+      <ul>{target_specialists or "<li><code>verification</code></li>"}</ul>
+"""
     return f"""<!doctype html>
 <html lang="en">
   <head>
@@ -350,6 +379,7 @@ def build_segmentation_rewrite_prompt_html(case_id: str) -> str:
         <li>Evaluate with <code>POST /api/segmentation/evaluate</code>.</li>
         <li>Blocking guard: <code>official-source-guard</code>.</li>
       </ul>
+      {routing_section}
     </main>
   </body>
 </html>

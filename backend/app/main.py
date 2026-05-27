@@ -370,6 +370,35 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
     return {"run": segmentation_run_to_payload(run)}
 
 
+@app.post("/api/segmentation/runs/files")
+async def create_segmentation_file_run(
+    rule_ids: Annotated[str, Form()] = "[]",
+    file: UploadFile = File(...),
+) -> dict:
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix != ".txt":
+        raise HTTPException(
+            status_code=400,
+            detail="Only TXT segmentation uploads are supported",
+        )
+    try:
+        parsed_rule_ids = _segmentation_rule_ids_from_json(rule_ids)
+        content = (await file.read()).decode("utf-8")
+        run = SegmentationRunStore(_local_data_root()).create_run(
+            source_filename=file.filename or "descript_export.txt",
+            descript_text=content,
+            rule_ids=parsed_rule_ids,
+        )
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Segmentation upload must be UTF-8 text",
+        ) from exc
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"run": segmentation_run_to_payload(run)}
+
+
 @app.get("/api/segmentation/runs/{run_id}")
 def get_segmentation_run(run_id: str) -> dict:
     try:
@@ -725,6 +754,13 @@ def _batch_metadata_from_json(raw_metadata: str) -> dict[str, dict[str, str]]:
             if str(key).strip() and str(value).strip()
         }
     return normalized
+
+
+def _segmentation_rule_ids_from_json(raw_rule_ids: str) -> list[str]:
+    payload = json.loads(raw_rule_ids or "[]")
+    if not isinstance(payload, list):
+        raise ValueError("rule_ids must be a JSON array")
+    return [str(rule_id) for rule_id in payload if str(rule_id).strip()]
 
 
 async def _extract_upload_text(file: UploadFile) -> str:

@@ -924,6 +924,58 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
     assert verify_response.json()["run"]["evaluation"]["score"] == 100
 
 
+def test_segmentation_run_api_accepts_uploaded_txt_file(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/segmentation/runs/files",
+        data={
+            "rule_ids": json.dumps(
+                [
+                    "speaker-markers",
+                    "timestamp-markers",
+                    "pause-markers",
+                    "filled-pauses",
+                ]
+            )
+        },
+        files={
+            "file": (
+                "descript_export.txt",
+                b"[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+                "text/plain",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    run = response.json()["run"]
+    assert run["source_filename"] == "descript_export.txt"
+    assert run["status"] == "verified"
+    assert run["events"][0]["source_filename"] == "descript_export.txt"
+
+
+def test_segmentation_run_file_api_rejects_non_txt_upload(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/segmentation/runs/files",
+        data={"rule_ids": json.dumps(["speaker-markers"])},
+        files={
+            "file": (
+                "descript_export.docx",
+                b"not really a docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Only TXT segmentation uploads are supported"
+
+
 def test_segmentation_run_api_rejects_invalid_input(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)

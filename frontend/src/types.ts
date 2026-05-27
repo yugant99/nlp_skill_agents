@@ -106,6 +106,64 @@ export type SegmentationEvaluationResponse = {
   evaluation: SegmentationEvaluation;
 };
 
+export type SegmentationEvent = {
+  timestamp_seconds: number;
+  speaker: string;
+  text: string;
+  source_filename: string;
+};
+
+export type SegmentationRulePacket = {
+  specialist_id: string;
+  rule_ids: string[];
+};
+
+export type SegmentationPatch = {
+  operation: string;
+  event_index: number;
+  text: string;
+  reason: string;
+};
+
+export type SegmentationSpecialistOutput = {
+  specialist_id: string;
+  rule_ids: string[];
+  patches: SegmentationPatch[];
+  evidence: {
+    source_event_indexes?: number[];
+    patch_count?: number;
+    [key: string]: unknown;
+  };
+};
+
+export type SegmentationRun = {
+  run_id: string;
+  source_filename: string;
+  descript_text: string;
+  events: SegmentationEvent[];
+  rule_ids: string[];
+  rule_plan: SegmentationRulePacket[];
+  specialist_outputs: SegmentationSpecialistOutput[];
+  merged_draft: string;
+  merge_evidence: {
+    applied_patch_count: number;
+    conflicts: string[];
+  };
+  evaluation: SegmentationEvaluation | null;
+  status: string;
+  failure_routes: {
+    rule_id: string;
+    specialist_id: string;
+    message: string;
+  }[];
+  source: "synthetic";
+  created_at: string;
+};
+
+export type SegmentationRunResponse = {
+  run: SegmentationRun;
+};
+
 export type StudyWorkspace = {
   id: string;
   name: string;

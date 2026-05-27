@@ -22,6 +22,9 @@ import {
   createAgentJobEvidence,
   createPluginBuildJob,
   createPluginRequest,
+  createSegmentationFileRun,
+  createSegmentationRun,
+  createSegmentationRunRewriteJob,
   createSegmentationRewriteJob,
   createStudy,
   createStudyFileBatch,
@@ -43,6 +46,7 @@ import {
   listStudies,
   loadSkillPack,
   refineSkillPack,
+  verifySegmentationRun,
   updateStudySchema,
   updateAgentJobStatus,
   validateSkillPack,
@@ -76,6 +80,7 @@ import type {
   RunResponse,
   SegmentationCase,
   SegmentationEvaluation,
+  SegmentationRun,
   SkillPack,
   StudyBatchResponse,
   StudyBatchRunDetail,
@@ -119,6 +124,13 @@ const DEFAULT_BATCH_TRANSCRIPT_TEXT =
   "P2_c: Did medication help last night?\nP2_p: Yes, I slept better.\n---\n" +
   "participant_003.txt | participant_id=P3 | condition=home | week=week_2\n" +
   "P3_c: I will call the clinic tomorrow.\nP3_p: Thank you.";
+
+const DEFAULT_SEGMENTATION_RULE_IDS = [
+  "speaker-markers",
+  "timestamp-markers",
+  "pause-markers",
+  "filled-pauses"
+];
 
 function metadataBySourceFilename(
   transcripts: BatchTranscript[]
@@ -208,6 +220,9 @@ export function App() {
   const [segmentationDraft, setSegmentationDraft] = useState("");
   const [segmentationEvaluation, setSegmentationEvaluation] =
     useState<SegmentationEvaluation | null>(null);
+  const [segmentationRunSource, setSegmentationRunSource] = useState("");
+  const [segmentationRunFile, setSegmentationRunFile] = useState<File | null>(null);
+  const [segmentationRun, setSegmentationRun] = useState<SegmentationRun | null>(null);
   const [segmentationStatus, setSegmentationStatus] = useState("");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -257,6 +272,7 @@ export function App() {
           setSelectedSegmentationCaseId(cases[0].case_id);
           setSelectedSegmentationCase(cases[0]);
           setSegmentationDraft(cases[0].gold_text);
+          setSegmentationRunSource(cases[0].descript_text);
         }
       })
       .catch(() => setSegmentationStatus("Could not load segmentation cases."));
@@ -565,6 +581,8 @@ export function App() {
       setSelectedSegmentationCaseId(nextCase.case_id);
       setSelectedSegmentationCase(nextCase);
       setSegmentationDraft(nextCase.gold_text);
+      setSegmentationRunSource(nextCase.descript_text);
+      setSegmentationRun(null);
       setSegmentationEvaluation(null);
     } catch (err) {
       setSegmentationStatus("");
@@ -610,6 +628,70 @@ export function App() {
     } catch (err) {
       setSegmentationStatus("");
       setError(err instanceof Error ? err.message : "Could not queue rewrite agent");
+    }
+  }
+
+  async function runRuleSpecialistSegmentationPipeline() {
+    const ruleIds = selectedSegmentationCase?.rule_ids ?? DEFAULT_SEGMENTATION_RULE_IDS;
+    try {
+      setError("");
+      setSegmentationStatus("");
+      const nextRun = segmentationRunFile
+        ? await createSegmentationFileRun({
+            file: segmentationRunFile,
+            ruleIds
+          })
+        : await createSegmentationRun({
+            sourceFilename: selectedSegmentationCase
+              ? `${selectedSegmentationCase.case_id}.txt`
+              : "pasted_descript_export.txt",
+            descriptText: segmentationRunSource,
+            ruleIds
+          });
+      setSegmentationRun(nextRun);
+      setSegmentationDraft(nextRun.merged_draft);
+      setSegmentationEvaluation(nextRun.evaluation);
+      setSegmentationStatus(
+        `Specialist pipeline ${nextRun.status}: ${nextRun.rule_plan.length} specialist packet(s), ${nextRun.merge_evidence.applied_patch_count} patch(es).`
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not run specialist pipeline");
+    }
+  }
+
+  async function verifyCurrentSegmentationRun() {
+    if (!segmentationRun) {
+      setError("Run the specialist pipeline before verifying.");
+      return;
+    }
+    try {
+      setError("");
+      const nextRun = await verifySegmentationRun(segmentationRun.run_id);
+      setSegmentationRun(nextRun);
+      setSegmentationEvaluation(nextRun.evaluation);
+      setSegmentationStatus(`Verifier status: ${nextRun.status}.`);
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not verify segmentation run");
+    }
+  }
+
+  async function queueSegmentationRunRewriteJob() {
+    if (!segmentationRun) {
+      setError("Run the specialist pipeline before queueing targeted rewrite.");
+      return;
+    }
+    try {
+      setError("");
+      const response = await createSegmentationRunRewriteJob(segmentationRun.run_id);
+      setSegmentationStatus(
+        `Queued targeted rewrite: ${response.job.id} -> ${response.job.runbook_path}`
+      );
+      setAgentJobs(await listAgentJobs());
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not queue targeted rewrite");
     }
   }
 
@@ -1217,16 +1299,27 @@ export function App() {
               selectedCaseId={selectedSegmentationCaseId}
               draft={segmentationDraft}
               evaluation={segmentationEvaluation}
+              runSource={segmentationRunSource}
+              runFile={segmentationRunFile}
+              run={segmentationRun}
               status={segmentationStatus}
               onSelectCase={selectSegmentationCase}
               onDraftChange={setSegmentationDraft}
+              onRunSourceChange={(value) => {
+                setSegmentationRunSource(value);
+                setSegmentationRunFile(null);
+              }}
+              onRunFileChange={setSegmentationRunFile}
               onUseGoldDraft={() =>
                 selectedSegmentationCase
                   ? setSegmentationDraft(selectedSegmentationCase.gold_text)
                   : undefined
               }
               onEvaluate={runSegmentationEvaluation}
+              onRunPipeline={runRuleSpecialistSegmentationPipeline}
+              onVerifyRun={verifyCurrentSegmentationRun}
               onQueueRewriteJob={queueSegmentationRewriteJob}
+              onQueueRunRewriteJob={queueSegmentationRunRewriteJob}
             />
             <RecentRunsPanel runs={runHistory} />
           </section>
@@ -1242,24 +1335,40 @@ function SegmentationDemoPanel({
   selectedCaseId,
   draft,
   evaluation,
+  runSource,
+  runFile,
+  run,
   status,
   onSelectCase,
   onDraftChange,
+  onRunSourceChange,
+  onRunFileChange,
   onUseGoldDraft,
   onEvaluate,
-  onQueueRewriteJob
+  onRunPipeline,
+  onVerifyRun,
+  onQueueRewriteJob,
+  onQueueRunRewriteJob
 }: {
   cases: SegmentationCase[];
   selectedCase: SegmentationCase | null;
   selectedCaseId: string;
   draft: string;
   evaluation: SegmentationEvaluation | null;
+  runSource: string;
+  runFile: File | null;
+  run: SegmentationRun | null;
   status: string;
   onSelectCase: (caseId: string) => void;
   onDraftChange: (value: string) => void;
+  onRunSourceChange: (value: string) => void;
+  onRunFileChange: (file: File | null) => void;
   onUseGoldDraft: () => void;
   onEvaluate: () => void;
+  onRunPipeline: () => void;
+  onVerifyRun: () => void;
   onQueueRewriteJob: () => void;
+  onQueueRunRewriteJob: () => void;
 }) {
   return (
     <Panel title="6. C-Unit Segmentation Lab" icon={<Braces size={18} />}>
@@ -1305,6 +1414,58 @@ function SegmentationDemoPanel({
         </div>
 
         <div className="space-y-3">
+          <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+            <div className="mb-2 text-sm font-semibold text-[#2f413f]">
+              Rule-specialist pipeline
+            </div>
+            <label className="field-label mt-0">
+              Descript input
+              <textarea
+                className="field-input min-h-32 resize-y font-mono text-xs"
+                value={runSource}
+                onChange={(event) => onRunSourceChange(event.target.value)}
+              />
+            </label>
+            <label className="field-label">
+              TXT export
+              <input
+                className="field-input"
+                type="file"
+                accept=".txt,text/plain"
+                onChange={(event) => onRunFileChange(event.target.files?.[0] ?? null)}
+              />
+            </label>
+            {runFile ? (
+              <div className="text-xs text-[#676157]">
+                Using upload: <span className="font-semibold">{runFile.name}</span>
+              </div>
+            ) : null}
+            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+              <button className="primary-button mt-0" type="button" onClick={onRunPipeline}>
+                <Sparkles size={16} />
+                Run specialists
+              </button>
+              <button
+                className="secondary-button mt-0"
+                type="button"
+                onClick={onVerifyRun}
+                disabled={!run}
+              >
+                <ShieldCheck size={16} />
+                Verify run
+              </button>
+              <button
+                className="secondary-button mt-0"
+                type="button"
+                onClick={onQueueRunRewriteJob}
+                disabled={!run || !run.failure_routes.length}
+              >
+                <FileUp size={16} />
+                Targeted rewrite
+              </button>
+            </div>
+          </div>
+          {run ? <SegmentationRunPanel run={run} /> : null}
           <label className="field-label mt-0">
             Draft to verify
             <textarea
@@ -1336,6 +1497,96 @@ function SegmentationDemoPanel({
         </div>
       </div>
     </Panel>
+  );
+}
+
+function SegmentationRunPanel({ run }: { run: SegmentationRun }) {
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1] p-3">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="casebook-pill">{run.status}</span>
+        <span className="casebook-pill muted">
+          {run.rule_plan.length} specialist packet
+          {run.rule_plan.length === 1 ? "" : "s"}
+        </span>
+        <span className="casebook-pill muted">
+          {run.merge_evidence.applied_patch_count} patch
+          {run.merge_evidence.applied_patch_count === 1 ? "" : "es"}
+        </span>
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        <div>
+          <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+            Rule plan
+          </div>
+          <div className="space-y-2">
+            {run.rule_plan.map((packet) => (
+              <div
+                key={packet.specialist_id}
+                className="rounded-md border border-[#d9d4c5] bg-white/80 p-2"
+              >
+                <div className="text-sm font-semibold text-[#2f413f]">
+                  {packet.specialist_id}
+                </div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {packet.rule_ids.map((ruleId) => (
+                    <span key={ruleId} className="casebook-pill muted">
+                      {ruleId}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+            Specialist patches
+          </div>
+          <div className="space-y-2">
+            {run.specialist_outputs.map((output) => (
+              <div
+                key={output.specialist_id}
+                className="rounded-md border border-[#d9d4c5] bg-white/80 p-2"
+              >
+                <div className="text-sm font-semibold text-[#2f413f]">
+                  {output.specialist_id}
+                </div>
+                {output.patches.slice(0, 3).map((patch, index) => (
+                  <div
+                    key={`${output.specialist_id}-${patch.event_index}-${index}`}
+                    className="mt-1 font-mono text-xs text-[#5f594f]"
+                  >
+                    {patch.operation}@{patch.event_index}: {patch.text}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+      {run.failure_routes.length ? (
+        <div className="mt-3 space-y-2">
+          {run.failure_routes.map((route) => (
+            <div key={`${route.rule_id}-${route.specialist_id}`} className="error-row">
+              <AlertTriangle size={15} />
+              <div>
+                <div className="font-semibold">
+                  {route.rule_id} {"->"} {route.specialist_id}
+                </div>
+                <div>{route.message}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      <div className="mt-3">
+        <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+          Merged draft
+        </div>
+        <pre className="transcript-preview">{run.merged_draft}</pre>
+      </div>
+    </div>
   );
 }
 

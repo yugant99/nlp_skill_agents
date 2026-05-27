@@ -11,6 +11,8 @@ import type {
   RunResponse,
   SegmentationCase,
   SegmentationEvaluationResponse,
+  SegmentationRun,
+  SegmentationRunResponse,
   SkillPack,
   SkillPackDraftResponse,
   SkillPackRefineResponse,
@@ -194,6 +196,74 @@ export async function createSegmentationRewriteJob(
   caseId: string
 ): Promise<AgentJobResponse> {
   const response = await fetch(`${API_BASE}/api/segmentation/cases/${caseId}/rewrite-job`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not queue segmentation rewrite job");
+  }
+  return response.json();
+}
+
+export async function createSegmentationRun(params: {
+  sourceFilename: string;
+  descriptText: string;
+  ruleIds: string[];
+}): Promise<SegmentationRun> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      source_filename: params.sourceFilename,
+      descript_text: params.descriptText,
+      rule_ids: params.ruleIds
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not create segmentation run");
+  }
+  const payload = (await response.json()) as SegmentationRunResponse;
+  return payload.run;
+}
+
+export async function createSegmentationFileRun(params: {
+  file: File;
+  ruleIds: string[];
+}): Promise<SegmentationRun> {
+  const form = new FormData();
+  form.append("file", params.file);
+  form.append("rule_ids", JSON.stringify(params.ruleIds));
+  const response = await fetch(`${API_BASE}/api/segmentation/runs/files`, {
+    method: "POST",
+    body: form
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not create segmentation run from file");
+  }
+  const payload = (await response.json()) as SegmentationRunResponse;
+  return payload.run;
+}
+
+export async function verifySegmentationRun(runId: string): Promise<SegmentationRun> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs/${runId}/verify`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not verify segmentation run");
+  }
+  const payload = (await response.json()) as SegmentationRunResponse;
+  return payload.run;
+}
+
+export async function createSegmentationRunRewriteJob(
+  runId: string
+): Promise<AgentJobResponse> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs/${runId}/rewrite-job`, {
     method: "POST"
   });
   if (!response.ok) {

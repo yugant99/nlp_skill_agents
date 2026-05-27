@@ -45,6 +45,7 @@ from backend.llm.openrouter import OpenRouterError
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import SyntheticSegmentationCase
 from backend.segmentation.pipeline import (
+    PatchOperation,
     SegmentationRunStore,
     segmentation_corpus_run_to_payload,
     segmentation_run_to_payload,
@@ -130,6 +131,17 @@ class SegmentationCorpusRunCreateRequest(BaseModel):
 
 class SegmentationRunAnalysisRequest(BaseModel):
     config: dict = Field(default_factory=dict)
+
+
+class SegmentationPatchRequest(BaseModel):
+    operation: str = Field(min_length=1)
+    event_index: int = Field(ge=0)
+    text: str = Field(min_length=1)
+    reason: str = Field(default="")
+
+
+class SegmentationSpecialistPatchRequest(BaseModel):
+    patches: list[SegmentationPatchRequest] = Field(default_factory=list)
 
 
 class StudyCreateRequest(BaseModel):
@@ -482,6 +494,33 @@ def analyze_segmentation_run(
     )
     stored = LocalRunStore(_local_data_root()).persist_run(run)
     return _run_response(run, stored)
+
+
+@app.post("/api/segmentation/runs/{run_id}/specialists/{specialist_id}/patches")
+def submit_segmentation_specialist_patches(
+    run_id: str,
+    specialist_id: str,
+    request: SegmentationSpecialistPatchRequest,
+) -> dict:
+    try:
+        run = SegmentationRunStore(_local_data_root()).apply_specialist_patches(
+            run_id,
+            specialist_id=specialist_id,
+            patches=[
+                PatchOperation(
+                    operation=patch.operation,
+                    event_index=patch.event_index,
+                    text=patch.text,
+                    reason=patch.reason,
+                )
+                for patch in request.patches
+            ],
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"run": segmentation_run_to_payload(run)}
 
 
 @app.post("/api/segmentation/runs/{run_id}/rewrite-job")

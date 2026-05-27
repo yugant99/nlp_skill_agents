@@ -246,3 +246,46 @@ def test_segmentation_corpus_run_store_runs_generated_cases_and_summarizes_cover
 
     assert loaded.corpus_run_id == corpus_run.corpus_run_id
     assert [item.corpus_run_id for item in listed] == [corpus_run.corpus_run_id]
+
+
+def test_segmentation_run_store_remerges_submitted_specialist_patches(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import PatchOperation, SegmentationRunStore
+
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="session.txt",
+        descript_text="[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+        rule_ids=[
+            "speaker-markers",
+            "timestamp-markers",
+            "pause-markers",
+            "filled-pauses",
+        ],
+    )
+
+    updated = store.apply_specialist_patches(
+        run.run_id,
+        specialist_id="timing_pause",
+        patches=[
+            PatchOperation(
+                operation="insert_before_event",
+                event_index=0,
+                text="-0:00",
+                reason="submitted by timing/pause agent",
+            )
+        ],
+    )
+
+    assert updated.status == "needs_rewrite"
+    assert "; :03" not in updated.merged_draft
+    assert updated.failure_routes[0]["rule_id"] == "pause-markers"
+    assert updated.failure_routes[0]["specialist_id"] == "timing_pause"
+    timing_output = next(
+        output
+        for output in updated.specialist_outputs
+        if output.specialist_id == "timing_pause"
+    )
+    assert timing_output.evidence["submitted_by"] == "specialist_agent"
+    assert store.load_run(run.run_id).merged_draft == updated.merged_draft

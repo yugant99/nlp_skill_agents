@@ -215,6 +215,76 @@ class SegmentationRunStore:
         self.persist_corpus_run(corpus_run)
         return corpus_run
 
+    def apply_specialist_patches(
+        self,
+        run_id: str,
+        *,
+        specialist_id: str,
+        patches: list[PatchOperation],
+    ) -> SegmentationRun:
+        run = self.load_run(run_id)
+        packet = next(
+            (
+                packet
+                for packet in run.rule_plan
+                if packet.specialist_id == specialist_id
+            ),
+            None,
+        )
+        if packet is None:
+            raise ValueError("Specialist is not assigned to this run")
+        _validate_submitted_patches(patches, event_count=len(run.events))
+        updated_output = SpecialistOutput(
+            specialist_id=specialist_id,
+            rule_ids=packet.rule_ids,
+            patches=patches,
+            evidence={
+                "source_event_indexes": sorted(
+                    {patch.event_index for patch in patches}
+                ),
+                "patch_count": len(patches),
+                "submitted_by": "specialist_agent",
+            },
+        )
+        specialist_outputs = [
+            updated_output if output.specialist_id == specialist_id else output
+            for output in run.specialist_outputs
+        ]
+        specialist_outputs = self._write_specialist_artifacts(
+            run.run_id,
+            run.source_filename,
+            run.events,
+            specialist_outputs,
+        )
+        merged_draft, merge_evidence = merge_specialist_outputs(
+            run.source_filename,
+            run.events,
+            specialist_outputs,
+        )
+        evaluation = evaluate_segmented_draft(
+            merged_draft,
+            expected_rule_ids=run.rule_ids,
+            forbidden_tokens=OFFICIAL_SOURCE_GUARD_TOKENS,
+        )
+        updated_run = SegmentationRun(
+            run_id=run.run_id,
+            source_filename=run.source_filename,
+            descript_text=run.descript_text,
+            events=run.events,
+            rule_ids=run.rule_ids,
+            rule_plan=run.rule_plan,
+            specialist_outputs=specialist_outputs,
+            merged_draft=merged_draft,
+            merge_evidence=merge_evidence,
+            evaluation=evaluation,
+            status=_status_from_evaluation(evaluation, merge_evidence),
+            failure_routes=route_failures(evaluation.failures),
+            source=run.source,
+            created_at=run.created_at,
+        )
+        self.persist_run(updated_run)
+        return updated_run
+
     def verify_run(self, run_id: str) -> SegmentationRun:
         run = self.load_run(run_id)
         evaluation = evaluate_segmented_draft(
@@ -597,6 +667,21 @@ def _normalize_rule_ids(rule_ids: list[str]) -> list[str]:
         "timestamp-markers",
         "pause-markers",
     ]
+
+
+def _validate_submitted_patches(
+    patches: list[PatchOperation],
+    *,
+    event_count: int,
+) -> None:
+    allowed_operations = {"insert_before_event", "event_line"}
+    for patch in patches:
+        if patch.operation not in allowed_operations:
+            raise ValueError("Unsupported patch operation")
+        if patch.event_index < 0 or patch.event_index >= event_count:
+            raise ValueError("Patch event_index out of range")
+        if not patch.text.strip():
+            raise ValueError("Patch text must be non-empty")
 
 
 def _speaker_turn_patches(events: list[RawTranscriptEvent]) -> list[PatchOperation]:

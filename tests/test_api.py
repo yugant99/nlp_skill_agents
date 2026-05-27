@@ -1185,3 +1185,79 @@ def test_segmentation_run_analysis_api_rejects_unverified_runs(
     assert analysis_response.json()["detail"] == (
         "Segmentation run must be verified before analysis"
     )
+
+
+def test_segmentation_run_api_accepts_specialist_patch_submission(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "patch_me.txt",
+            "descript_text": "[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+            "rule_ids": [
+                "speaker-markers",
+                "timestamp-markers",
+                "pause-markers",
+                "filled-pauses",
+            ],
+        },
+    )
+    run = create_response.json()["run"]
+
+    patch_response = client.post(
+        f"/api/segmentation/runs/{run['run_id']}/specialists/timing_pause/patches",
+        json={
+            "patches": [
+                {
+                    "operation": "insert_before_event",
+                    "event_index": 0,
+                    "text": "-0:00",
+                    "reason": "submitted by timing/pause agent",
+                }
+            ]
+        },
+    )
+
+    assert patch_response.status_code == 200
+    updated = patch_response.json()["run"]
+    assert updated["status"] == "needs_rewrite"
+    assert updated["failure_routes"][0]["specialist_id"] == "timing_pause"
+    assert "; :03" not in updated["merged_draft"]
+
+
+def test_segmentation_run_api_rejects_invalid_specialist_patch_submission(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "patch_me.txt",
+            "descript_text": "[00:00:00] P: Good morning.",
+            "rule_ids": ["speaker-markers", "timestamp-markers"],
+        },
+    )
+    run = create_response.json()["run"]
+
+    patch_response = client.post(
+        f"/api/segmentation/runs/{run['run_id']}/specialists/timing_pause/patches",
+        json={
+            "patches": [
+                {
+                    "operation": "insert_before_event",
+                    "event_index": 99,
+                    "text": "-0:00",
+                    "reason": "bad event index",
+                }
+            ]
+        },
+    )
+
+    assert patch_response.status_code == 400
+    assert patch_response.json()["detail"] == "Patch event_index out of range"

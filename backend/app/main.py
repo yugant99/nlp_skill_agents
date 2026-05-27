@@ -474,6 +474,30 @@ def download_segmentation_run_export(run_id: str, filename: str) -> FileResponse
     )
 
 
+@app.get("/api/segmentation/runs/{run_id}/specialists/{filename}")
+def download_segmentation_specialist_packet(run_id: str, filename: str) -> FileResponse:
+    if "/" in filename or "\\" in filename or not filename.endswith(".html"):
+        raise HTTPException(status_code=404, detail="Specialist packet not found")
+    try:
+        SegmentationRunStore(_local_data_root()).load_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    packet_path = (
+        _local_data_root()
+        / "segmentation_runs"
+        / run_id
+        / "specialists"
+        / filename
+    )
+    if not packet_path.exists():
+        raise HTTPException(status_code=404, detail="Specialist packet not found")
+    return FileResponse(
+        packet_path,
+        media_type="text/html",
+        filename=filename,
+    )
+
+
 @app.post("/api/studies")
 def create_study(request: StudyCreateRequest) -> dict:
     study = StudyWorkspaceStore(_local_data_root()).create_study(request.model_dump())

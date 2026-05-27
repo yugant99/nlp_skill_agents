@@ -1607,6 +1607,14 @@ function SegmentationRunPanel({ run }: { run: SegmentationRun }) {
                 <div className="text-sm font-semibold text-[#2f413f]">
                   {output.specialist_id}
                 </div>
+                <a
+                  className="mt-1 inline-block text-xs font-semibold text-[#2f5b50] underline"
+                  href={apiUrl(
+                    `/api/segmentation/runs/${run.run_id}/specialists/${output.specialist_id}.html`
+                  )}
+                >
+                  open specialist packet
+                </a>
                 {output.patches.slice(0, 3).map((patch, index) => (
                   <div
                     key={`${output.specialist_id}-${patch.event_index}-${index}`}

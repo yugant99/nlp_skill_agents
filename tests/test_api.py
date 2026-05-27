@@ -1073,6 +1073,9 @@ def test_segmentation_run_api_lists_runs_and_downloads_exports(
     evidence_response = client.get(
         f"/api/segmentation/runs/{run['run_id']}/exports/evidence.json"
     )
+    specialist_response = client.get(
+        f"/api/segmentation/runs/{run['run_id']}/specialists/speaker_turn.html"
+    )
 
     assert list_response.status_code == 200
     assert list_response.json()["runs"][0]["run_id"] == run["run_id"]
@@ -1080,3 +1083,5 @@ def test_segmentation_run_api_lists_runs_and_downloads_exports(
     assert "P: Good morning." in transcript_response.text
     assert evidence_response.status_code == 200
     assert evidence_response.json()["evaluation"]["score"] == 100
+    assert specialist_response.status_code == 200
+    assert "Do not rewrite the full transcript" in specialist_response.text

@@ -98,6 +98,28 @@ This component should preserve:
 - `official_source_guard_tokens`
 - `forbidden_source_tokens`
 
+### Synthetic Test Corpus Generator
+
+Synthetic data generation is in scope for testing and evaluation.
+
+The generator creates invented Descript-like inputs and expected patch/evaluator
+targets from a rule coverage matrix. It must never copy official names, titles,
+phrases, or full examples. Official materials may only inform abstract rule
+categories such as "filled pause normalization" or "pause marker required after
+elapsed time gap."
+
+The generator should support:
+
+- one-rule cases for isolating a single specialist
+- multi-rule cases for testing merge conflicts and rule interaction
+- negative cases that should fail the evaluator
+- official-source leakage cases that prove the guard blocks forbidden tokens
+- stable seeded output so tests are repeatable
+
+Generated cases should live as local test fixtures or be produced on demand by
+tests. They should carry `rule_ids`, `source_kind: synthetic`, and guard-token
+metadata so the UI and verifier can prove the case is safe.
+
 ### Rule Planner
 
 Maps rule IDs to specialist work packets.
@@ -267,6 +289,9 @@ visible in the run payload.
 
 Backend tests first:
 
+- synthetic corpus generator creates stable cases for each rule group
+- synthetic corpus generator never emits official-source guard tokens except in
+  explicit leakage-negative tests
 - run creation rejects empty Descript input
 - run creation rejects unknown rules
 - valid Descript input creates parsed events and a rule plan
@@ -300,17 +325,23 @@ cd frontend && npm run lint && npm run build
 Add data models and `SegmentationRunStore`. Cover parser, validation, and
 local persistence with tests.
 
-### Slice 2: Planner, Patch Contracts, And Merge
+### Slice 2: Synthetic Test Corpus Generator
+
+Add seeded synthetic case generation for one-rule, multi-rule, negative, and
+official-source leakage tests. This gives the specialist pipeline enough data to
+verify behavior without official fixtures.
+
+### Slice 3: Planner, Patch Contracts, And Merge
 
 Add rule-specialist planning and deterministic merge logic. Specialists can be
 stubbed as deterministic patch producers in this slice.
 
-### Slice 3: Verification And Rewrite Routing
+### Slice 4: Verification And Rewrite Routing
 
 Connect merged draft evaluation to status transitions and rewrite-job creation.
 Extend agent-job artifacts to include failed rule IDs and target specialist IDs.
 
-### Slice 4: UI Run Timeline
+### Slice 5: UI Run Timeline
 
 Add a segmentation run panel that shows source input, rule plan, patches,
 merged draft, evaluator failures, and rewrite status.

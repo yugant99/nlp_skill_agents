@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from backend.segmentation.descript import extract_descript_events
@@ -171,3 +172,29 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
 
     assert loaded.run_id == run.run_id
     assert loaded.status == run.status
+
+
+def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) -> None:
+    from backend.segmentation.pipeline import SegmentationRunStore
+
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="session.txt",
+        descript_text="[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+        rule_ids=[
+            "speaker-markers",
+            "timestamp-markers",
+            "pause-markers",
+            "filled-pauses",
+        ],
+    )
+
+    runs = store.list_runs()
+    transcript_path = store.write_final_transcript(run.run_id)
+    evidence_path = store.write_evidence_bundle(run.run_id)
+
+    assert [item.run_id for item in runs] == [run.run_id]
+    assert transcript_path.read_text(encoding="utf-8") == run.merged_draft
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["run_id"] == run.run_id
+    assert evidence["evaluation"]["score"] == 100

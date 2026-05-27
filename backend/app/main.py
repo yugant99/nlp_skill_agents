@@ -370,6 +370,16 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
     return {"run": segmentation_run_to_payload(run)}
 
 
+@app.get("/api/segmentation/runs")
+def list_segmentation_runs() -> dict:
+    return {
+        "runs": [
+            segmentation_run_to_payload(run)
+            for run in SegmentationRunStore(_local_data_root()).list_runs()
+        ]
+    }
+
+
 @app.post("/api/segmentation/runs/files")
 async def create_segmentation_file_run(
     rule_ids: Annotated[str, Form()] = "[]",
@@ -441,6 +451,27 @@ def create_segmentation_run_rewrite_job(run_id: str) -> dict:
         "job": agent_job_to_payload(job),
         "artifact_path": str(job_store.jobs_dir / f"{job.id}.json"),
     }
+
+
+@app.get("/api/segmentation/runs/{run_id}/exports/{filename}")
+def download_segmentation_run_export(run_id: str, filename: str) -> FileResponse:
+    store = SegmentationRunStore(_local_data_root())
+    try:
+        if filename == "final_transcript.txt":
+            export_path = store.write_final_transcript(run_id)
+            media_type = "text/plain"
+        elif filename == "evidence.json":
+            export_path = store.write_evidence_bundle(run_id)
+            media_type = "application/json"
+        else:
+            raise HTTPException(status_code=404, detail="Export not found")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    return FileResponse(
+        export_path,
+        media_type=media_type,
+        filename=filename,
+    )
 
 
 @app.post("/api/studies")

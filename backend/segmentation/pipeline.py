@@ -169,6 +169,34 @@ class SegmentationRunStore:
             json.loads(run_path.read_text(encoding="utf-8"))
         )
 
+    def list_runs(self) -> list[SegmentationRun]:
+        if not self.runs_dir.exists():
+            return []
+        runs = [
+            segmentation_run_from_payload(json.loads(path.read_text(encoding="utf-8")))
+            for path in self.runs_dir.glob("*.json")
+        ]
+        return sorted(runs, key=lambda run: run.created_at, reverse=True)
+
+    def write_final_transcript(self, run_id: str) -> Path:
+        run = self.load_run(run_id)
+        export_dir = self.runs_dir / run_id / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        transcript_path = export_dir / "final_transcript.txt"
+        transcript_path.write_text(run.merged_draft, encoding="utf-8")
+        return transcript_path
+
+    def write_evidence_bundle(self, run_id: str) -> Path:
+        run = self.load_run(run_id)
+        export_dir = self.runs_dir / run_id / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        evidence_path = export_dir / "evidence.json"
+        evidence_path.write_text(
+            json.dumps(segmentation_run_to_payload(run), indent=2),
+            encoding="utf-8",
+        )
+        return evidence_path
+
 
 def plan_rule_work(rule_ids: list[str]) -> list[RuleWorkPacket]:
     packets: dict[str, list[str]] = {}

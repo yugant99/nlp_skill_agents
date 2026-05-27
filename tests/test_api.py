@@ -1040,3 +1040,40 @@ def test_segmentation_run_rewrite_job_uses_failed_rule_routing(
     prompt = prompt_path.read_text(encoding="utf-8")
     assert "overlap-markers" in prompt
     assert "repair_overlap" in prompt
+
+
+def test_segmentation_run_api_lists_runs_and_downloads_exports(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "export_me.txt",
+            "descript_text": "[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+            "rule_ids": [
+                "speaker-markers",
+                "timestamp-markers",
+                "pause-markers",
+                "filled-pauses",
+            ],
+        },
+    )
+    run = create_response.json()["run"]
+
+    list_response = client.get("/api/segmentation/runs")
+    transcript_response = client.get(
+        f"/api/segmentation/runs/{run['run_id']}/exports/final_transcript.txt"
+    )
+    evidence_response = client.get(
+        f"/api/segmentation/runs/{run['run_id']}/exports/evidence.json"
+    )
+
+    assert list_response.status_code == 200
+    assert list_response.json()["runs"][0]["run_id"] == run["run_id"]
+    assert transcript_response.status_code == 200
+    assert "P: Good morning." in transcript_response.text
+    assert evidence_response.status_code == 200
+    assert evidence_response.json()["evaluation"]["score"] == 100

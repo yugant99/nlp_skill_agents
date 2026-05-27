@@ -229,6 +229,15 @@ export async function createSegmentationRun(params: {
   return payload.run;
 }
 
+export async function listSegmentationRuns(): Promise<SegmentationRun[]> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs`);
+  if (!response.ok) {
+    throw new Error("Could not load segmentation runs");
+  }
+  const payload = (await response.json()) as { runs: SegmentationRun[] };
+  return payload.runs;
+}
+
 export async function createSegmentationFileRun(params: {
   file: File;
   ruleIds: string[];

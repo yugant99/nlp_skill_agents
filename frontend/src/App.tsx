@@ -44,6 +44,7 @@ import {
   listPluginRequests,
   listRuns,
   listStudies,
+  listSegmentationRuns,
   loadSkillPack,
   refineSkillPack,
   verifySegmentationRun,
@@ -223,6 +224,7 @@ export function App() {
   const [segmentationRunSource, setSegmentationRunSource] = useState("");
   const [segmentationRunFile, setSegmentationRunFile] = useState<File | null>(null);
   const [segmentationRun, setSegmentationRun] = useState<SegmentationRun | null>(null);
+  const [segmentationRuns, setSegmentationRuns] = useState<SegmentationRun[]>([]);
   const [segmentationStatus, setSegmentationStatus] = useState("");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -265,6 +267,9 @@ export function App() {
     listStudies()
       .then(setStudies)
       .catch(() => setStudies([]));
+    listSegmentationRuns()
+      .then(setSegmentationRuns)
+      .catch(() => setSegmentationRuns([]));
     listSegmentationCases()
       .then((cases) => {
         setSegmentationCases(cases);
@@ -649,6 +654,7 @@ export function App() {
             ruleIds
           });
       setSegmentationRun(nextRun);
+      setSegmentationRuns(await listSegmentationRuns());
       setSegmentationDraft(nextRun.merged_draft);
       setSegmentationEvaluation(nextRun.evaluation);
       setSegmentationStatus(
@@ -669,6 +675,7 @@ export function App() {
       setError("");
       const nextRun = await verifySegmentationRun(segmentationRun.run_id);
       setSegmentationRun(nextRun);
+      setSegmentationRuns(await listSegmentationRuns());
       setSegmentationEvaluation(nextRun.evaluation);
       setSegmentationStatus(`Verifier status: ${nextRun.status}.`);
     } catch (err) {
@@ -1302,6 +1309,7 @@ export function App() {
               runSource={segmentationRunSource}
               runFile={segmentationRunFile}
               run={segmentationRun}
+              runs={segmentationRuns}
               status={segmentationStatus}
               onSelectCase={selectSegmentationCase}
               onDraftChange={setSegmentationDraft}
@@ -1310,6 +1318,7 @@ export function App() {
                 setSegmentationRunFile(null);
               }}
               onRunFileChange={setSegmentationRunFile}
+              onSelectRun={setSegmentationRun}
               onUseGoldDraft={() =>
                 selectedSegmentationCase
                   ? setSegmentationDraft(selectedSegmentationCase.gold_text)
@@ -1338,11 +1347,13 @@ function SegmentationDemoPanel({
   runSource,
   runFile,
   run,
+  runs,
   status,
   onSelectCase,
   onDraftChange,
   onRunSourceChange,
   onRunFileChange,
+  onSelectRun,
   onUseGoldDraft,
   onEvaluate,
   onRunPipeline,
@@ -1358,11 +1369,13 @@ function SegmentationDemoPanel({
   runSource: string;
   runFile: File | null;
   run: SegmentationRun | null;
+  runs: SegmentationRun[];
   status: string;
   onSelectCase: (caseId: string) => void;
   onDraftChange: (value: string) => void;
   onRunSourceChange: (value: string) => void;
   onRunFileChange: (file: File | null) => void;
+  onSelectRun: (run: SegmentationRun) => void;
   onUseGoldDraft: () => void;
   onEvaluate: () => void;
   onRunPipeline: () => void;
@@ -1466,6 +1479,36 @@ function SegmentationDemoPanel({
             </div>
           </div>
           {run ? <SegmentationRunPanel run={run} /> : null}
+          {runs.length ? (
+            <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+              <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+                Recent segmentation runs
+              </div>
+              <div className="space-y-2">
+                {runs.slice(0, 3).map((item) => (
+                  <button
+                    key={item.run_id}
+                    className="recent-run-row w-full text-left"
+                    type="button"
+                    onClick={() => {
+                      onSelectRun(item);
+                      onRunSourceChange(item.descript_text);
+                      onDraftChange(item.merged_draft);
+                    }}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-[#171717]">
+                        {item.source_filename}
+                      </div>
+                      <div className="mt-1 font-mono text-xs text-[#756f64]">
+                        {item.run_id.slice(0, 12)} · {item.status}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
           <label className="field-label mt-0">
             Draft to verify
             <textarea
@@ -1513,6 +1556,18 @@ function SegmentationRunPanel({ run }: { run: SegmentationRun }) {
           {run.merge_evidence.applied_patch_count} patch
           {run.merge_evidence.applied_patch_count === 1 ? "" : "es"}
         </span>
+        <a
+          className="casebook-pill"
+          href={apiUrl(`/api/segmentation/runs/${run.run_id}/exports/final_transcript.txt`)}
+        >
+          final transcript
+        </a>
+        <a
+          className="casebook-pill"
+          href={apiUrl(`/api/segmentation/runs/${run.run_id}/exports/evidence.json`)}
+        >
+          evidence json
+        </a>
       </div>
       <div className="grid gap-3 lg:grid-cols-2">
         <div>

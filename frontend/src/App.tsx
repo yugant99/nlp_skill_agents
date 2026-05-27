@@ -18,6 +18,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   apiUrl,
   addStudySkillPackVersion,
+  analyzeSegmentationRun,
   createAnalysisRun,
   createAgentJobEvidence,
   createPluginBuildJob,
@@ -712,6 +713,25 @@ export function App() {
     }
   }
 
+  async function analyzeCurrentSegmentationRun() {
+    if (!segmentationRun) {
+      setError("Run the specialist pipeline before analysis.");
+      return;
+    }
+    try {
+      setError("");
+      const nextRun = await analyzeSegmentationRun(segmentationRun.run_id);
+      setRun(nextRun);
+      setRunHistory(await listRuns());
+      setSegmentationStatus(
+        `Analysis run created: ${nextRun.run_id.slice(0, 12)} with ${nextRun.results.length} metric set(s).`
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not analyze segmentation run");
+    }
+  }
+
   async function runSyntheticSegmentationCorpus() {
     try {
       setError("");
@@ -1359,6 +1379,7 @@ export function App() {
               onVerifyRun={verifyCurrentSegmentationRun}
               onQueueRewriteJob={queueSegmentationRewriteJob}
               onQueueRunRewriteJob={queueSegmentationRunRewriteJob}
+              onAnalyzeRun={analyzeCurrentSegmentationRun}
               onCorpusSeedChange={setSegmentationCorpusSeed}
               onRunCorpus={runSyntheticSegmentationCorpus}
             />
@@ -1394,6 +1415,7 @@ function SegmentationDemoPanel({
   onVerifyRun,
   onQueueRewriteJob,
   onQueueRunRewriteJob,
+  onAnalyzeRun,
   onCorpusSeedChange,
   onRunCorpus
 }: {
@@ -1420,6 +1442,7 @@ function SegmentationDemoPanel({
   onVerifyRun: () => void;
   onQueueRewriteJob: () => void;
   onQueueRunRewriteJob: () => void;
+  onAnalyzeRun: () => void;
   onCorpusSeedChange: (seed: number) => void;
   onRunCorpus: () => void;
 }) {
@@ -1524,7 +1547,7 @@ function SegmentationDemoPanel({
                 Using upload: <span className="font-semibold">{runFile.name}</span>
               </div>
             ) : null}
-            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               <button className="primary-button mt-0" type="button" onClick={onRunPipeline}>
                 <Sparkles size={16} />
                 Run specialists
@@ -1546,6 +1569,15 @@ function SegmentationDemoPanel({
               >
                 <FileUp size={16} />
                 Targeted rewrite
+              </button>
+              <button
+                className="secondary-button mt-0"
+                type="button"
+                onClick={onAnalyzeRun}
+                disabled={!run || run.status !== "verified"}
+              >
+                <TableProperties size={16} />
+                Analyze
               </button>
             </div>
           </div>

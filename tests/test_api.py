@@ -1115,3 +1115,73 @@ def test_segmentation_corpus_run_api_creates_and_lists_regression_batch(
     assert list_response.json()["corpus_runs"][0]["corpus_run_id"] == corpus_run[
         "corpus_run_id"
     ]
+
+
+def test_segmentation_run_analysis_api_uses_verified_merged_transcript(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "analysis_me.txt",
+            "descript_text": "[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+            "rule_ids": [
+                "speaker-markers",
+                "timestamp-markers",
+                "pause-markers",
+                "filled-pauses",
+            ],
+        },
+    )
+    run = create_response.json()["run"]
+
+    analysis_response = client.post(
+        f"/api/segmentation/runs/{run['run_id']}/analysis",
+        json={},
+    )
+
+    assert analysis_response.status_code == 200
+    payload = analysis_response.json()
+    assert payload["source_filename"] == "analysis_me_segmented.txt"
+    assert payload["turn_count"] == 2
+    assert [result["metric_id"] for result in payload["results"]] == [
+        "base_metrics",
+        "lexical_metrics",
+        "disfluency_metrics",
+    ]
+    assert payload["results"][0]["rows"][1]["speaker"] == "participant"
+    assert (tmp_path / "runs" / payload["run_id"] / "results.json").exists()
+
+
+def test_segmentation_run_analysis_api_rejects_unverified_runs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "leak.txt",
+            "descript_text": "[00:00:00] P: Nala should not appear here.",
+            "rule_ids": [
+                "speaker-markers",
+                "timestamp-markers",
+                "official-source-guard",
+            ],
+        },
+    )
+    run = create_response.json()["run"]
+
+    analysis_response = client.post(
+        f"/api/segmentation/runs/{run['run_id']}/analysis",
+        json={},
+    )
+
+    assert analysis_response.status_code == 400
+    assert analysis_response.json()["detail"] == (
+        "Segmentation run must be verified before analysis"
+    )

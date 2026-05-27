@@ -128,6 +128,10 @@ class SegmentationCorpusRunCreateRequest(BaseModel):
     seed: int = Field(default=0, ge=0)
 
 
+class SegmentationRunAnalysisRequest(BaseModel):
+    config: dict = Field(default_factory=dict)
+
+
 class StudyCreateRequest(BaseModel):
     name: str = Field(min_length=1)
     description: str = Field(default="")
@@ -450,6 +454,34 @@ def verify_segmentation_run(run_id: str) -> dict:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
     return {"run": segmentation_run_to_payload(run)}
+
+
+@app.post("/api/segmentation/runs/{run_id}/analysis")
+def analyze_segmentation_run(
+    run_id: str,
+    request: SegmentationRunAnalysisRequest,
+) -> dict:
+    try:
+        segmentation_run = SegmentationRunStore(_local_data_root()).load_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    if segmentation_run.status != "verified":
+        raise HTTPException(
+            status_code=400,
+            detail="Segmentation run must be verified before analysis",
+        )
+    try:
+        config = _segmentation_analysis_config(request.config)
+    except (SkillPackValidationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    source_filename = f"{Path(segmentation_run.source_filename).stem}_segmented.txt"
+    run = _execute_or_400(
+        segmentation_run.merged_draft,
+        config,
+        source_filename=source_filename,
+    )
+    stored = LocalRunStore(_local_data_root()).persist_run(run)
+    return _run_response(run, stored)
 
 
 @app.post("/api/segmentation/runs/{run_id}/rewrite-job")
@@ -889,6 +921,25 @@ def _study_config_from_payload(payload: dict) -> StudyConfig:
         skill_pack_name=pack.name if pack else "",
         skill_pack_version=pack.version if pack else "",
     )
+
+
+def _segmentation_analysis_config(payload: dict) -> StudyConfig:
+    default_payload = {
+        "skill_pack": load_skill_pack("default_transcript_metrics").raw,
+        "speaker_prefixes": {
+            "caregiver": ["Av", "AvN", "PN"],
+            "participant": ["P"],
+        },
+    }
+    merged_payload = {
+        **default_payload,
+        **payload,
+        "speaker_prefixes": {
+            **default_payload["speaker_prefixes"],
+            **dict(payload.get("speaker_prefixes", {})),
+        },
+    }
+    return _study_config_from_payload(merged_payload)
 
 
 def _run_response(run, stored: StoredRun) -> dict:

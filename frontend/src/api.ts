@@ -311,6 +311,21 @@ export async function createSegmentationRunRewriteJob(
   return response.json();
 }
 
+export async function analyzeSegmentationRun(runId: string): Promise<RunResponse> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs/${runId}/analysis`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({})
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not analyze segmentation run");
+  }
+  return response.json();
+}
+
 export async function createStudy(params: {
   name: string;
   description: string;

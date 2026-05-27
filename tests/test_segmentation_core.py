@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from backend.segmentation.descript import extract_descript_events
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.synthetic import build_synthetic_case, list_synthetic_cases
@@ -107,3 +109,65 @@ def test_evaluator_flags_rule_failures_and_official_source_leakage() -> None:
         "filled-pauses",
         "official-source-guard",
     }
+
+
+def test_synthetic_corpus_generates_stable_rule_cases_without_source_leakage() -> None:
+    from backend.segmentation.corpus import generate_synthetic_corpus
+
+    first = generate_synthetic_corpus(seed=7)
+    second = generate_synthetic_corpus(seed=7)
+
+    assert [case.case_id for case in first] == [case.case_id for case in second]
+    assert {rule for case in first for rule in case.rule_ids} >= {
+        "speaker-markers",
+        "timestamp-markers",
+        "pause-markers",
+        "filled-pauses",
+        "overlap-markers",
+        "abandoned-utterance",
+        "redaction-comments",
+        "omission-markers",
+        "communicative-nonverbal",
+    }
+    safe_cases = [
+        case for case in first if "official-source-guard" not in case.rule_ids
+    ]
+    for case in safe_cases:
+        combined = f"{case.descript_text}\n{case.gold_text}".lower()
+        for token in case.official_source_guard_tokens:
+            assert token.lower() not in combined
+
+
+def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import SegmentationRunStore
+
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="session.txt",
+        descript_text="[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+        rule_ids=[
+            "speaker-markers",
+            "timestamp-markers",
+            "pause-markers",
+            "filled-pauses",
+        ],
+    )
+
+    assert run.status == "verified"
+    assert [packet.specialist_id for packet in run.rule_plan] == [
+        "speaker_turn",
+        "timing_pause",
+        "repair_overlap",
+    ]
+    assert run.merged_draft
+    assert run.evaluation is not None
+    assert run.evaluation.score == 100
+    assert all(output.patches for output in run.specialist_outputs)
+    assert (tmp_path / "segmentation_runs" / f"{run.run_id}.json").exists()
+
+    loaded = store.load_run(run.run_id)
+
+    assert loaded.run_id == run.run_id
+    assert loaded.status == run.status

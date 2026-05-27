@@ -44,6 +44,10 @@ from backend.extensions.plugin_requests import (
 from backend.llm.openrouter import OpenRouterError
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import SyntheticSegmentationCase
+from backend.segmentation.pipeline import (
+    SegmentationRunStore,
+    segmentation_run_to_payload,
+)
 from backend.segmentation.synthetic import build_synthetic_case, list_synthetic_cases
 from backend.storage.local_store import LocalRunStore, StoredRun
 from backend.storage.audit_log import AuditLogStore
@@ -111,6 +115,12 @@ class AgentJobEvidenceCreateRequest(BaseModel):
 class SegmentationEvaluateRequest(BaseModel):
     case_id: str = Field(min_length=1)
     draft_text: str = Field(min_length=1)
+
+
+class SegmentationRunCreateRequest(BaseModel):
+    source_filename: str = Field(default="descript_export.txt", min_length=1)
+    descript_text: str = Field(min_length=1)
+    rule_ids: list[str] = Field(default_factory=list)
 
 
 class StudyCreateRequest(BaseModel):
@@ -345,6 +355,37 @@ def create_segmentation_rewrite_job_endpoint(case_id: str) -> dict:
         "job": agent_job_to_payload(job),
         "artifact_path": str(job_store.jobs_dir / f"{job.id}.json"),
     }
+
+
+@app.post("/api/segmentation/runs")
+def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
+    try:
+        run = SegmentationRunStore(_local_data_root()).create_run(
+            source_filename=request.source_filename,
+            descript_text=request.descript_text,
+            rule_ids=request.rule_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"run": segmentation_run_to_payload(run)}
+
+
+@app.get("/api/segmentation/runs/{run_id}")
+def get_segmentation_run(run_id: str) -> dict:
+    try:
+        run = SegmentationRunStore(_local_data_root()).load_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    return {"run": segmentation_run_to_payload(run)}
+
+
+@app.post("/api/segmentation/runs/{run_id}/verify")
+def verify_segmentation_run(run_id: str) -> dict:
+    try:
+        run = SegmentationRunStore(_local_data_root()).verify_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    return {"run": segmentation_run_to_payload(run)}
 
 
 @app.post("/api/studies")

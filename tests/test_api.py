@@ -882,3 +882,70 @@ def test_segmentation_api_rejects_unknown_synthetic_case() -> None:
 
     assert response.status_code == 404
     assert evaluate_response.status_code == 404
+
+
+def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "session.txt",
+            "descript_text": "[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+            "rule_ids": [
+                "speaker-markers",
+                "timestamp-markers",
+                "pause-markers",
+                "filled-pauses",
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    run = response.json()["run"]
+    assert run["source"] == "synthetic"
+    assert run["status"] == "verified"
+    assert run["rule_plan"][0]["specialist_id"] == "speaker_turn"
+    assert run["specialist_outputs"][0]["patches"]
+
+    fetch_response = client.get(f"/api/segmentation/runs/{run['run_id']}")
+
+    assert fetch_response.status_code == 200
+    assert fetch_response.json()["run"]["run_id"] == run["run_id"]
+
+    verify_response = client.post(f"/api/segmentation/runs/{run['run_id']}/verify")
+
+    assert verify_response.status_code == 200
+    assert verify_response.json()["run"]["run_id"] == run["run_id"]
+    assert verify_response.json()["run"]["evaluation"]["score"] == 100
+
+
+def test_segmentation_run_api_rejects_invalid_input(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    empty_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "empty.txt",
+            "descript_text": "   ",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    unknown_rule_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "session.txt",
+            "descript_text": "[00:00:00] P: Good morning.",
+            "rule_ids": ["not-a-rule"],
+        },
+    )
+
+    assert empty_response.status_code == 400
+    assert "descript_text" in empty_response.json()["detail"]
+    assert unknown_rule_response.status_code == 400
+    assert "not-a-rule" in unknown_rule_response.json()["detail"]

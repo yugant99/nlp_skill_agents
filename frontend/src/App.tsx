@@ -228,6 +228,8 @@ export function App() {
   const [segmentationRunSource, setSegmentationRunSource] = useState("");
   const [segmentationRunFile, setSegmentationRunFile] = useState<File | null>(null);
   const [segmentationRun, setSegmentationRun] = useState<SegmentationRun | null>(null);
+  const [segmentationAnalysisRun, setSegmentationAnalysisRun] =
+    useState<RunResponse | null>(null);
   const [segmentationRuns, setSegmentationRuns] = useState<SegmentationRun[]>([]);
   const [segmentationCorpusSeed, setSegmentationCorpusSeed] = useState(0);
   const [segmentationCorpusRuns, setSegmentationCorpusRuns] = useState<
@@ -599,6 +601,7 @@ export function App() {
       setSegmentationDraft(nextCase.gold_text);
       setSegmentationRunSource(nextCase.descript_text);
       setSegmentationRun(null);
+      setSegmentationAnalysisRun(null);
       setSegmentationEvaluation(null);
     } catch (err) {
       setSegmentationStatus("");
@@ -665,6 +668,7 @@ export function App() {
             ruleIds
           });
       setSegmentationRun(nextRun);
+      setSegmentationAnalysisRun(null);
       setSegmentationRuns(await listSegmentationRuns());
       setSegmentationDraft(nextRun.merged_draft);
       setSegmentationEvaluation(nextRun.evaluation);
@@ -686,6 +690,7 @@ export function App() {
       setError("");
       const nextRun = await verifySegmentationRun(segmentationRun.run_id);
       setSegmentationRun(nextRun);
+      setSegmentationAnalysisRun(null);
       setSegmentationRuns(await listSegmentationRuns());
       setSegmentationEvaluation(nextRun.evaluation);
       setSegmentationStatus(`Verifier status: ${nextRun.status}.`);
@@ -720,7 +725,12 @@ export function App() {
     }
     try {
       setError("");
-      const nextRun = await analyzeSegmentationRun(segmentationRun.run_id);
+      const nextRun = await analyzeSegmentationRun(segmentationRun.run_id, {
+        selectedMetrics,
+        disfluencyTokens,
+        skillPack
+      });
+      setSegmentationAnalysisRun(nextRun);
       setRun(nextRun);
       setRunHistory(await listRuns());
       setSegmentationStatus(
@@ -729,6 +739,51 @@ export function App() {
     } catch (err) {
       setSegmentationStatus("");
       setError(err instanceof Error ? err.message : "Could not analyze segmentation run");
+    }
+  }
+
+  async function runSegmentationEndToEnd() {
+    const ruleIds = selectedSegmentationCase?.rule_ids ?? DEFAULT_SEGMENTATION_RULE_IDS;
+    try {
+      setError("");
+      setSegmentationStatus("");
+      const nextSegmentationRun = segmentationRunFile
+        ? await createSegmentationFileRun({
+            file: segmentationRunFile,
+            ruleIds
+          })
+        : await createSegmentationRun({
+            sourceFilename: selectedSegmentationCase
+              ? `${selectedSegmentationCase.case_id}.txt`
+              : "pasted_descript_export.txt",
+            descriptText: segmentationRunSource,
+            ruleIds
+          });
+      setSegmentationRun(nextSegmentationRun);
+      setSegmentationRuns(await listSegmentationRuns());
+      setSegmentationDraft(nextSegmentationRun.merged_draft);
+      setSegmentationEvaluation(nextSegmentationRun.evaluation);
+      if (nextSegmentationRun.status !== "verified") {
+        setSegmentationAnalysisRun(null);
+        setSegmentationStatus(
+          `End-to-end paused at verifier: ${nextSegmentationRun.status}.`
+        );
+        return;
+      }
+      const nextAnalysisRun = await analyzeSegmentationRun(nextSegmentationRun.run_id, {
+        selectedMetrics,
+        disfluencyTokens,
+        skillPack
+      });
+      setSegmentationAnalysisRun(nextAnalysisRun);
+      setRun(nextAnalysisRun);
+      setRunHistory(await listRuns());
+      setSegmentationStatus(
+        `End-to-end complete: gold transcript verified and ${nextAnalysisRun.results.length} table set(s) generated.`
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not complete end-to-end run");
     }
   }
 
@@ -1357,6 +1412,7 @@ export function App() {
               runSource={segmentationRunSource}
               runFile={segmentationRunFile}
               run={segmentationRun}
+              analysisRun={segmentationAnalysisRun}
               runs={segmentationRuns}
               corpusSeed={segmentationCorpusSeed}
               corpusRuns={segmentationCorpusRuns}
@@ -1376,6 +1432,7 @@ export function App() {
               }
               onEvaluate={runSegmentationEvaluation}
               onRunPipeline={runRuleSpecialistSegmentationPipeline}
+              onRunEndToEnd={runSegmentationEndToEnd}
               onVerifyRun={verifyCurrentSegmentationRun}
               onQueueRewriteJob={queueSegmentationRewriteJob}
               onQueueRunRewriteJob={queueSegmentationRunRewriteJob}
@@ -1400,6 +1457,7 @@ function SegmentationDemoPanel({
   runSource,
   runFile,
   run,
+  analysisRun,
   runs,
   corpusSeed,
   corpusRuns,
@@ -1412,6 +1470,7 @@ function SegmentationDemoPanel({
   onUseGoldDraft,
   onEvaluate,
   onRunPipeline,
+  onRunEndToEnd,
   onVerifyRun,
   onQueueRewriteJob,
   onQueueRunRewriteJob,
@@ -1427,6 +1486,7 @@ function SegmentationDemoPanel({
   runSource: string;
   runFile: File | null;
   run: SegmentationRun | null;
+  analysisRun: RunResponse | null;
   runs: SegmentationRun[];
   corpusSeed: number;
   corpusRuns: SegmentationCorpusRun[];
@@ -1439,6 +1499,7 @@ function SegmentationDemoPanel({
   onUseGoldDraft: () => void;
   onEvaluate: () => void;
   onRunPipeline: () => void;
+  onRunEndToEnd: () => void;
   onVerifyRun: () => void;
   onQueueRewriteJob: () => void;
   onQueueRunRewriteJob: () => void;
@@ -1547,6 +1608,14 @@ function SegmentationDemoPanel({
                 Using upload: <span className="font-semibold">{runFile.name}</span>
               </div>
             ) : null}
+            <button
+              className="primary-button mt-3 w-full justify-center"
+              type="button"
+              onClick={onRunEndToEnd}
+            >
+              <Play size={16} />
+              Run end to end
+            </button>
             <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
               <button className="primary-button mt-0" type="button" onClick={onRunPipeline}>
                 <Sparkles size={16} />
@@ -1639,10 +1708,84 @@ function SegmentationDemoPanel({
             Queue rewrite agent
           </button>
           {status ? <div className="success-text">{status}</div> : null}
+          {analysisRun ? <SegmentationAnalysisTables run={analysisRun} /> : null}
           {evaluation ? <SegmentationEvaluationPanel evaluation={evaluation} /> : null}
         </div>
       </div>
     </Panel>
+  );
+}
+
+function SegmentationAnalysisTables({ run }: { run: RunResponse }) {
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-[#2f413f]">Analysis tables</div>
+        <div className="font-mono text-xs text-[#756f64]">
+          {run.run_id.slice(0, 12)} · {run.turn_count} turns
+        </div>
+      </div>
+      <RunSummaryStrip run={run} />
+      <div className="mt-3 space-y-3">
+        {run.results.map((result) => (
+          <InlineMetricTable
+            key={result.metric_id}
+            result={result}
+            downloadUrl={
+              run.exports.find((item) => item.metric_id === result.metric_id)
+                ?.download_url
+            }
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InlineMetricTable({
+  result,
+  downloadUrl
+}: {
+  result: MetricResult;
+  downloadUrl?: string;
+}) {
+  const columns = Array.from(new Set(result.rows.flatMap((row) => Object.keys(row))));
+  return (
+    <div className="rounded-md border border-[#e3ded2] bg-white/70 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-[#2f413f]">{result.label}</div>
+        {downloadUrl ? (
+          <a className="export-link" href={apiUrl(downloadUrl)}>
+            <Download size={16} />
+            CSV
+          </a>
+        ) : null}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[620px] border-collapse text-left text-sm">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th key={column} className="table-head">
+                  {column.replaceAll("_", " ")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {result.rows.map((row, index) => (
+              <tr key={index} className="border-t border-[#e4ded0]">
+                {columns.map((column) => (
+                  <td key={column} className="table-cell">
+                    {formatCell(row[column])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 

@@ -1156,6 +1156,43 @@ def test_segmentation_run_analysis_api_uses_verified_merged_transcript(
     assert (tmp_path / "runs" / payload["run_id"] / "results.json").exists()
 
 
+def test_segmentation_run_analysis_api_honors_metric_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    create_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "configured_analysis.txt",
+            "descript_text": "[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+            "rule_ids": [
+                "speaker-markers",
+                "timestamp-markers",
+                "pause-markers",
+                "filled-pauses",
+            ],
+        },
+    )
+    run = create_response.json()["run"]
+
+    analysis_response = client.post(
+        f"/api/segmentation/runs/{run['run_id']}/analysis",
+        json={
+            "config": {
+                "selected_metrics": ["base_metrics"],
+                "disfluency_tokens": ["yes"],
+            }
+        },
+    )
+
+    assert analysis_response.status_code == 200
+    payload = analysis_response.json()
+    assert [result["metric_id"] for result in payload["results"]] == ["base_metrics"]
+    assert payload["results"][0]["rows"][2]["turns"] == 2
+
+
 def test_segmentation_run_analysis_api_rejects_unverified_runs(
     tmp_path,
     monkeypatch,

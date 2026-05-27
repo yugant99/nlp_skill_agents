@@ -311,13 +311,26 @@ export async function createSegmentationRunRewriteJob(
   return response.json();
 }
 
-export async function analyzeSegmentationRun(runId: string): Promise<RunResponse> {
+export async function analyzeSegmentationRun(
+  runId: string,
+  params?: {
+    selectedMetrics?: MetricId[];
+    disfluencyTokens?: string[];
+    skillPack?: unknown;
+  }
+): Promise<RunResponse> {
   const response = await fetch(`${API_BASE}/api/segmentation/runs/${runId}/analysis`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({})
+    body: JSON.stringify({
+      config: {
+        selected_metrics: params?.selectedMetrics,
+        disfluency_tokens: params?.disfluencyTokens,
+        ...(params?.skillPack ? { skill_pack: params.skillPack } : {})
+      }
+    })
   });
   if (!response.ok) {
     const message = await response.text();

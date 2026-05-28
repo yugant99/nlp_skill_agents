@@ -160,6 +160,20 @@ def test_synthetic_demo_transcripts_are_large_enough_for_scientist_demo() -> Non
         assert len(gold_lines) >= 65, case.case_id
 
 
+def test_default_synthetic_case_exercises_semantic_cunit_decisions() -> None:
+    from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
+
+    case = build_synthetic_case("pause_overlap_repair")
+    events = extract_descript_events(case.descript_text, source_filename="demo.txt")
+
+    adjudication = adjudicate_cunit_boundaries(events)
+
+    assert adjudication.boundary_type_counts["coordination-split"] >= 1
+    assert adjudication.boundary_type_counts["dependent-clause-attachment"] >= 1
+    assert adjudication.boundary_type_counts["ellipsis-minimal-response"] >= 1
+    assert adjudication.boundary_type_counts["maze-revision-unintelligible"] >= 1
+
+
 def test_extract_descript_events_reads_timestamped_speaker_turns() -> None:
     events = extract_descript_events(
         """

@@ -3,7 +3,38 @@ from pathlib import Path
 
 from backend.segmentation.descript import extract_descript_events
 from backend.segmentation.evaluator import evaluate_segmented_draft
+from backend.segmentation.rulebook import (
+    PROFESSOR_GRADE_RULE_AREAS,
+    SUPPORTED_RULE_IDS,
+    build_cunit_rulebook_summary,
+)
 from backend.segmentation.synthetic import build_synthetic_case, list_synthetic_cases
+
+
+def test_rulebook_declares_supported_rules_and_professor_grade_gaps() -> None:
+    summary = build_cunit_rulebook_summary()
+
+    assert SUPPORTED_RULE_IDS == [
+        "speaker-markers",
+        "timestamp-markers",
+        "pause-markers",
+        "filled-pauses",
+        "overlap-markers",
+        "abandoned-utterance",
+        "redaction-comments",
+        "omission-markers",
+        "communicative-nonverbal",
+        "official-source-guard",
+    ]
+    assert summary.supported_rule_count == 10
+    assert summary.demo_case_rule_count == 9
+    assert summary.corpus_rule_count == 10
+    assert any(area.area_id == "cunit-boundaries" for area in PROFESSOR_GRADE_RULE_AREAS)
+    assert any(
+        area.status == "gap"
+        and "independent clause" in area.scientist_language.lower()
+        for area in PROFESSOR_GRADE_RULE_AREAS
+    )
 
 
 def test_synthetic_case_contains_descript_input_gold_target_and_no_official_tokens() -> None:

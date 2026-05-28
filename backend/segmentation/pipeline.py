@@ -17,6 +17,7 @@ from backend.segmentation.models import (
     SegmentationMetrics,
     SegmentationRuleFailure,
 )
+from backend.segmentation.rulebook import SUPPORTED_RULE_IDS
 from backend.segmentation.synthetic import OFFICIAL_SOURCE_GUARD_TOKENS
 
 
@@ -659,7 +660,7 @@ def segmentation_corpus_run_from_payload(
 
 def _normalize_rule_ids(rule_ids: list[str]) -> list[str]:
     normalized = [rule_id for rule_id in rule_ids if rule_id]
-    unknown = [rule_id for rule_id in normalized if rule_id not in RULE_TO_SPECIALIST]
+    unknown = [rule_id for rule_id in normalized if rule_id not in SUPPORTED_RULE_IDS]
     if unknown:
         raise ValueError(f"Unsupported segmentation rule id(s): {', '.join(unknown)}")
     return normalized or [

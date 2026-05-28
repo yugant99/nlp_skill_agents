@@ -1036,18 +1036,18 @@ export function App() {
   }
 
   return (
-    <main className="app-shell min-h-screen text-[#171717]">
-      <div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-5 sm:px-5 lg:px-8">
+    <main className="app-shell h-screen overflow-hidden text-[#171717]">
+      <div className="mx-auto flex h-full max-w-[1500px] flex-col gap-3 px-4 py-3 sm:px-5 lg:px-6">
         <header className="app-header">
           <div>
-            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-[#47615d]">
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#47615d]">
               <FlaskConical size={18} />
               Local transcript review studio
             </div>
-            <h1 className="max-w-4xl text-3xl font-semibold tracking-normal text-[#171717] md:text-4xl">
+            <h1 className="max-w-4xl text-2xl font-semibold tracking-normal text-[#171717] md:text-3xl">
               C-unit transcript workspace
             </h1>
-            <p className="mt-3 max-w-3xl text-base leading-7 text-[#4c4a44]">
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[#4c4a44]">
               Turn one Descript-style transcript into a verified gold transcript, then
               produce the local analysis tables a research team can inspect.
             </p>
@@ -1523,234 +1523,293 @@ function SegmentationDemoPanel({
   onCorpusSeedChange: (seed: number) => void;
   onRunCorpus: () => void;
 }) {
+  const [activeTab, setActiveTab] = useState<
+    "source" | "gold" | "verification" | "tables"
+  >("source");
+  const runLabel = run
+    ? `${run.status} · ${run.merge_evidence.applied_patch_count} patches`
+    : "Ready";
+
+  useEffect(() => {
+    if (evaluation) {
+      setActiveTab("verification");
+    }
+  }, [evaluation]);
+
+  useEffect(() => {
+    if (analysisRun) {
+      setActiveTab("tables");
+    }
+  }, [analysisRun]);
+
+  function runEndToEndAndShowTables() {
+    setActiveTab("tables");
+    onRunEndToEnd();
+  }
+
+  function runPipelineAndShowGold() {
+    setActiveTab("gold");
+    onRunPipeline();
+  }
+
+  function verifyAndShowEvidence() {
+    setActiveTab("verification");
+    onVerifyRun();
+  }
+
+  function evaluateAndShowEvidence() {
+    setActiveTab("verification");
+    onEvaluate();
+  }
+
+  function analyzeAndShowTables() {
+    setActiveTab("tables");
+    onAnalyzeRun();
+  }
+
   return (
-    <Panel title="Gold transcript workflow" icon={<Braces size={18} />}>
-      <div className="segmentation-hero">
-        <div>
+    <section className="console-panel">
+      <div className="console-toolbar">
+        <div className="min-w-0">
           <div className="section-kicker">C-unit specialist pipeline</div>
-          <h2>Source transcript, verified gold transcript, analysis tables.</h2>
-          <p>
-            Each specialist owns a patch. The merge step assembles the final
-            transcript, then the verifier and table builder leave an inspectable trail.
-          </p>
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <h2>Transcript console</h2>
+            <span className="console-status-pill">{runLabel}</span>
+          </div>
         </div>
-        <div className="workflow-steps" aria-label="C-unit workflow">
-          <span>1 Source</span>
-          <span>2 Merge</span>
-          <span>3 Tables</span>
+        <div className="console-toolbar-actions">
+          <button className="secondary-button mt-0" type="button" onClick={runPipelineAndShowGold}>
+            <Sparkles size={16} />
+            Specialists
+          </button>
+          <button
+            className="secondary-button mt-0"
+            type="button"
+            onClick={verifyAndShowEvidence}
+            disabled={!run}
+          >
+            <ShieldCheck size={16} />
+            Verify
+          </button>
+          <button
+            className="secondary-button mt-0"
+            type="button"
+            onClick={analyzeAndShowTables}
+            disabled={!run || run.status !== "verified"}
+          >
+            <TableProperties size={16} />
+            Tables
+          </button>
+          <button className="run-button mt-0" type="button" onClick={runEndToEndAndShowTables}>
+            <Play size={16} />
+            Generate gold transcript
+          </button>
         </div>
       </div>
 
-      <div className="segmentation-layout">
-        <div className="workflow-card">
-          <div className="workflow-card-heading">
-            <div>
-              <div className="section-kicker">Step 1</div>
-              <h3>Transcript input</h3>
-            </div>
-            {selectedCase ? <span className="casebook-pill">{selectedCase.source}</span> : null}
-          </div>
-          <label className="field-label mt-0">
-            Synthetic case
-            <select
-              className="field-input"
-              value={selectedCaseId}
-              onChange={(event) => onSelectCase(event.target.value)}
-            >
-              {cases.map((item) => (
-                <option key={item.case_id} value={item.case_id}>
-                  {item.title}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field-label">
-            Descript input
-            <textarea
-              className="field-input min-h-44 resize-y font-mono text-xs"
-              value={runSource}
-              onChange={(event) => onRunSourceChange(event.target.value)}
-            />
-          </label>
-          <label className="field-label">
-            TXT export
-            <input
-              className="field-input"
-              type="file"
-              accept=".txt,text/plain"
-              onChange={(event) => onRunFileChange(event.target.files?.[0] ?? null)}
-            />
-          </label>
-          {runFile ? (
-            <div className="field-helper">
-              Using upload: <span className="font-semibold">{runFile.name}</span>
+      <div className="console-tabbar" role="tablist" aria-label="Transcript workflow">
+        {[
+          ["source", "Transcript", runSource ? "Loaded" : "Empty"],
+          ["gold", "Gold Transcript", run ? run.status : "Draft"],
+          ["verification", "Verification", evaluation ? `Score ${evaluation.score}` : "Pending"],
+          ["tables", "Analysis Tables", analysisRun ? `${analysisRun.results.length} tables` : "Pending"]
+        ].map(([id, label, meta]) => (
+          <button
+            key={id}
+            className={activeTab === id ? "console-tab console-tab-active" : "console-tab"}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === id}
+            onClick={() => setActiveTab(id as typeof activeTab)}
+          >
+            <span>{label}</span>
+            <span>{meta}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="console-grid">
+        <div className="console-stage">
+          {activeTab === "source" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Source</div>
+                  <h3>Transcript input</h3>
+                </div>
+                {selectedCase ? <span className="casebook-pill">{selectedCase.source}</span> : null}
+              </div>
+              <div className="two-pane-editor">
+                <div>
+                  <label className="field-label mt-0">
+                    Synthetic case
+                    <select
+                      className="field-input"
+                      value={selectedCaseId}
+                      onChange={(event) => onSelectCase(event.target.value)}
+                    >
+                      {cases.map((item) => (
+                        <option key={item.case_id} value={item.case_id}>
+                          {item.title}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field-label">
+                    Descript input
+                    <textarea
+                      className="field-input console-textarea"
+                      value={runSource}
+                      onChange={(event) => onRunSourceChange(event.target.value)}
+                    />
+                  </label>
+                  <label className="field-label">
+                    TXT export
+                    <input
+                      className="field-input"
+                      type="file"
+                      accept=".txt,text/plain"
+                      onChange={(event) => onRunFileChange(event.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                  {runFile ? (
+                    <div className="field-helper">
+                      Using upload: <span className="font-semibold">{runFile.name}</span>
+                    </div>
+                  ) : null}
+                </div>
+                <div className="reference-panel h-full">
+                  <div className="mb-2 text-sm font-semibold text-[#2f413f]">
+                    Synthetic reference
+                  </div>
+                  <pre className="transcript-preview transcript-preview-tall">
+                    {selectedCase?.descript_text ?? "No synthetic case loaded."}
+                  </pre>
+                </div>
+              </div>
             </div>
           ) : null}
-          <button
-            className="run-button mt-4"
-            type="button"
-            onClick={onRunEndToEnd}
-          >
-            <Play size={16} />
-            Run end to end
-          </button>
-          <div className="pipeline-actions">
-            <button className="secondary-button mt-0" type="button" onClick={onRunPipeline}>
-              <Sparkles size={16} />
-              Run specialists
-            </button>
-            <button
-              className="secondary-button mt-0"
-              type="button"
-              onClick={onVerifyRun}
-              disabled={!run}
-            >
-              <ShieldCheck size={16} />
-              Verify
-            </button>
-            <button
-              className="secondary-button mt-0"
-              type="button"
-              onClick={onAnalyzeRun}
-              disabled={!run || run.status !== "verified"}
-            >
-              <TableProperties size={16} />
-              Tables
-            </button>
-          </div>
+
+          {activeTab === "gold" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Merge</div>
+                  <h3>Gold transcript</h3>
+                </div>
+                {run ? <span className="casebook-pill">{run.status}</span> : null}
+              </div>
+              <label className="field-label mt-0">
+                Draft to verify
+                <textarea
+                  className="field-input console-textarea console-textarea-large"
+                  value={draft}
+                  onChange={(event) => onDraftChange(event.target.value)}
+                />
+              </label>
+              <div className="action-row">
+                <button className="secondary-button mt-0" type="button" onClick={onUseGoldDraft}>
+                  <FileCheck2 size={16} />
+                  Use gold
+                </button>
+                <button className="primary-button mt-0" type="button" onClick={evaluateAndShowEvidence}>
+                  <Play size={16} />
+                  Verify draft
+                </button>
+                <button
+                  className="secondary-button mt-0"
+                  type="button"
+                  onClick={onQueueRunRewriteJob}
+                  disabled={!run || !run.failure_routes.length}
+                >
+                  <FileUp size={16} />
+                  Rewrite
+                </button>
+                <button className="secondary-button mt-0" type="button" onClick={onQueueRewriteJob}>
+                  <Sparkles size={16} />
+                  Queue agent
+                </button>
+              </div>
+              {status ? <div className="success-text">{status}</div> : null}
+            </div>
+          ) : null}
+
+          {activeTab === "verification" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Verification</div>
+                  <h3>Rule evidence</h3>
+                </div>
+                {evaluation ? <span className="casebook-pill">score {evaluation.score}</span> : null}
+              </div>
+              {evaluation ? (
+                <SegmentationEvaluationPanel evaluation={evaluation} />
+              ) : (
+                <div className="quiet-empty">
+                  Run the verifier to see score, notation counts, and routed failures.
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {activeTab === "tables" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Analysis</div>
+                  <h3>Tables</h3>
+                </div>
+                {analysisRun ? (
+                  <span className="casebook-pill">{analysisRun.results.length} table sets</span>
+                ) : null}
+              </div>
+              {analysisRun ? <SegmentationAnalysisTables run={analysisRun} /> : <EmptyState />}
+            </div>
+          ) : null}
         </div>
 
-        <div className="workflow-card workflow-card-primary">
-          <div className="workflow-card-heading">
+        <aside className="console-inspector">
+          <div className="inspector-section">
             <div>
-              <div className="section-kicker">Step 2</div>
-              <h3>Gold transcript</h3>
+              <div className="section-kicker">Run state</div>
+              <h3>Current transcript</h3>
             </div>
-            {run ? <span className="casebook-pill">{run.status}</span> : null}
-          </div>
-          {run ? <SegmentationRunPanel run={run} /> : null}
-          <label className="field-label mt-0">
-            Draft to verify
-            <textarea
-              className="field-input min-h-72 resize-y font-mono text-xs"
-              value={draft}
-              onChange={(event) => onDraftChange(event.target.value)}
-            />
-          </label>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <button className="secondary-button mt-0" type="button" onClick={onUseGoldDraft}>
-              <FileCheck2 size={16} />
-              Use gold
-            </button>
-            <button className="primary-button mt-0" type="button" onClick={onEvaluate}>
-              <Play size={16} />
-              Verify draft
-            </button>
-            <button
-              className="secondary-button mt-0"
-              type="button"
-              onClick={onQueueRunRewriteJob}
-              disabled={!run || !run.failure_routes.length}
-            >
-              <FileUp size={16} />
-              Rewrite
-            </button>
-          </div>
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={onQueueRewriteJob}
-          >
-            <Sparkles size={16} />
-            Queue rewrite agent
-          </button>
-          {status ? <div className="success-text">{status}</div> : null}
-        </div>
-      </div>
-
-      <div className="segmentation-output-grid">
-        <div className="workflow-card">
-          <div className="workflow-card-heading">
-            <div>
-              <div className="section-kicker">Step 3</div>
-              <h3>Analysis tables</h3>
+            <div className="inspector-facts">
+              <OutputFact label="Status" value={run?.status ?? "not run"} />
+              <OutputFact
+                label="Specialists"
+                value={run ? String(run.rule_plan.length) : "0"}
+              />
+              <OutputFact
+                label="Tables"
+                value={analysisRun ? String(analysisRun.results.length) : "0"}
+              />
             </div>
           </div>
-          {analysisRun ? <SegmentationAnalysisTables run={analysisRun} /> : <EmptyState />}
-        </div>
-        <div className="workflow-card">
-          <div className="workflow-card-heading">
-            <div>
-              <div className="section-kicker">Verification</div>
-              <h3>Rule evidence</h3>
-            </div>
-          </div>
-          {evaluation ? (
-            <SegmentationEvaluationPanel evaluation={evaluation} />
-          ) : (
-            <div className="quiet-empty">Run the verifier to see score, notation counts, and routed failures.</div>
-          )}
-        </div>
-      </div>
-
-      <details className="subtle-details">
-        <summary>Synthetic references and regression corpus</summary>
-        <div className="mt-3 grid gap-3 lg:grid-cols-2">
-          {selectedCase ? (
-            <>
-              <div className="reference-panel">
-                <div className="mb-2 flex flex-wrap gap-2">
+          <div className="inspector-section">
+            <div className="section-kicker">Selected rules</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {selectedCase ? (
+                <>
                   {selectedCase.rule_ids.slice(0, 5).map((ruleId) => (
                     <span key={ruleId} className="casebook-pill muted">
                       {ruleId}
                     </span>
                   ))}
-                </div>
-                <pre className="transcript-preview">{selectedCase.descript_text}</pre>
-              </div>
-              <div className="reference-panel">
-                <div className="mb-2 text-sm font-semibold text-[#2f413f]">
-                  Synthetic gold target
-                </div>
-                <pre className="transcript-preview">{selectedCase.gold_text}</pre>
-              </div>
-            </>
-          ) : (
-            <div className="text-sm text-[#676157]">No synthetic cases loaded.</div>
-          )}
-          <div className="reference-panel lg:col-span-2">
-            <div className="mb-2 flex items-center gap-2 text-sm font-semibold text-[#2f413f]">
-              <FlaskConical size={16} />
-              Synthetic corpus
+                </>
+              ) : (
+                <span className="text-sm text-[#676157]">No case selected.</span>
+              )}
             </div>
-            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-              <label className="field-label mt-0">
-                Seed
-                <input
-                  className="field-input"
-                  min={0}
-                  type="number"
-                  value={corpusSeed}
-                  onChange={(event) =>
-                    onCorpusSeedChange(Number(event.target.value || 0))
-                  }
-                />
-              </label>
-              <button
-                className="primary-button self-end"
-                type="button"
-                onClick={onRunCorpus}
-              >
-                <Activity size={16} />
-                Run corpus
-              </button>
-            </div>
-            {corpusRuns[0] ? (
-              <SegmentationCorpusRunPanel corpusRun={corpusRuns[0]} />
-            ) : null}
           </div>
+          {run ? (
+            <div className="inspector-section">
+              <SegmentationRunPanel run={run} />
+            </div>
+          ) : null}
           {runs.length ? (
-            <div className="reference-panel lg:col-span-2">
+            <div className="inspector-section">
               <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
                 Recent segmentation runs
               </div>
@@ -1764,6 +1823,7 @@ function SegmentationDemoPanel({
                       onSelectRun(item);
                       onRunSourceChange(item.descript_text);
                       onDraftChange(item.merged_draft);
+                      setActiveTab("gold");
                     }}
                   >
                     <div className="min-w-0">
@@ -1779,9 +1839,31 @@ function SegmentationDemoPanel({
               </div>
             </div>
           ) : null}
-        </div>
-      </details>
-    </Panel>
+          <details className="subtle-details">
+            <summary>Synthetic regression corpus</summary>
+            <div className="mt-3 grid gap-2">
+              <label className="field-label mt-0">
+                Seed
+                <input
+                  className="field-input"
+                  min={0}
+                  type="number"
+                  value={corpusSeed}
+                  onChange={(event) =>
+                    onCorpusSeedChange(Number(event.target.value || 0))
+                  }
+                />
+              </label>
+              <button className="primary-button" type="button" onClick={onRunCorpus}>
+                <Activity size={16} />
+                Run corpus
+              </button>
+              {corpusRuns[0] ? <SegmentationCorpusRunPanel corpusRun={corpusRuns[0]} /> : null}
+            </div>
+          </details>
+        </aside>
+      </div>
+    </section>
   );
 }
 
@@ -3003,9 +3085,9 @@ function Panel(props: { title: string; icon: React.ReactNode; children: React.Re
 
 function StatusTile(props: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+    <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-2.5">
       <div className="flex items-center gap-2 text-[#47615d]">{props.icon}</div>
-      <div className="mt-2 text-xs uppercase text-[#756f64]">{props.label}</div>
+      <div className="mt-1.5 text-xs uppercase text-[#756f64]">{props.label}</div>
       <div className="mt-1 text-sm font-semibold">{props.value}</div>
     </div>
   );

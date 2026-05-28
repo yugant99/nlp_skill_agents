@@ -235,6 +235,26 @@
     @apply mt-3 grid gap-3;
   }
 
+  .rulebook-gap {
+    @apply rounded-md border border-[#e4ded0] bg-[#faf8f1] p-2.5;
+  }
+
+  .rulebook-gap div {
+    @apply flex items-center justify-between gap-2;
+  }
+
+  .rulebook-gap span {
+    @apply text-sm font-semibold text-[#2f413f];
+  }
+
+  .rulebook-gap strong {
+    @apply rounded-full border border-[#d7c4a1] bg-[#fff8e8] px-2 py-0.5 font-mono text-[10px] uppercase tracking-wide text-[#765a24];
+  }
+
+  .rulebook-gap p {
+    @apply mt-1 text-xs leading-5 text-[#676157];
+  }
+
   .dropzone {
     @apply block cursor-pointer rounded-md border border-dashed border-[#9d9a8f] bg-[#f7f4ea] px-4 py-5 text-center transition duration-200 hover:-translate-y-px hover:border-[#47615d] hover:bg-[#f0eee4] active:translate-y-0;
   }

@@ -35,6 +35,7 @@ import {
   draftSkillPack,
   evaluateSegmentationDraft,
   getSegmentationCase,
+  getSegmentationRulebook,
   getStudyBatch,
   getStudyBatchRun,
   getStudySchema,
@@ -77,6 +78,7 @@ import { buildMetricMatrix } from "./matrixView";
 import type {
   AgentJob,
   BatchTranscript,
+  CUnitRulebookSummary,
   MetricId,
   MetricResult,
   PluginRequest,
@@ -235,6 +237,8 @@ export function App() {
   const [segmentationCorpusRuns, setSegmentationCorpusRuns] = useState<
     SegmentationCorpusRun[]
   >([]);
+  const [segmentationRulebook, setSegmentationRulebook] =
+    useState<CUnitRulebookSummary | null>(null);
   const [segmentationStatus, setSegmentationStatus] = useState("");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -283,6 +287,9 @@ export function App() {
     listSegmentationCorpusRuns()
       .then(setSegmentationCorpusRuns)
       .catch(() => setSegmentationCorpusRuns([]));
+    getSegmentationRulebook()
+      .then(setSegmentationRulebook)
+      .catch(() => setSegmentationRulebook(null));
     listSegmentationCases()
       .then((cases) => {
         setSegmentationCases(cases);
@@ -1352,6 +1359,7 @@ export function App() {
               runs={segmentationRuns}
               corpusSeed={segmentationCorpusSeed}
               corpusRuns={segmentationCorpusRuns}
+              rulebook={segmentationRulebook}
               status={segmentationStatus}
               onSelectCase={selectSegmentationCase}
               onDraftChange={setSegmentationDraft}
@@ -1477,6 +1485,7 @@ function SegmentationDemoPanel({
   runs,
   corpusSeed,
   corpusRuns,
+  rulebook,
   status,
   onSelectCase,
   onDraftChange,
@@ -1506,6 +1515,7 @@ function SegmentationDemoPanel({
   runs: SegmentationRun[];
   corpusSeed: number;
   corpusRuns: SegmentationCorpusRun[];
+  rulebook: CUnitRulebookSummary | null;
   status: string;
   onSelectCase: (caseId: string) => void;
   onDraftChange: (value: string) => void;
@@ -1803,6 +1813,37 @@ function SegmentationDemoPanel({
               )}
             </div>
           </div>
+          {rulebook ? (
+            <div className="inspector-section">
+              <div className="section-kicker">Agent coverage</div>
+              <h3>What it knows now</h3>
+              <div className="inspector-facts">
+                <OutputFact
+                  label="Supported rules"
+                  value={String(rulebook.supported_rule_count)}
+                />
+                <OutputFact
+                  label="Demo covers"
+                  value={`${rulebook.demo_case_rule_count}/10`}
+                />
+                <OutputFact
+                  label="Corpus covers"
+                  value={`${rulebook.corpus_rule_count}/10`}
+                />
+              </div>
+              <div className="mt-3 grid gap-2">
+                {rulebook.professor_grade_areas.slice(0, 3).map((area) => (
+                  <div key={area.area_id} className="rulebook-gap">
+                    <div>
+                      <span>{area.label}</span>
+                      <strong>{area.status}</strong>
+                    </div>
+                    <p>{area.scientist_language}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {run ? (
             <div className="inspector-section">
               <SegmentationRunPanel run={run} />

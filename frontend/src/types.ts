@@ -106,6 +106,30 @@ export type SegmentationEvaluationResponse = {
   evaluation: SegmentationEvaluation;
 };
 
+export type CUnitRuleDefinition = {
+  rule_id: string;
+  label: string;
+  specialist_id: string;
+  deterministic_check: string;
+  current_depth: string;
+  scientist_language: string;
+};
+
+export type ProfessorGradeRuleArea = {
+  area_id: string;
+  label: string;
+  status: string;
+  scientist_language: string;
+};
+
+export type CUnitRulebookSummary = {
+  supported_rule_count: number;
+  demo_case_rule_count: number;
+  corpus_rule_count: number;
+  rule_definitions: CUnitRuleDefinition[];
+  professor_grade_areas: ProfessorGradeRuleArea[];
+};
+
 export type SegmentationEvent = {
   timestamp_seconds: number;
   speaker: string;

@@ -3,6 +3,7 @@ import type {
   AgentJobEvidence,
   AgentJobResponse,
   BatchTranscript,
+  CUnitRulebookSummary,
   MetricId,
   MetricPlugin,
   PluginRequest,
@@ -171,6 +172,15 @@ export async function getSegmentationCase(caseId: string): Promise<SegmentationC
   }
   const payload = (await response.json()) as { case: SegmentationCase };
   return payload.case;
+}
+
+export async function getSegmentationRulebook(): Promise<CUnitRulebookSummary> {
+  const response = await fetch(`${API_BASE}/api/segmentation/rulebook`);
+  if (!response.ok) {
+    throw new Error("Could not load C-unit rulebook");
+  }
+  const payload = (await response.json()) as { rulebook: CUnitRulebookSummary };
+  return payload.rulebook;
 }
 
 export async function evaluateSegmentationDraft(params: {

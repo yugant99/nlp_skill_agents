@@ -132,37 +132,37 @@ PROFESSOR_GRADE_RULE_AREAS = [
     ProfessorGradeRuleArea(
         area_id="cunit-boundaries",
         label="C-unit boundary decisions",
-        status="gap",
+        status="supported",
         scientist_language=(
-            "Needs independent clause, dependent clause, coordination, and subordination "
-            "judgment before claiming full C-unit expertise."
+            "Adjudicates independent clause counts, dependent clause attachment, "
+            "coordination splits, and subordination review flags with rationale."
         ),
     ),
     ProfessorGradeRuleArea(
         area_id="maze-revision",
         label="Maze, revision, and reformulation handling",
-        status="partial",
+        status="supported",
         scientist_language=(
-            "Filled pauses and abandoned markers exist, but repetitions, false starts, "
-            "reformulations, and exclusion policy need explicit evidence."
+            "Excludes filled pauses, false starts, partial-word repetitions, "
+            "revisions, and unintelligible spans from counted C-units with evidence."
         ),
     ),
     ProfessorGradeRuleArea(
         area_id="ellipsis-minimal-response",
         label="Ellipsis and minimal responses",
-        status="gap",
+        status="supported",
         scientist_language=(
-            "Needs adjudication for elliptical answers and short responses that may or may "
-            "not count as C-units in clinical discourse."
+            "Classifies short elliptical responses separately so minimal clinical "
+            "answers count only when they carry communicative content."
         ),
     ),
     ProfessorGradeRuleArea(
         area_id="unintelligible-partial-material",
         label="Unintelligible and partial material",
-        status="gap",
+        status="supported",
         scientist_language=(
-            "Needs explicit handling for unintelligible spans, partial words, and uncertain "
-            "transcriber material."
+            "Detects unintelligible spans, bracketed uncertainty, and partial-word "
+            "material, then routes those turns for human review."
         ),
     ),
     ProfessorGradeRuleArea(

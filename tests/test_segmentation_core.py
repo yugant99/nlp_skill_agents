@@ -55,7 +55,7 @@ def test_semantic_cunit_adjudicator_classifies_boundary_decisions() -> None:
     assert maze.needs_human_review is True
 
 
-def test_rulebook_declares_supported_rules_and_professor_grade_gaps() -> None:
+def test_rulebook_declares_supported_rules_and_professor_grade_semantic_coverage() -> None:
     summary = build_cunit_rulebook_summary()
 
     assert SUPPORTED_RULE_IDS == [
@@ -75,8 +75,12 @@ def test_rulebook_declares_supported_rules_and_professor_grade_gaps() -> None:
     assert summary.corpus_rule_count == 10
     assert any(area.area_id == "cunit-boundaries" for area in PROFESSOR_GRADE_RULE_AREAS)
     assert any(
-        area.status == "gap"
+        area.status == "supported"
         and "independent clause" in area.scientist_language.lower()
+        for area in PROFESSOR_GRADE_RULE_AREAS
+    )
+    assert any(
+        area.area_id == "ellipsis-minimal-response" and area.status == "supported"
         for area in PROFESSOR_GRADE_RULE_AREAS
     )
 

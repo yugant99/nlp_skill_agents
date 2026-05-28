@@ -1018,7 +1018,7 @@ def test_segmentation_rulebook_api_exposes_coverage_and_limits() -> None:
     assert payload["corpus_rule_count"] == 10
     assert payload["rule_definitions"][0]["rule_id"] == "speaker-markers"
     assert any(
-        area["area_id"] == "cunit-boundaries" and area["status"] == "gap"
+        area["area_id"] == "cunit-boundaries" and area["status"] == "supported"
         for area in payload["professor_grade_areas"]
     )
 

@@ -1040,6 +1040,8 @@ def test_segmentation_run_rewrite_job_uses_failed_rule_routing(
     run = create_response.json()["run"]
 
     assert run["status"] == "needs_rewrite"
+    assert run["cunit_adjudication"]["counted_cunit_count"] == 1
+    assert run["cunit_adjudication"]["decisions"][0]["boundary_type"]
     assert run["failure_routes"] == [
         {
             "rule_id": "overlap-markers",

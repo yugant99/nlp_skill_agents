@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
 from backend.segmentation.corpus import generate_synthetic_corpus
 from backend.segmentation.descript import extract_descript_events
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import (
+    CUnitAdjudication,
+    CUnitBoundaryDecision,
     RawTranscriptEvent,
     SegmentationEvaluation,
     SegmentationMetrics,
@@ -74,6 +77,7 @@ class SegmentationRun:
     specialist_outputs: list[SpecialistOutput]
     merged_draft: str
     merge_evidence: MergeEvidence
+    cunit_adjudication: CUnitAdjudication
     evaluation: SegmentationEvaluation | None
     status: str
     failure_routes: list[dict[str, str]]
@@ -150,6 +154,7 @@ class SegmentationRunStore:
             expected_rule_ids=normalized_rule_ids,
             forbidden_tokens=OFFICIAL_SOURCE_GUARD_TOKENS,
         )
+        cunit_adjudication = adjudicate_cunit_boundaries(events)
         failure_routes = route_failures(evaluation.failures)
         status = _status_from_evaluation(evaluation, merge_evidence)
         run = SegmentationRun(
@@ -162,6 +167,7 @@ class SegmentationRunStore:
             specialist_outputs=specialist_outputs,
             merged_draft=merged_draft,
             merge_evidence=merge_evidence,
+            cunit_adjudication=cunit_adjudication,
             evaluation=evaluation,
             status=status,
             failure_routes=failure_routes,
@@ -267,6 +273,7 @@ class SegmentationRunStore:
             expected_rule_ids=run.rule_ids,
             forbidden_tokens=OFFICIAL_SOURCE_GUARD_TOKENS,
         )
+        cunit_adjudication = adjudicate_cunit_boundaries(run.events)
         updated_run = SegmentationRun(
             run_id=run.run_id,
             source_filename=run.source_filename,
@@ -277,6 +284,7 @@ class SegmentationRunStore:
             specialist_outputs=specialist_outputs,
             merged_draft=merged_draft,
             merge_evidence=merge_evidence,
+            cunit_adjudication=cunit_adjudication,
             evaluation=evaluation,
             status=_status_from_evaluation(evaluation, merge_evidence),
             failure_routes=route_failures(evaluation.failures),
@@ -300,6 +308,7 @@ class SegmentationRunStore:
                 "rule_plan": run.rule_plan,
                 "specialist_outputs": run.specialist_outputs,
                 "merge_evidence": run.merge_evidence,
+                "cunit_adjudication": adjudicate_cunit_boundaries(run.events),
                 "evaluation": evaluation,
                 "status": _status_from_evaluation(evaluation, run.merge_evidence),
                 "failure_routes": route_failures(evaluation.failures),
@@ -606,6 +615,18 @@ def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
                 for conflict in payload.get("merge_evidence", {}).get("conflicts", [])
             ],
         ),
+        cunit_adjudication=_adjudication_from_payload(
+            payload.get("cunit_adjudication"),
+            events=[
+                RawTranscriptEvent(
+                    timestamp_seconds=int(event["timestamp_seconds"]),
+                    speaker=str(event["speaker"]),
+                    text=str(event["text"]),
+                    source_filename=str(event.get("source_filename") or ""),
+                )
+                for event in payload.get("events", [])
+            ],
+        ),
         evaluation=_evaluation_from_payload(payload.get("evaluation")),
         status=str(payload.get("status") or "created"),
         failure_routes=[
@@ -824,5 +845,44 @@ def _evaluation_from_payload(payload: dict[str, Any] | None) -> SegmentationEval
                 line_number=failure.get("line_number"),
             )
             for failure in payload.get("failures", [])
+        ],
+    )
+
+
+def _adjudication_from_payload(
+    payload: dict[str, Any] | None,
+    *,
+    events: list[RawTranscriptEvent],
+) -> CUnitAdjudication:
+    if not payload:
+        return adjudicate_cunit_boundaries(events)
+    return CUnitAdjudication(
+        total_event_count=int(payload.get("total_event_count", 0)),
+        participant_turn_count=int(payload.get("participant_turn_count", 0)),
+        examiner_turn_count=int(payload.get("examiner_turn_count", 0)),
+        counted_cunit_count=int(payload.get("counted_cunit_count", 0)),
+        needs_review_count=int(payload.get("needs_review_count", 0)),
+        boundary_type_counts={
+            str(key): int(value)
+            for key, value in payload.get("boundary_type_counts", {}).items()
+        },
+        decisions=[
+            CUnitBoundaryDecision(
+                event_index=int(decision.get("event_index", 0)),
+                speaker=str(decision.get("speaker") or ""),
+                raw_text=str(decision.get("raw_text") or ""),
+                cleaned_text=str(decision.get("cleaned_text") or ""),
+                boundary_type=str(decision.get("boundary_type") or ""),
+                decision=str(decision.get("decision") or ""),
+                cunit_count=int(decision.get("cunit_count", 0)),
+                rationale=str(decision.get("rationale") or ""),
+                confidence=float(decision.get("confidence", 0)),
+                needs_human_review=bool(decision.get("needs_human_review", False)),
+                excluded_maze=str(decision.get("excluded_maze") or ""),
+                evidence_terms=[
+                    str(term) for term in decision.get("evidence_terms", [])
+                ],
+            )
+            for decision in payload.get("decisions", [])
         ],
     )

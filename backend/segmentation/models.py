@@ -45,3 +45,29 @@ class SegmentationEvaluation:
     metrics: SegmentationMetrics
     failures: list[SegmentationRuleFailure]
 
+
+@dataclass(frozen=True)
+class CUnitBoundaryDecision:
+    event_index: int
+    speaker: str
+    raw_text: str
+    cleaned_text: str
+    boundary_type: str
+    decision: str
+    cunit_count: int
+    rationale: str
+    confidence: float
+    needs_human_review: bool
+    excluded_maze: str = ""
+    evidence_terms: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CUnitAdjudication:
+    total_event_count: int
+    participant_turn_count: int
+    examiner_turn_count: int
+    counted_cunit_count: int
+    needs_review_count: int
+    boundary_type_counts: dict[str, int]
+    decisions: list[CUnitBoundaryDecision]

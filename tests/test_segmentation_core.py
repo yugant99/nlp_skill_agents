@@ -55,6 +55,31 @@ def test_semantic_cunit_adjudicator_classifies_boundary_decisions() -> None:
     assert maze.needs_human_review is True
 
 
+def test_semantic_cunit_adjudicator_counts_nominal_subject_clauses() -> None:
+    from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
+
+    events = extract_descript_events(
+        """
+        [00:00:00] P: Good morning, Mira.
+        [00:00:02] P: The blue cup is beside the plate.
+        [00:00:04] P: The water might spill.
+        [00:00:06] P: It feels lighter.
+        """,
+        source_filename="nominal_subject_fixture.txt",
+    )
+
+    adjudication = adjudicate_cunit_boundaries(events)
+
+    assert adjudication.counted_cunit_count == 4
+    assert adjudication.needs_review_count == 0
+    assert [decision.boundary_type for decision in adjudication.decisions] == [
+        "formulaic-communicative-unit",
+        "independent-clause",
+        "independent-clause",
+        "independent-clause",
+    ]
+
+
 def test_rulebook_declares_supported_rules_and_professor_grade_semantic_coverage() -> None:
     summary = build_cunit_rulebook_summary()
 

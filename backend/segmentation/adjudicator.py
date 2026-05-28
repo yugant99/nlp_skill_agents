@@ -26,6 +26,22 @@ DEPENDENT_STARTERS = {
     "who",
     "which",
 }
+SUBJECT_PRONOUNS = {"i", "we", "he", "she", "they", "it", "you"}
+NOMINAL_SUBJECT_STARTERS = {
+    "a",
+    "an",
+    "the",
+    "this",
+    "that",
+    "these",
+    "those",
+    "my",
+    "your",
+    "his",
+    "her",
+    "our",
+    "their",
+}
 MINIMAL_RESPONSES = {
     "yes",
     "yeah",
@@ -63,6 +79,7 @@ FINITE_VERB_TERMS = {
     "does",
     "feel",
     "felt",
+    "feels",
     "find",
     "found",
     "forgot",
@@ -106,6 +123,11 @@ FINITE_VERB_TERMS = {
     "went",
     "will",
     "would",
+    "may",
+    "might",
+    "must",
+    "shall",
+    "should",
 }
 
 _TOKEN_PATTERN = re.compile(r"[A-Za-z']+")
@@ -201,7 +223,7 @@ def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecis
             [normalized],
         )
 
-    if normalized in FORMULAIC_CUNITS:
+    if _is_formulaic_cunit(normalized):
         return _decision(
             index,
             event,
@@ -325,10 +347,26 @@ def _has_coordinate_clause(text: str) -> bool:
     return bool(re.search(r"\b(?:and|but|so)\s+(?:i|we|he|she|they|it)\s+\w+", text, re.IGNORECASE))
 
 
+def _is_formulaic_cunit(normalized: str) -> bool:
+    return any(
+        normalized == formula or normalized.startswith(f"{formula} ")
+        for formula in FORMULAIC_CUNITS
+    )
+
+
 def _has_independent_clause(tokens: list[str]) -> bool:
     lowered = [token.lower() for token in tokens]
     if not lowered:
         return False
-    has_subject = any(token in {"i", "we", "he", "she", "they", "it", "you"} for token in lowered)
-    has_verb = any(token in FINITE_VERB_TERMS or token.endswith("ed") or token.endswith("ing") for token in lowered)
-    return has_subject and has_verb
+    for index, token in enumerate(lowered):
+        if _is_finite_verb_candidate(token):
+            preceding = lowered[:index]
+            if any(candidate in SUBJECT_PRONOUNS for candidate in preceding):
+                return True
+            if any(candidate in NOMINAL_SUBJECT_STARTERS for candidate in preceding):
+                return True
+    return False
+
+
+def _is_finite_verb_candidate(token: str) -> bool:
+    return token in FINITE_VERB_TERMS or token.endswith("ed") or token.endswith("ing")

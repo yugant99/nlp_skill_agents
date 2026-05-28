@@ -45,6 +45,17 @@ def test_list_synthetic_cases_returns_demo_ready_rule_coverage() -> None:
     }
 
 
+def test_synthetic_demo_transcripts_are_large_enough_for_scientist_demo() -> None:
+    cases = list_synthetic_cases()
+
+    for case in cases:
+        descript_lines = [line for line in case.descript_text.splitlines() if line.strip()]
+        gold_lines = [line for line in case.gold_text.splitlines() if line.strip()]
+
+        assert len(descript_lines) >= 65, case.case_id
+        assert len(gold_lines) >= 65, case.case_id
+
+
 def test_extract_descript_events_reads_timestamped_speaker_turns() -> None:
     events = extract_descript_events(
         """
@@ -73,10 +84,12 @@ def test_evaluator_scores_clean_synthetic_gold_and_exposes_machine_checks() -> N
 
     assert evaluation.score == 100
     assert evaluation.failures == []
-    assert evaluation.metrics.utterance_count == 6
-    assert evaluation.metrics.time_marker_count == 2
-    assert evaluation.metrics.pause_marker_count == 2
-    assert evaluation.metrics.speaker_counts == {"P": 3, "Av": 2, "AvN": 1}
+    assert evaluation.metrics.utterance_count >= 65
+    assert evaluation.metrics.time_marker_count >= 2
+    assert evaluation.metrics.pause_marker_count >= 2
+    assert evaluation.metrics.speaker_counts["P"] >= 30
+    assert evaluation.metrics.speaker_counts["Av"] >= 30
+    assert evaluation.metrics.speaker_counts["AvN"] >= 1
     assert evaluation.metrics.special_notation_counts["redaction_comments"] == 1
     assert evaluation.metrics.special_notation_counts["omission_markers"] == 2
     assert evaluation.metrics.special_notation_counts["filled_pauses"] == 1

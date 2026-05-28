@@ -1542,17 +1542,11 @@ function SegmentationDemoPanel({
   onRunCorpus: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<
-    "source" | "gold" | "adjudication" | "verification" | "tables"
+    "source" | "specialists" | "gold" | "adjudication" | "verification" | "tables"
   >("source");
   const runLabel = run
     ? `${run.status} · ${run.merge_evidence.applied_patch_count} patches`
     : "Ready";
-
-  useEffect(() => {
-    if (evaluation) {
-      setActiveTab("verification");
-    }
-  }, [evaluation]);
 
   useEffect(() => {
     if (analysisRun) {
@@ -1565,8 +1559,8 @@ function SegmentationDemoPanel({
     onRunEndToEnd();
   }
 
-  function runPipelineAndShowGold() {
-    setActiveTab("gold");
+  function runPipelineAndShowSpecialists() {
+    setActiveTab("specialists");
     onRunPipeline();
   }
 
@@ -1596,7 +1590,7 @@ function SegmentationDemoPanel({
           </div>
         </div>
         <div className="console-toolbar-actions">
-          <button className="secondary-button mt-0" type="button" onClick={runPipelineAndShowGold}>
+          <button className="secondary-button mt-0" type="button" onClick={runPipelineAndShowSpecialists}>
             <Sparkles size={16} />
             Specialists
           </button>
@@ -1628,6 +1622,7 @@ function SegmentationDemoPanel({
       <div className="console-tabbar" role="tablist" aria-label="Transcript workflow">
         {[
           ["source", "Transcript", runSource ? "Loaded" : "Empty"],
+          ["specialists", "Specialists", run ? `${run.rule_plan.length} packets` : "Pending"],
           ["gold", "Gold Transcript", run ? run.status : "Draft"],
           [
             "adjudication",
@@ -1710,6 +1705,29 @@ function SegmentationDemoPanel({
                   </pre>
                 </div>
               </div>
+            </div>
+          ) : null}
+
+          {activeTab === "specialists" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Specialists</div>
+                  <h3>Rule packets</h3>
+                </div>
+                {run ? (
+                  <span className="casebook-pill">
+                    {run.rule_plan.length} packets
+                  </span>
+                ) : null}
+              </div>
+              {run ? (
+                <SpecialistPacketsPanel run={run} />
+              ) : (
+                <div className="quiet-empty">
+                  Run the specialist pipeline to see rule packets, patch evidence, and packet exports.
+                </div>
+              )}
             </div>
           ) : null}
 
@@ -2133,6 +2151,75 @@ function CUnitAdjudicationPanel({
             </p>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function SpecialistPacketsPanel({ run }: { run: SegmentationRun }) {
+  return (
+    <div className="space-y-3">
+      <div className="adjudication-summary">
+        <OutputFact label="Status" value={run.status} />
+        <OutputFact label="Packets" value={String(run.rule_plan.length)} />
+        <OutputFact label="Patches" value={String(run.merge_evidence.applied_patch_count)} />
+        <OutputFact label="Conflicts" value={String(run.merge_evidence.conflicts.length)} />
+      </div>
+      <div className="grid gap-3 lg:grid-cols-2">
+        {run.rule_plan.map((packet) => {
+          const output = run.specialist_outputs.find(
+            (item) => item.specialist_id === packet.specialist_id
+          );
+          return (
+            <div key={packet.specialist_id} className="adjudication-decision">
+              <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <div className="text-xs font-semibold uppercase text-[#756f64]">
+                    Specialist packet
+                  </div>
+                  <div className="text-sm font-semibold text-[#2f413f]">
+                    {packet.specialist_id}
+                  </div>
+                </div>
+                {output ? (
+                  <a
+                    className="casebook-pill"
+                    href={apiUrl(
+                      `/api/segmentation/runs/${run.run_id}/specialists/${output.specialist_id}.html`
+                    )}
+                  >
+                    packet html
+                  </a>
+                ) : null}
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {packet.rule_ids.map((ruleId) => (
+                  <span key={ruleId} className="casebook-pill muted">
+                    {ruleId}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-3 space-y-2">
+                {(output?.patches ?? []).slice(0, 5).map((patch, index) => (
+                  <div
+                    key={`${packet.specialist_id}-${patch.event_index}-${index}`}
+                    className="rounded border border-[#e4ded0] bg-white/80 px-2 py-2 font-mono text-xs text-[#5f594f]"
+                  >
+                    <div className="font-semibold text-[#2f413f]">
+                      {patch.operation}@{patch.event_index}: {patch.text || "(empty)"}
+                    </div>
+                    <div className="mt-1">{patch.reason}</div>
+                  </div>
+                ))}
+                {output && output.patches.length > 5 ? (
+                  <div className="text-xs font-semibold text-[#756f64]">
+                    +{output.patches.length - 5} more patches in packet HTML
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

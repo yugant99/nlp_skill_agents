@@ -155,7 +155,7 @@
   }
 
   .console-tabbar {
-    @apply grid shrink-0 gap-2 border-b border-[#e4ded0] bg-[#faf8f1] p-2 md:grid-cols-5;
+    @apply grid shrink-0 gap-2 border-b border-[#e4ded0] bg-[#faf8f1] p-2 md:grid-cols-6;
   }
 
   .console-tab {

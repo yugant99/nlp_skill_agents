@@ -221,6 +221,7 @@ export function App() {
   const [batchRuns, setBatchRuns] = useState<StudyBatchRunSummary[]>([]);
   const [selectedBatchRun, setSelectedBatchRun] = useState<StudyBatchRunDetail | null>(null);
   const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
+  const [isStudyWorkspaceOpen, setIsStudyWorkspaceOpen] = useState(false);
   const [segmentationCases, setSegmentationCases] = useState<SegmentationCase[]>([]);
   const [selectedSegmentationCaseId, setSelectedSegmentationCaseId] = useState("");
   const [selectedSegmentationCase, setSelectedSegmentationCase] =
@@ -1385,8 +1386,14 @@ export function App() {
               onCorpusSeedChange={setSegmentationCorpusSeed}
               onRunCorpus={runSyntheticSegmentationCorpus}
             />
-            <details className="quiet-details">
-              <summary>
+            <details className="quiet-details" open={isStudyWorkspaceOpen}>
+              <summary
+                aria-expanded={isStudyWorkspaceOpen}
+                onClick={(event) => {
+                  event.preventDefault();
+                  setIsStudyWorkspaceOpen((current) => !current);
+                }}
+              >
                 <span>Study batches and general analysis</span>
                 <span>Open for multi-transcript tables, skill outputs, and run history</span>
               </summary>

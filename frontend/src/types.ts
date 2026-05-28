@@ -68,6 +68,155 @@ export type AgentJobEvidence = {
   created_at: string;
 };
 
+export type SegmentationCase = {
+  case_id: string;
+  title: string;
+  descript_text: string;
+  gold_text: string;
+  rule_ids: string[];
+  official_source_guard_tokens: string[];
+  forbidden_source_tokens: string[];
+  source: "synthetic";
+};
+
+export type SegmentationMetrics = {
+  line_count: number;
+  utterance_count: number;
+  time_marker_count: number;
+  pause_marker_count: number;
+  speaker_counts: Record<string, number>;
+  special_notation_counts: Record<string, number>;
+};
+
+export type SegmentationRuleFailure = {
+  rule_id: string;
+  message: string;
+  line_number?: number | null;
+};
+
+export type SegmentationEvaluation = {
+  score: number;
+  metrics: SegmentationMetrics;
+  failures: SegmentationRuleFailure[];
+};
+
+export type SegmentationEvaluationResponse = {
+  case_id: string;
+  source: "synthetic";
+  evaluation: SegmentationEvaluation;
+};
+
+export type CUnitRuleDefinition = {
+  rule_id: string;
+  label: string;
+  specialist_id: string;
+  deterministic_check: string;
+  current_depth: string;
+  scientist_language: string;
+};
+
+export type ProfessorGradeRuleArea = {
+  area_id: string;
+  label: string;
+  status: string;
+  scientist_language: string;
+};
+
+export type CUnitRulebookSummary = {
+  supported_rule_count: number;
+  demo_case_rule_count: number;
+  corpus_rule_count: number;
+  rule_definitions: CUnitRuleDefinition[];
+  professor_grade_areas: ProfessorGradeRuleArea[];
+};
+
+export type SegmentationEvent = {
+  timestamp_seconds: number;
+  speaker: string;
+  text: string;
+  source_filename: string;
+};
+
+export type SegmentationRulePacket = {
+  specialist_id: string;
+  rule_ids: string[];
+};
+
+export type SegmentationPatch = {
+  operation: string;
+  event_index: number;
+  text: string;
+  reason: string;
+};
+
+export type SegmentationSpecialistOutput = {
+  specialist_id: string;
+  rule_ids: string[];
+  patches: SegmentationPatch[];
+  evidence: {
+    source_event_indexes?: number[];
+    patch_count?: number;
+    [key: string]: unknown;
+  };
+};
+
+export type SegmentationRun = {
+  run_id: string;
+  source_filename: string;
+  descript_text: string;
+  events: SegmentationEvent[];
+  rule_ids: string[];
+  rule_plan: SegmentationRulePacket[];
+  specialist_outputs: SegmentationSpecialistOutput[];
+  merged_draft: string;
+  merge_evidence: {
+    applied_patch_count: number;
+    conflicts: string[];
+  };
+  evaluation: SegmentationEvaluation | null;
+  status: string;
+  failure_routes: {
+    rule_id: string;
+    specialist_id: string;
+    message: string;
+  }[];
+  source: "synthetic";
+  created_at: string;
+};
+
+export type SegmentationRunResponse = {
+  run: SegmentationRun;
+};
+
+export type SegmentationCorpusCaseResult = {
+  case_id: string;
+  title: string;
+  run_id: string;
+  status: string;
+  expected_status: string;
+  outcome: string;
+  score: number;
+  rule_ids: string[];
+  failed_rule_ids: string[];
+};
+
+export type SegmentationCorpusRun = {
+  corpus_run_id: string;
+  seed: number;
+  status: string;
+  total_case_count: number;
+  regression_pass_count: number;
+  regression_fail_count: number;
+  rule_coverage: string[];
+  results: SegmentationCorpusCaseResult[];
+  source: "synthetic";
+  created_at: string;
+};
+
+export type SegmentationCorpusRunResponse = {
+  corpus_run: SegmentationCorpusRun;
+};
+
 export type StudyWorkspace = {
   id: string;
   name: string;

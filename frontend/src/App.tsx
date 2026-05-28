@@ -18,18 +18,28 @@ import { useEffect, useMemo, useState } from "react";
 import {
   apiUrl,
   addStudySkillPackVersion,
+  analyzeSegmentationRun,
   createAnalysisRun,
   createAgentJobEvidence,
   createPluginBuildJob,
   createPluginRequest,
+  createSegmentationCorpusRun,
+  createSegmentationFileRun,
+  createSegmentationRun,
+  createSegmentationRunRewriteJob,
+  createSegmentationRewriteJob,
   createStudy,
   createStudyFileBatch,
   createStudyTextBatch,
   createTextAnalysisRun,
   draftSkillPack,
+  evaluateSegmentationDraft,
+  getSegmentationCase,
+  getSegmentationRulebook,
   getStudyBatch,
   getStudyBatchRun,
   getStudySchema,
+  listSegmentationCases,
   listStudyBatchRuns,
   listStudyBatches,
   listAgentJobs,
@@ -37,8 +47,11 @@ import {
   listPluginRequests,
   listRuns,
   listStudies,
+  listSegmentationCorpusRuns,
+  listSegmentationRuns,
   loadSkillPack,
   refineSkillPack,
+  verifySegmentationRun,
   updateStudySchema,
   updateAgentJobStatus,
   validateSkillPack,
@@ -65,11 +78,16 @@ import { buildMetricMatrix } from "./matrixView";
 import type {
   AgentJob,
   BatchTranscript,
+  CUnitRulebookSummary,
   MetricId,
   MetricResult,
   PluginRequest,
   RunHistoryItem,
   RunResponse,
+  SegmentationCase,
+  SegmentationCorpusRun,
+  SegmentationEvaluation,
+  SegmentationRun,
   SkillPack,
   StudyBatchResponse,
   StudyBatchRunDetail,
@@ -113,6 +131,13 @@ const DEFAULT_BATCH_TRANSCRIPT_TEXT =
   "P2_c: Did medication help last night?\nP2_p: Yes, I slept better.\n---\n" +
   "participant_003.txt | participant_id=P3 | condition=home | week=week_2\n" +
   "P3_c: I will call the clinic tomorrow.\nP3_p: Thank you.";
+
+const DEFAULT_SEGMENTATION_RULE_IDS = [
+  "speaker-markers",
+  "timestamp-markers",
+  "pause-markers",
+  "filled-pauses"
+];
 
 function metadataBySourceFilename(
   transcripts: BatchTranscript[]
@@ -195,6 +220,26 @@ export function App() {
   const [batchRuns, setBatchRuns] = useState<StudyBatchRunSummary[]>([]);
   const [selectedBatchRun, setSelectedBatchRun] = useState<StudyBatchRunDetail | null>(null);
   const [studyWorkspaceStatus, setStudyWorkspaceStatus] = useState("");
+  const [segmentationCases, setSegmentationCases] = useState<SegmentationCase[]>([]);
+  const [selectedSegmentationCaseId, setSelectedSegmentationCaseId] = useState("");
+  const [selectedSegmentationCase, setSelectedSegmentationCase] =
+    useState<SegmentationCase | null>(null);
+  const [segmentationDraft, setSegmentationDraft] = useState("");
+  const [segmentationEvaluation, setSegmentationEvaluation] =
+    useState<SegmentationEvaluation | null>(null);
+  const [segmentationRunSource, setSegmentationRunSource] = useState("");
+  const [segmentationRunFile, setSegmentationRunFile] = useState<File | null>(null);
+  const [segmentationRun, setSegmentationRun] = useState<SegmentationRun | null>(null);
+  const [segmentationAnalysisRun, setSegmentationAnalysisRun] =
+    useState<RunResponse | null>(null);
+  const [segmentationRuns, setSegmentationRuns] = useState<SegmentationRun[]>([]);
+  const [segmentationCorpusSeed, setSegmentationCorpusSeed] = useState(0);
+  const [segmentationCorpusRuns, setSegmentationCorpusRuns] = useState<
+    SegmentationCorpusRun[]
+  >([]);
+  const [segmentationRulebook, setSegmentationRulebook] =
+    useState<CUnitRulebookSummary | null>(null);
+  const [segmentationStatus, setSegmentationStatus] = useState("");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
@@ -236,6 +281,26 @@ export function App() {
     listStudies()
       .then(setStudies)
       .catch(() => setStudies([]));
+    listSegmentationRuns()
+      .then(setSegmentationRuns)
+      .catch(() => setSegmentationRuns([]));
+    listSegmentationCorpusRuns()
+      .then(setSegmentationCorpusRuns)
+      .catch(() => setSegmentationCorpusRuns([]));
+    getSegmentationRulebook()
+      .then(setSegmentationRulebook)
+      .catch(() => setSegmentationRulebook(null));
+    listSegmentationCases()
+      .then((cases) => {
+        setSegmentationCases(cases);
+        if (cases[0]) {
+          setSelectedSegmentationCaseId(cases[0].case_id);
+          setSelectedSegmentationCase(cases[0]);
+          setSegmentationDraft(cases[0].gold_text);
+          setSegmentationRunSource(cases[0].descript_text);
+        }
+      })
+      .catch(() => setSegmentationStatus("Could not load segmentation cases."));
   }, []);
 
   const disfluencyTokens = useMemo(
@@ -532,6 +597,221 @@ export function App() {
     }
   }
 
+  async function selectSegmentationCase(caseId: string) {
+    try {
+      setError("");
+      setSegmentationStatus("");
+      const cachedCase = segmentationCases.find((item) => item.case_id === caseId);
+      const nextCase = cachedCase ?? (await getSegmentationCase(caseId));
+      setSelectedSegmentationCaseId(nextCase.case_id);
+      setSelectedSegmentationCase(nextCase);
+      setSegmentationDraft(nextCase.gold_text);
+      setSegmentationRunSource(nextCase.descript_text);
+      setSegmentationRun(null);
+      setSegmentationAnalysisRun(null);
+      setSegmentationEvaluation(null);
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not load segmentation case");
+    }
+  }
+
+  async function runSegmentationEvaluation() {
+    if (!selectedSegmentationCaseId || !segmentationDraft.trim()) {
+      setError("Select a synthetic case and draft before evaluating.");
+      return;
+    }
+    try {
+      setError("");
+      const response = await evaluateSegmentationDraft({
+        caseId: selectedSegmentationCaseId,
+        draftText: segmentationDraft
+      });
+      setSegmentationEvaluation(response.evaluation);
+      setSegmentationStatus(
+        response.evaluation.failures.length
+          ? `${response.evaluation.failures.length} rule issue detected.`
+          : "Verifier accepted this synthetic draft."
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not evaluate draft");
+    }
+  }
+
+  async function queueSegmentationRewriteJob() {
+    if (!selectedSegmentationCaseId) {
+      setError("Select a synthetic case before queueing a rewrite agent.");
+      return;
+    }
+    try {
+      setError("");
+      const response = await createSegmentationRewriteJob(selectedSegmentationCaseId);
+      setSegmentationStatus(
+        `Queued rewrite agent: ${response.job.id} -> ${response.job.runbook_path}`
+      );
+      setAgentJobs(await listAgentJobs());
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not queue rewrite agent");
+    }
+  }
+
+  async function runRuleSpecialistSegmentationPipeline() {
+    const ruleIds = selectedSegmentationCase?.rule_ids ?? DEFAULT_SEGMENTATION_RULE_IDS;
+    try {
+      setError("");
+      setSegmentationStatus("");
+      const nextRun = segmentationRunFile
+        ? await createSegmentationFileRun({
+            file: segmentationRunFile,
+            ruleIds
+          })
+        : await createSegmentationRun({
+            sourceFilename: selectedSegmentationCase
+              ? `${selectedSegmentationCase.case_id}.txt`
+              : "pasted_descript_export.txt",
+            descriptText: segmentationRunSource,
+            ruleIds
+          });
+      setSegmentationRun(nextRun);
+      setSegmentationAnalysisRun(null);
+      setSegmentationRuns(await listSegmentationRuns());
+      setSegmentationDraft(nextRun.merged_draft);
+      setSegmentationEvaluation(nextRun.evaluation);
+      setSegmentationStatus(
+        `Specialist pipeline ${nextRun.status}: ${nextRun.rule_plan.length} specialist packet(s), ${nextRun.merge_evidence.applied_patch_count} patch(es).`
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not run specialist pipeline");
+    }
+  }
+
+  async function verifyCurrentSegmentationRun() {
+    if (!segmentationRun) {
+      setError("Run the specialist pipeline before verifying.");
+      return;
+    }
+    try {
+      setError("");
+      const nextRun = await verifySegmentationRun(segmentationRun.run_id);
+      setSegmentationRun(nextRun);
+      setSegmentationAnalysisRun(null);
+      setSegmentationRuns(await listSegmentationRuns());
+      setSegmentationEvaluation(nextRun.evaluation);
+      setSegmentationStatus(`Verifier status: ${nextRun.status}.`);
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not verify segmentation run");
+    }
+  }
+
+  async function queueSegmentationRunRewriteJob() {
+    if (!segmentationRun) {
+      setError("Run the specialist pipeline before queueing targeted rewrite.");
+      return;
+    }
+    try {
+      setError("");
+      const response = await createSegmentationRunRewriteJob(segmentationRun.run_id);
+      setSegmentationStatus(
+        `Queued targeted rewrite: ${response.job.id} -> ${response.job.runbook_path}`
+      );
+      setAgentJobs(await listAgentJobs());
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not queue targeted rewrite");
+    }
+  }
+
+  async function analyzeCurrentSegmentationRun() {
+    if (!segmentationRun) {
+      setError("Run the specialist pipeline before analysis.");
+      return;
+    }
+    try {
+      setError("");
+      const nextRun = await analyzeSegmentationRun(segmentationRun.run_id, {
+        selectedMetrics,
+        disfluencyTokens,
+        skillPack
+      });
+      setSegmentationAnalysisRun(nextRun);
+      setRun(nextRun);
+      setRunHistory(await listRuns());
+      setSegmentationStatus(
+        `Analysis run created: ${nextRun.run_id.slice(0, 12)} with ${nextRun.results.length} metric set(s).`
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not analyze segmentation run");
+    }
+  }
+
+  async function runSegmentationEndToEnd() {
+    const ruleIds = selectedSegmentationCase?.rule_ids ?? DEFAULT_SEGMENTATION_RULE_IDS;
+    try {
+      setError("");
+      setSegmentationStatus("");
+      const nextSegmentationRun = segmentationRunFile
+        ? await createSegmentationFileRun({
+            file: segmentationRunFile,
+            ruleIds
+          })
+        : await createSegmentationRun({
+            sourceFilename: selectedSegmentationCase
+              ? `${selectedSegmentationCase.case_id}.txt`
+              : "pasted_descript_export.txt",
+            descriptText: segmentationRunSource,
+            ruleIds
+          });
+      setSegmentationRun(nextSegmentationRun);
+      setSegmentationRuns(await listSegmentationRuns());
+      setSegmentationDraft(nextSegmentationRun.merged_draft);
+      setSegmentationEvaluation(nextSegmentationRun.evaluation);
+      if (nextSegmentationRun.status !== "verified") {
+        setSegmentationAnalysisRun(null);
+        setSegmentationStatus(
+          `End-to-end paused at verifier: ${nextSegmentationRun.status}.`
+        );
+        return;
+      }
+      const nextAnalysisRun = await analyzeSegmentationRun(nextSegmentationRun.run_id, {
+        selectedMetrics,
+        disfluencyTokens,
+        skillPack
+      });
+      setSegmentationAnalysisRun(nextAnalysisRun);
+      setRun(nextAnalysisRun);
+      setRunHistory(await listRuns());
+      setSegmentationStatus(
+        `End-to-end complete: gold transcript verified and ${nextAnalysisRun.results.length} table set(s) generated.`
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(err instanceof Error ? err.message : "Could not complete end-to-end run");
+    }
+  }
+
+  async function runSyntheticSegmentationCorpus() {
+    try {
+      setError("");
+      setSegmentationStatus("");
+      const nextCorpusRun = await createSegmentationCorpusRun(segmentationCorpusSeed);
+      setSegmentationCorpusRuns(await listSegmentationCorpusRuns());
+      setSegmentationRuns(await listSegmentationRuns());
+      setSegmentationStatus(
+        `Synthetic corpus ${nextCorpusRun.status}: ${nextCorpusRun.regression_pass_count}/${nextCorpusRun.total_case_count} regression checks passed.`
+      );
+    } catch (err) {
+      setSegmentationStatus("");
+      setError(
+        err instanceof Error ? err.message : "Could not run synthetic segmentation corpus"
+      );
+    }
+  }
+
   async function runStudyWorkspaceBatch() {
     if (!skillPackPayload) {
       setError("Activate a skill pack before running a study batch.");
@@ -763,32 +1043,32 @@ export function App() {
   }
 
   return (
-    <main className="app-shell min-h-screen text-[#171717]">
-      <div className="mx-auto flex max-w-7xl flex-col gap-5 px-5 py-5 lg:px-8">
-        <header className="grid gap-5 border-b border-[#d9d4c5] pb-5 lg:grid-cols-[1fr_360px]">
+    <main className="app-shell h-screen overflow-hidden text-[#171717]">
+      <div className="mx-auto flex h-full max-w-[1500px] flex-col gap-3 px-4 py-3 sm:px-5 lg:px-6">
+        <header className="app-header">
           <div>
-            <div className="mb-3 flex items-center gap-2 text-sm font-medium text-[#47615d]">
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-[#47615d]">
               <FlaskConical size={18} />
-              Local transcript skill runner
+              Local transcript review studio
             </div>
-            <h1 className="max-w-4xl text-4xl font-semibold tracking-normal text-[#111] md:text-5xl">
-              NLP Skill Agents
+            <h1 className="max-w-4xl text-2xl font-semibold tracking-normal text-[#171717] md:text-3xl">
+              C-unit transcript workspace
             </h1>
-            <p className="mt-3 max-w-3xl text-base leading-7 text-[#4c4a44]">
-              Upload one transcript, choose deterministic research skills, and
-              generate local tables ready for dashboard composition.
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[#4c4a44]">
+              Turn one Descript-style transcript into a verified gold transcript, then
+              produce the local analysis tables a research team can inspect.
             </p>
           </div>
-          <div className="grid grid-cols-3 gap-2 self-end">
+          <div className="status-ribbon self-end">
             <StatusTile icon={<ShieldCheck size={18} />} label="Local" value="No cloud I/O" />
-            <StatusTile icon={<Database size={18} />} label="Store" value="SQLite + files" />
-            <StatusTile icon={<Activity size={18} />} label="Skills" value="Dynamic packs" />
+            <StatusTile icon={<Sparkles size={18} />} label="Agents" value="Patch-based" />
+            <StatusTile icon={<TableProperties size={18} />} label="Output" value="Transcript + tables" />
           </div>
         </header>
 
-        <section className="grid gap-5 lg:grid-cols-[380px_1fr]">
-          <aside className="space-y-4">
-            <Panel title="1. Intake" icon={<FileText size={18} />}>
+        <section className="workspace-grid">
+          <aside className="quiet-rail">
+            <Panel title="Transcript setup" icon={<FileText size={18} />}>
               <div className="mode-switch" aria-label="Transcript input mode">
                 <button
                   className={inputMode === "file" ? "mode-button mode-button-active" : "mode-button"}
@@ -881,256 +1161,310 @@ export function App() {
               </div>
             </Panel>
 
-            <Panel title="2. Skill Pack Studio" icon={<Sparkles size={18} />}>
-              <div className="studio-block">
-                <div className="engine-switch" aria-label="Skill authoring engine">
-                  <button
-                    className={
-                      authoringEngine === "local"
-                        ? "mode-button mode-button-active"
-                        : "mode-button"
-                    }
-                    type="button"
-                    onClick={() => setAuthoringEngine("local")}
-                  >
-                    Local rules
-                  </button>
-                  <button
-                    className={
-                      authoringEngine === "openrouter"
-                        ? "mode-button mode-button-active"
-                        : "mode-button"
-                    }
-                    type="button"
-                    onClick={() => setAuthoringEngine("openrouter")}
-                  >
-                    OpenRouter
-                  </button>
-                </div>
-                {authoringEngine === "openrouter" ? (
-                  <label className="field-label mt-3">
-                    Model
-                    <input
-                      className="field-input"
-                      value={authoringModel}
-                      onChange={(event) => setAuthoringModel(event.target.value)}
-                    />
-                    <span className="field-helper">
-                      Only study briefs, refinement instructions, and skill-pack schemas are sent.
-                    </span>
-                  </label>
-                ) : null}
-                <label className="field-label mt-0">
-                  Study brief
-                  <textarea
-                    className="field-input min-h-28 resize-y"
-                    value={studyBrief}
-                    onChange={(event) => setStudyBrief(event.target.value)}
-                  />
-                </label>
-                <label className="field-label">
-                  Draft name
-                  <input
-                    className="field-input"
-                    value={draftName}
-                    onChange={(event) => setDraftName(event.target.value)}
-                  />
-                </label>
-                <button className="secondary-button" type="button" onClick={draftPackFromBrief}>
-                  <Sparkles size={16} />
-                  Draft skill pack
-                </button>
-                <label className="field-label">
-                  Refinement request
-                  <textarea
-                    className="field-input min-h-20 resize-y"
-                    value={refinementInstruction}
-                    onChange={(event) => setRefinementInstruction(event.target.value)}
-                  />
-                </label>
-                <button className="secondary-button" type="button" onClick={refineActiveSkillPack}>
-                  <Sparkles size={16} />
-                  Refine active pack
-                </button>
-                {appliedChanges.length ? (
-                  <div className="applied-change-list">
-                    {appliedChanges.map((change) => (
-                      <span key={change} className="applied-change-pill">
-                        {change}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                {draftWarnings.length ? (
-                  <div className="mt-3 space-y-2">
-                    {draftWarnings.map((warning) => (
-                      <div key={warning} className="diagnostic-warning">
-                        <AlertTriangle size={16} />
-                        <span>{warning}</span>
+            <details className="quiet-details">
+              <summary>
+                <span>Advanced metric skills</span>
+                <span>Skill packs, plugins, local analysis</span>
+              </summary>
+              <div className="space-y-4 pt-4">
+                <Panel title="Skill Pack Studio" icon={<Sparkles size={18} />}>
+                  <div className="studio-block">
+                    <div className="engine-switch" aria-label="Skill authoring engine">
+                      <button
+                        className={
+                          authoringEngine === "local"
+                            ? "mode-button mode-button-active"
+                            : "mode-button"
+                        }
+                        type="button"
+                        onClick={() => setAuthoringEngine("local")}
+                      >
+                        Local rules
+                      </button>
+                      <button
+                        className={
+                          authoringEngine === "openrouter"
+                            ? "mode-button mode-button-active"
+                            : "mode-button"
+                        }
+                        type="button"
+                        onClick={() => setAuthoringEngine("openrouter")}
+                      >
+                        OpenRouter
+                      </button>
+                    </div>
+                    {authoringEngine === "openrouter" ? (
+                      <label className="field-label mt-3">
+                        Model
+                        <input
+                          className="field-input"
+                          value={authoringModel}
+                          onChange={(event) => setAuthoringModel(event.target.value)}
+                        />
+                        <span className="field-helper">
+                          Only study briefs, refinement instructions, and skill-pack schemas are sent.
+                        </span>
+                      </label>
+                    ) : null}
+                    <label className="field-label mt-0">
+                      Study brief
+                      <textarea
+                        className="field-input min-h-28 resize-y"
+                        value={studyBrief}
+                        onChange={(event) => setStudyBrief(event.target.value)}
+                      />
+                    </label>
+                    <label className="field-label">
+                      Draft name
+                      <input
+                        className="field-input"
+                        value={draftName}
+                        onChange={(event) => setDraftName(event.target.value)}
+                      />
+                    </label>
+                    <button className="secondary-button" type="button" onClick={draftPackFromBrief}>
+                      <Sparkles size={16} />
+                      Draft skill pack
+                    </button>
+                    <label className="field-label">
+                      Refinement request
+                      <textarea
+                        className="field-input min-h-20 resize-y"
+                        value={refinementInstruction}
+                        onChange={(event) => setRefinementInstruction(event.target.value)}
+                      />
+                    </label>
+                    <button className="secondary-button" type="button" onClick={refineActiveSkillPack}>
+                      <Sparkles size={16} />
+                      Refine active pack
+                    </button>
+                    {appliedChanges.length ? (
+                      <div className="applied-change-list">
+                        {appliedChanges.map((change) => (
+                          <span key={change} className="applied-change-pill">
+                            {change}
+                          </span>
+                        ))}
                       </div>
+                    ) : null}
+                    {draftWarnings.length ? (
+                      <div className="mt-3 space-y-2">
+                        {draftWarnings.map((warning) => (
+                          <div key={warning} className="diagnostic-warning">
+                            <AlertTriangle size={16} />
+                            <span>{warning}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="skill-pack-header">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-[#171717]">
+                        {skillPack?.name ?? "No active pack"}
+                      </div>
+                      <div className="mt-1 text-xs text-[#756f64]">
+                        {skillPack
+                          ? `${skillPack.id} · v${skillPack.version}`
+                          : "Upload or paste JSON/YAML"}
+                      </div>
+                    </div>
+                    <label className="json-upload-button">
+                      JSON/YAML
+                      <input
+                        className="sr-only"
+                        type="file"
+                        accept=".json,.yaml,.yml,application/json,text/yaml,application/x-yaml"
+                        onChange={(event) => void loadSkillPackFile(event.target.files?.[0] ?? null)}
+                      />
+                    </label>
+                  </div>
+                  <textarea
+                    className="field-input min-h-36 resize-y font-mono text-xs"
+                    value={skillPackJson}
+                    onChange={(event) => setSkillPackJson(event.target.value)}
+                    spellCheck={false}
+                  />
+                  <button className="secondary-button" type="button" onClick={validateCurrentSkillPack}>
+                    <Braces size={16} />
+                    Validate + activate skill pack
+                  </button>
+                  {skillPackStatus ? <p className="success-text">{skillPackStatus}</p> : null}
+                </Panel>
+
+                <Panel title="Metric Skills" icon={<TableProperties size={18} />}>
+                  <div className="space-y-2">
+                    {(skillPack?.metrics ?? selectedMetrics).map((metric) => (
+                      <label key={metric} className="metric-toggle">
+                        <input
+                          type="checkbox"
+                          checked={selectedMetrics.includes(metric)}
+                          onChange={() => toggleMetric(metric)}
+                        />
+                        <span>{metricLabel(metric)}</span>
+                      </label>
                     ))}
                   </div>
-                ) : null}
-              </div>
-              <div className="skill-pack-header">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-[#171717]">
-                    {skillPack?.name ?? "No active pack"}
-                  </div>
-                  <div className="mt-1 text-xs text-[#756f64]">
-                    {skillPack
-                      ? `${skillPack.id} · v${skillPack.version}`
-                      : "Upload or paste JSON/YAML"}
-                  </div>
-                </div>
-                <label className="json-upload-button">
-                  JSON/YAML
-                  <input
-                    className="sr-only"
-                    type="file"
-                    accept=".json,.yaml,.yml,application/json,text/yaml,application/x-yaml"
-                    onChange={(event) => void loadSkillPackFile(event.target.files?.[0] ?? null)}
-                  />
-                </label>
-              </div>
-              <textarea
-                className="field-input min-h-36 resize-y font-mono text-xs"
-                value={skillPackJson}
-                onChange={(event) => setSkillPackJson(event.target.value)}
-                spellCheck={false}
-              />
-              <button className="secondary-button" type="button" onClick={validateCurrentSkillPack}>
-                <Braces size={16} />
-                Validate + activate skill pack
-              </button>
-              {skillPackStatus ? <p className="success-text">{skillPackStatus}</p> : null}
-            </Panel>
-
-            <Panel title="3. Skills" icon={<TableProperties size={18} />}>
-              <div className="space-y-2">
-                {(skillPack?.metrics ?? selectedMetrics).map((metric) => (
-                  <label key={metric} className="metric-toggle">
-                    <input
-                      type="checkbox"
-                      checked={selectedMetrics.includes(metric)}
-                      onChange={() => toggleMetric(metric)}
+                  <label className="field-label">
+                    Disfluency inventory
+                    <textarea
+                      className="field-input min-h-24 resize-y"
+                      value={disfluencyText}
+                      onChange={(event) => setDisfluencyText(event.target.value)}
                     />
-                    <span>{metricLabel(metric)}</span>
                   </label>
-                ))}
+                  <button className="run-button" disabled={isRunning} onClick={runAnalysis}>
+                    {isRunning ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
+                    Run local analysis
+                  </button>
+                  <PluginCatalog
+                    plugins={metricPlugins}
+                    activeMetrics={selectedMetrics}
+                    requests={pluginRequests}
+                    jobs={agentJobs}
+                    requestTitle={pluginRequestTitle}
+                    requestQuestion={pluginRequestQuestion}
+                    requestColumns={pluginRequestColumns}
+                    requestExample={pluginRequestExample}
+                    requestExpected={pluginRequestExpected}
+                    requestStatus={pluginRequestStatus}
+                    jobStatus={pluginJobStatus}
+                    onRequestTitleChange={setPluginRequestTitle}
+                    onRequestQuestionChange={setPluginRequestQuestion}
+                    onRequestColumnsChange={setPluginRequestColumns}
+                    onRequestExampleChange={setPluginRequestExample}
+                    onRequestExpectedChange={setPluginRequestExpected}
+                    onSubmitRequest={submitPluginRequest}
+                    onQueueBuildJob={queuePluginBuildJob}
+                    onUpdateJobStatus={updatePluginJobStatus}
+                    onRecordEvidence={recordPluginJobEvidence}
+                  />
+                  {error ? <p className="error-text">{error}</p> : null}
+                </Panel>
               </div>
-              <label className="field-label">
-                Disfluency inventory
-                <textarea
-                  className="field-input min-h-24 resize-y"
-                  value={disfluencyText}
-                  onChange={(event) => setDisfluencyText(event.target.value)}
-                />
-              </label>
-              <button className="run-button" disabled={isRunning} onClick={runAnalysis}>
-                {isRunning ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} />}
-                Run local analysis
-              </button>
-              <PluginCatalog
-                plugins={metricPlugins}
-                activeMetrics={selectedMetrics}
-                requests={pluginRequests}
-                jobs={agentJobs}
-                requestTitle={pluginRequestTitle}
-                requestQuestion={pluginRequestQuestion}
-                requestColumns={pluginRequestColumns}
-                requestExample={pluginRequestExample}
-                requestExpected={pluginRequestExpected}
-                requestStatus={pluginRequestStatus}
-                jobStatus={pluginJobStatus}
-                onRequestTitleChange={setPluginRequestTitle}
-                onRequestQuestionChange={setPluginRequestQuestion}
-                onRequestColumnsChange={setPluginRequestColumns}
-                onRequestExampleChange={setPluginRequestExample}
-                onRequestExpectedChange={setPluginRequestExpected}
-                onSubmitRequest={submitPluginRequest}
-                onQueueBuildJob={queuePluginBuildJob}
-                onUpdateJobStatus={updatePluginJobStatus}
-                onRecordEvidence={recordPluginJobEvidence}
-              />
-              {error ? <p className="error-text">{error}</p> : null}
-            </Panel>
+            </details>
           </aside>
 
-          <section className="space-y-4">
-            <Panel title="4. Run Output" icon={<Database size={18} />}>
-              {run ? (
-                <div className="space-y-4">
-                  <RunSummaryStrip run={run} />
-                  <DiagnosticsPanel run={run} />
-                  <div className="grid gap-3 md:grid-cols-3">
-                    <OutputFact label="Run ID" value={run.run_id.slice(0, 12)} />
-                    <OutputFact label="Transcript" value={run.source_filename} />
-                    <OutputFact label="Turns" value={String(run.turn_count)} />
-                    {run.skill_pack ? (
-                      <OutputFact
-                        label="Skill pack"
-                        value={`${run.skill_pack.name} v${run.skill_pack.version}`}
-                      />
-                    ) : null}
-                    <OutputFact label="JSON" value={run.stored.results_json} wide />
-                    <OutputFact label="Exports" value={run.stored.export_dir} wide />
-                  </div>
-                </div>
-              ) : (
-                <EmptyState />
-              )}
-            </Panel>
-
-            {run?.results.map((result) => (
-              <MetricTable
-                key={result.metric_id}
-                result={result}
-                downloadUrl={
-                  run.exports.find((item) => item.metric_id === result.metric_id)
-                    ?.download_url
-                }
-              />
-            ))}
-            <StudyWorkspacePanel
-              studies={studies}
-              selectedStudyId={selectedStudyId}
-              studyName={studyName}
-              studyDescription={studyDescription}
-              casebookParticipantCount={casebookParticipantCount}
-              casebookConditions={casebookConditions}
-              casebookWeekCount={casebookWeekCount}
-              casebookCustomFields={casebookCustomFields}
-              casebookOptions={casebookOptions}
-              casebookWarnings={casebookWarnings}
-              batchTranscriptText={batchTranscriptText}
-              batchTranscripts={batchTranscripts}
-              batchParseError={batchParseError}
-              batchUploadStatus={batchUploadStatus}
-              studyBatches={studyBatches}
-              batch={studyBatch}
-              batchRuns={batchRuns}
-              selectedBatchRun={selectedBatchRun}
-              status={studyWorkspaceStatus}
-              onStudyNameChange={setStudyName}
-              onStudyDescriptionChange={setStudyDescription}
-              onSelectStudy={selectExistingStudy}
-              onStartNewStudy={startNewStudy}
-              onCasebookParticipantCountChange={setCasebookParticipantCount}
-              onCasebookConditionsChange={setCasebookConditions}
-              onCasebookWeekCountChange={setCasebookWeekCount}
-              onCasebookCustomFieldsChange={setCasebookCustomFields}
-              onApplyCasebookTemplate={applyCasebookTemplate}
-              onBatchTranscriptTextChange={updateBatchTranscriptText}
-              onBatchFilesSelected={importBatchFiles}
-              onCasebookCsvExport={exportCurrentCasebookCsv}
-              onCasebookCsvImport={importCasebookCsv}
-              onBatchAssignmentChange={updateBatchAssignment}
-              onLoadBatch={loadStudyBatch}
-              onLoadBatchRun={loadStudyBatchRun}
-              onRunBatch={runStudyWorkspaceBatch}
+          <section className="main-workspace">
+            <SegmentationDemoPanel
+              cases={segmentationCases}
+              selectedCase={selectedSegmentationCase}
+              selectedCaseId={selectedSegmentationCaseId}
+              draft={segmentationDraft}
+              evaluation={segmentationEvaluation}
+              runSource={segmentationRunSource}
+              runFile={segmentationRunFile}
+              run={segmentationRun}
+              analysisRun={segmentationAnalysisRun}
+              runs={segmentationRuns}
+              corpusSeed={segmentationCorpusSeed}
+              corpusRuns={segmentationCorpusRuns}
+              rulebook={segmentationRulebook}
+              status={segmentationStatus}
+              onSelectCase={selectSegmentationCase}
+              onDraftChange={setSegmentationDraft}
+              onRunSourceChange={(value) => {
+                setSegmentationRunSource(value);
+                setSegmentationRunFile(null);
+              }}
+              onRunFileChange={setSegmentationRunFile}
+              onSelectRun={setSegmentationRun}
+              onUseGoldDraft={() =>
+                selectedSegmentationCase
+                  ? setSegmentationDraft(selectedSegmentationCase.gold_text)
+                  : undefined
+              }
+              onEvaluate={runSegmentationEvaluation}
+              onRunPipeline={runRuleSpecialistSegmentationPipeline}
+              onRunEndToEnd={runSegmentationEndToEnd}
+              onVerifyRun={verifyCurrentSegmentationRun}
+              onQueueRewriteJob={queueSegmentationRewriteJob}
+              onQueueRunRewriteJob={queueSegmentationRunRewriteJob}
+              onAnalyzeRun={analyzeCurrentSegmentationRun}
+              onCorpusSeedChange={setSegmentationCorpusSeed}
+              onRunCorpus={runSyntheticSegmentationCorpus}
             />
-            <RecentRunsPanel runs={runHistory} />
+            <details className="quiet-details">
+              <summary>
+                <span>Study batches and general analysis</span>
+                <span>Open for multi-transcript tables, skill outputs, and run history</span>
+              </summary>
+              <div className="space-y-4 pt-4">
+                <Panel title="Run Output" icon={<Database size={18} />}>
+                  {run ? (
+                    <div className="space-y-4">
+                      <RunSummaryStrip run={run} />
+                      <DiagnosticsPanel run={run} />
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <OutputFact label="Run ID" value={run.run_id.slice(0, 12)} />
+                        <OutputFact label="Transcript" value={run.source_filename} />
+                        <OutputFact label="Turns" value={String(run.turn_count)} />
+                        {run.skill_pack ? (
+                          <OutputFact
+                            label="Skill pack"
+                            value={`${run.skill_pack.name} v${run.skill_pack.version}`}
+                          />
+                        ) : null}
+                        <OutputFact label="JSON" value={run.stored.results_json} wide />
+                        <OutputFact label="Exports" value={run.stored.export_dir} wide />
+                      </div>
+                    </div>
+                  ) : (
+                    <EmptyState />
+                  )}
+                </Panel>
+
+                {run?.results.map((result) => (
+                  <MetricTable
+                    key={result.metric_id}
+                    result={result}
+                    downloadUrl={
+                      run.exports.find((item) => item.metric_id === result.metric_id)
+                        ?.download_url
+                    }
+                  />
+                ))}
+                <StudyWorkspacePanel
+                  studies={studies}
+                  selectedStudyId={selectedStudyId}
+                  studyName={studyName}
+                  studyDescription={studyDescription}
+                  casebookParticipantCount={casebookParticipantCount}
+                  casebookConditions={casebookConditions}
+                  casebookWeekCount={casebookWeekCount}
+                  casebookCustomFields={casebookCustomFields}
+                  casebookOptions={casebookOptions}
+                  casebookWarnings={casebookWarnings}
+                  batchTranscriptText={batchTranscriptText}
+                  batchTranscripts={batchTranscripts}
+                  batchParseError={batchParseError}
+                  batchUploadStatus={batchUploadStatus}
+                  studyBatches={studyBatches}
+                  batch={studyBatch}
+                  batchRuns={batchRuns}
+                  selectedBatchRun={selectedBatchRun}
+                  status={studyWorkspaceStatus}
+                  onStudyNameChange={setStudyName}
+                  onStudyDescriptionChange={setStudyDescription}
+                  onSelectStudy={selectExistingStudy}
+                  onStartNewStudy={startNewStudy}
+                  onCasebookParticipantCountChange={setCasebookParticipantCount}
+                  onCasebookConditionsChange={setCasebookConditions}
+                  onCasebookWeekCountChange={setCasebookWeekCount}
+                  onCasebookCustomFieldsChange={setCasebookCustomFields}
+                  onApplyCasebookTemplate={applyCasebookTemplate}
+                  onBatchTranscriptTextChange={updateBatchTranscriptText}
+                  onBatchFilesSelected={importBatchFiles}
+                  onCasebookCsvExport={exportCurrentCasebookCsv}
+                  onCasebookCsvImport={importCasebookCsv}
+                  onBatchAssignmentChange={updateBatchAssignment}
+                  onLoadBatch={loadStudyBatch}
+                  onLoadBatchRun={loadStudyBatchRun}
+                  onRunBatch={runStudyWorkspaceBatch}
+                />
+                <RecentRunsPanel runs={runHistory} />
+              </div>
+            </details>
           </section>
         </section>
       </div>
@@ -1138,9 +1472,731 @@ export function App() {
   );
 }
 
+function SegmentationDemoPanel({
+  cases,
+  selectedCase,
+  selectedCaseId,
+  draft,
+  evaluation,
+  runSource,
+  runFile,
+  run,
+  analysisRun,
+  runs,
+  corpusSeed,
+  corpusRuns,
+  rulebook,
+  status,
+  onSelectCase,
+  onDraftChange,
+  onRunSourceChange,
+  onRunFileChange,
+  onSelectRun,
+  onUseGoldDraft,
+  onEvaluate,
+  onRunPipeline,
+  onRunEndToEnd,
+  onVerifyRun,
+  onQueueRewriteJob,
+  onQueueRunRewriteJob,
+  onAnalyzeRun,
+  onCorpusSeedChange,
+  onRunCorpus
+}: {
+  cases: SegmentationCase[];
+  selectedCase: SegmentationCase | null;
+  selectedCaseId: string;
+  draft: string;
+  evaluation: SegmentationEvaluation | null;
+  runSource: string;
+  runFile: File | null;
+  run: SegmentationRun | null;
+  analysisRun: RunResponse | null;
+  runs: SegmentationRun[];
+  corpusSeed: number;
+  corpusRuns: SegmentationCorpusRun[];
+  rulebook: CUnitRulebookSummary | null;
+  status: string;
+  onSelectCase: (caseId: string) => void;
+  onDraftChange: (value: string) => void;
+  onRunSourceChange: (value: string) => void;
+  onRunFileChange: (file: File | null) => void;
+  onSelectRun: (run: SegmentationRun) => void;
+  onUseGoldDraft: () => void;
+  onEvaluate: () => void;
+  onRunPipeline: () => void;
+  onRunEndToEnd: () => void;
+  onVerifyRun: () => void;
+  onQueueRewriteJob: () => void;
+  onQueueRunRewriteJob: () => void;
+  onAnalyzeRun: () => void;
+  onCorpusSeedChange: (seed: number) => void;
+  onRunCorpus: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<
+    "source" | "gold" | "verification" | "tables"
+  >("source");
+  const runLabel = run
+    ? `${run.status} · ${run.merge_evidence.applied_patch_count} patches`
+    : "Ready";
+
+  useEffect(() => {
+    if (evaluation) {
+      setActiveTab("verification");
+    }
+  }, [evaluation]);
+
+  useEffect(() => {
+    if (analysisRun) {
+      setActiveTab("tables");
+    }
+  }, [analysisRun]);
+
+  function runEndToEndAndShowTables() {
+    setActiveTab("tables");
+    onRunEndToEnd();
+  }
+
+  function runPipelineAndShowGold() {
+    setActiveTab("gold");
+    onRunPipeline();
+  }
+
+  function verifyAndShowEvidence() {
+    setActiveTab("verification");
+    onVerifyRun();
+  }
+
+  function evaluateAndShowEvidence() {
+    setActiveTab("verification");
+    onEvaluate();
+  }
+
+  function analyzeAndShowTables() {
+    setActiveTab("tables");
+    onAnalyzeRun();
+  }
+
+  return (
+    <section className="console-panel">
+      <div className="console-toolbar">
+        <div className="min-w-0">
+          <div className="section-kicker">C-unit specialist pipeline</div>
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <h2>Transcript console</h2>
+            <span className="console-status-pill">{runLabel}</span>
+          </div>
+        </div>
+        <div className="console-toolbar-actions">
+          <button className="secondary-button mt-0" type="button" onClick={runPipelineAndShowGold}>
+            <Sparkles size={16} />
+            Specialists
+          </button>
+          <button
+            className="secondary-button mt-0"
+            type="button"
+            onClick={verifyAndShowEvidence}
+            disabled={!run}
+          >
+            <ShieldCheck size={16} />
+            Verify
+          </button>
+          <button
+            className="secondary-button mt-0"
+            type="button"
+            onClick={analyzeAndShowTables}
+            disabled={!run || run.status !== "verified"}
+          >
+            <TableProperties size={16} />
+            Tables
+          </button>
+          <button className="run-button mt-0" type="button" onClick={runEndToEndAndShowTables}>
+            <Play size={16} />
+            Generate gold transcript
+          </button>
+        </div>
+      </div>
+
+      <div className="console-tabbar" role="tablist" aria-label="Transcript workflow">
+        {[
+          ["source", "Transcript", runSource ? "Loaded" : "Empty"],
+          ["gold", "Gold Transcript", run ? run.status : "Draft"],
+          ["verification", "Verification", evaluation ? `Score ${evaluation.score}` : "Pending"],
+          ["tables", "Analysis Tables", analysisRun ? `${analysisRun.results.length} tables` : "Pending"]
+        ].map(([id, label, meta]) => (
+          <button
+            key={id}
+            className={activeTab === id ? "console-tab console-tab-active" : "console-tab"}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === id}
+            onClick={() => setActiveTab(id as typeof activeTab)}
+          >
+            <span>{label}</span>
+            <span>{meta}</span>
+          </button>
+        ))}
+      </div>
+
+      <div className="console-grid">
+        <div className="console-stage">
+          {activeTab === "source" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Source</div>
+                  <h3>Transcript input</h3>
+                </div>
+                {selectedCase ? <span className="casebook-pill">{selectedCase.source}</span> : null}
+              </div>
+              <div className="two-pane-editor">
+                <div>
+                  <label className="field-label mt-0">
+                    Synthetic case
+                    <select
+                      className="field-input"
+                      value={selectedCaseId}
+                      onChange={(event) => onSelectCase(event.target.value)}
+                    >
+                      {cases.map((item) => (
+                        <option key={item.case_id} value={item.case_id}>
+                          {item.title}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field-label">
+                    Descript input
+                    <textarea
+                      className="field-input console-textarea"
+                      value={runSource}
+                      onChange={(event) => onRunSourceChange(event.target.value)}
+                    />
+                  </label>
+                  <label className="field-label">
+                    TXT export
+                    <input
+                      className="field-input"
+                      type="file"
+                      accept=".txt,text/plain"
+                      onChange={(event) => onRunFileChange(event.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                  {runFile ? (
+                    <div className="field-helper">
+                      Using upload: <span className="font-semibold">{runFile.name}</span>
+                    </div>
+                  ) : null}
+                </div>
+                <div className="reference-panel h-full">
+                  <div className="mb-2 text-sm font-semibold text-[#2f413f]">
+                    Synthetic reference
+                  </div>
+                  <pre className="transcript-preview transcript-preview-tall">
+                    {selectedCase?.descript_text ?? "No synthetic case loaded."}
+                  </pre>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {activeTab === "gold" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Merge</div>
+                  <h3>Gold transcript</h3>
+                </div>
+                {run ? <span className="casebook-pill">{run.status}</span> : null}
+              </div>
+              <label className="field-label mt-0">
+                Draft to verify
+                <textarea
+                  className="field-input console-textarea console-textarea-large"
+                  value={draft}
+                  onChange={(event) => onDraftChange(event.target.value)}
+                />
+              </label>
+              <div className="action-row">
+                <button className="secondary-button mt-0" type="button" onClick={onUseGoldDraft}>
+                  <FileCheck2 size={16} />
+                  Use gold
+                </button>
+                <button className="primary-button mt-0" type="button" onClick={evaluateAndShowEvidence}>
+                  <Play size={16} />
+                  Verify draft
+                </button>
+                <button
+                  className="secondary-button mt-0"
+                  type="button"
+                  onClick={onQueueRunRewriteJob}
+                  disabled={!run || !run.failure_routes.length}
+                >
+                  <FileUp size={16} />
+                  Rewrite
+                </button>
+                <button className="secondary-button mt-0" type="button" onClick={onQueueRewriteJob}>
+                  <Sparkles size={16} />
+                  Queue agent
+                </button>
+              </div>
+              {status ? <div className="success-text">{status}</div> : null}
+            </div>
+          ) : null}
+
+          {activeTab === "verification" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Verification</div>
+                  <h3>Rule evidence</h3>
+                </div>
+                {evaluation ? <span className="casebook-pill">score {evaluation.score}</span> : null}
+              </div>
+              {evaluation ? (
+                <SegmentationEvaluationPanel evaluation={evaluation} />
+              ) : (
+                <div className="quiet-empty">
+                  Run the verifier to see score, notation counts, and routed failures.
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          {activeTab === "tables" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Analysis</div>
+                  <h3>Tables</h3>
+                </div>
+                {analysisRun ? (
+                  <span className="casebook-pill">{analysisRun.results.length} table sets</span>
+                ) : null}
+              </div>
+              {analysisRun ? <SegmentationAnalysisTables run={analysisRun} /> : <EmptyState />}
+            </div>
+          ) : null}
+        </div>
+
+        <aside className="console-inspector">
+          <div className="inspector-section">
+            <div>
+              <div className="section-kicker">Run state</div>
+              <h3>Current transcript</h3>
+            </div>
+            <div className="inspector-facts">
+              <OutputFact label="Status" value={run?.status ?? "not run"} />
+              <OutputFact
+                label="Specialists"
+                value={run ? String(run.rule_plan.length) : "0"}
+              />
+              <OutputFact
+                label="Tables"
+                value={analysisRun ? String(analysisRun.results.length) : "0"}
+              />
+            </div>
+          </div>
+          <div className="inspector-section">
+            <div className="section-kicker">Selected rules</div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {selectedCase ? (
+                <>
+                  {selectedCase.rule_ids.slice(0, 5).map((ruleId) => (
+                    <span key={ruleId} className="casebook-pill muted">
+                      {ruleId}
+                    </span>
+                  ))}
+                </>
+              ) : (
+                <span className="text-sm text-[#676157]">No case selected.</span>
+              )}
+            </div>
+          </div>
+          {rulebook ? (
+            <div className="inspector-section">
+              <div className="section-kicker">Agent coverage</div>
+              <h3>What it knows now</h3>
+              <div className="inspector-facts">
+                <OutputFact
+                  label="Supported rules"
+                  value={String(rulebook.supported_rule_count)}
+                />
+                <OutputFact
+                  label="Demo covers"
+                  value={`${rulebook.demo_case_rule_count}/10`}
+                />
+                <OutputFact
+                  label="Corpus covers"
+                  value={`${rulebook.corpus_rule_count}/10`}
+                />
+              </div>
+              <div className="mt-3 grid gap-2">
+                {rulebook.professor_grade_areas.slice(0, 3).map((area) => (
+                  <div key={area.area_id} className="rulebook-gap">
+                    <div>
+                      <span>{area.label}</span>
+                      <strong>{area.status}</strong>
+                    </div>
+                    <p>{area.scientist_language}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {run ? (
+            <div className="inspector-section">
+              <SegmentationRunPanel run={run} />
+            </div>
+          ) : null}
+          {runs.length ? (
+            <div className="inspector-section">
+              <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+                Recent segmentation runs
+              </div>
+              <div className="space-y-2">
+                {runs.slice(0, 3).map((item) => (
+                  <button
+                    key={item.run_id}
+                    className="recent-run-row w-full text-left"
+                    type="button"
+                    onClick={() => {
+                      onSelectRun(item);
+                      onRunSourceChange(item.descript_text);
+                      onDraftChange(item.merged_draft);
+                      setActiveTab("gold");
+                    }}
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-[#171717]">
+                        {item.source_filename}
+                      </div>
+                      <div className="mt-1 font-mono text-xs text-[#756f64]">
+                        {item.run_id.slice(0, 12)} · {item.status}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          <details className="subtle-details">
+            <summary>Synthetic regression corpus</summary>
+            <div className="mt-3 grid gap-2">
+              <label className="field-label mt-0">
+                Seed
+                <input
+                  className="field-input"
+                  min={0}
+                  type="number"
+                  value={corpusSeed}
+                  onChange={(event) =>
+                    onCorpusSeedChange(Number(event.target.value || 0))
+                  }
+                />
+              </label>
+              <button className="primary-button" type="button" onClick={onRunCorpus}>
+                <Activity size={16} />
+                Run corpus
+              </button>
+              {corpusRuns[0] ? <SegmentationCorpusRunPanel corpusRun={corpusRuns[0]} /> : null}
+            </div>
+          </details>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function SegmentationAnalysisTables({ run }: { run: RunResponse }) {
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-[#2f413f]">Analysis tables</div>
+        <div className="font-mono text-xs text-[#756f64]">
+          {run.run_id.slice(0, 12)} · {run.turn_count} turns
+        </div>
+      </div>
+      <RunSummaryStrip run={run} />
+      <div className="mt-3 space-y-3">
+        {run.results.map((result) => (
+          <InlineMetricTable
+            key={result.metric_id}
+            result={result}
+            downloadUrl={
+              run.exports.find((item) => item.metric_id === result.metric_id)
+                ?.download_url
+            }
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InlineMetricTable({
+  result,
+  downloadUrl
+}: {
+  result: MetricResult;
+  downloadUrl?: string;
+}) {
+  const columns = Array.from(new Set(result.rows.flatMap((row) => Object.keys(row))));
+  return (
+    <div className="rounded-md border border-[#e3ded2] bg-white/70 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-[#2f413f]">{result.label}</div>
+        {downloadUrl ? (
+          <a className="export-link" href={apiUrl(downloadUrl)}>
+            <Download size={16} />
+            CSV
+          </a>
+        ) : null}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[620px] border-collapse text-left text-sm">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th key={column} className="table-head">
+                  {column.replaceAll("_", " ")}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {result.rows.map((row, index) => (
+              <tr key={index} className="border-t border-[#e4ded0]">
+                {columns.map((column) => (
+                  <td key={column} className="table-cell">
+                    {formatCell(row[column])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SegmentationCorpusRunPanel({
+  corpusRun
+}: {
+  corpusRun: SegmentationCorpusRun;
+}) {
+  return (
+    <div className="mt-3 space-y-2">
+      <div className="flex flex-wrap gap-2 text-xs">
+        <span className="casebook-pill">{corpusRun.status}</span>
+        <span className="casebook-pill muted">
+          {corpusRun.regression_pass_count}/{corpusRun.total_case_count} checks
+        </span>
+        <span className="casebook-pill muted">
+          {corpusRun.rule_coverage.length} rules
+        </span>
+      </div>
+      <div className="space-y-2">
+        {corpusRun.results.map((result) => (
+          <div
+            key={`${corpusRun.corpus_run_id}-${result.case_id}`}
+            className="rounded-md border border-[#e3ded2] bg-white/70 p-2"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0 text-sm font-semibold text-[#2f413f]">
+                {result.case_id}
+              </div>
+              <div className="font-mono text-xs text-[#756f64]">
+                {result.outcome} · {result.status}/{result.expected_status} ·{" "}
+                {result.score}
+              </div>
+            </div>
+            {result.failed_rule_ids.length ? (
+              <div className="mt-1 text-xs text-[#756f64]">
+                {result.failed_rule_ids.join(", ")}
+              </div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SegmentationRunPanel({ run }: { run: SegmentationRun }) {
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1] p-3">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <span className="casebook-pill">{run.status}</span>
+        <span className="casebook-pill muted">
+          {run.rule_plan.length} specialist packet
+          {run.rule_plan.length === 1 ? "" : "s"}
+        </span>
+        <span className="casebook-pill muted">
+          {run.merge_evidence.applied_patch_count} patch
+          {run.merge_evidence.applied_patch_count === 1 ? "" : "es"}
+        </span>
+        <a
+          className="casebook-pill"
+          href={apiUrl(`/api/segmentation/runs/${run.run_id}/exports/final_transcript.txt`)}
+        >
+          final transcript
+        </a>
+        <a
+          className="casebook-pill"
+          href={apiUrl(`/api/segmentation/runs/${run.run_id}/exports/evidence.json`)}
+        >
+          evidence json
+        </a>
+      </div>
+      <div className="mt-3">
+        <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+          Merged draft
+        </div>
+        <pre className="transcript-preview">{run.merged_draft}</pre>
+      </div>
+      <details className="subtle-details">
+        <summary>Specialist packets and patch evidence</summary>
+        <div className="mt-3 grid gap-3 lg:grid-cols-2">
+          <div>
+            <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+              Rule plan
+            </div>
+            <div className="space-y-2">
+              {run.rule_plan.map((packet) => (
+                <div
+                  key={packet.specialist_id}
+                  className="rounded-md border border-[#d9d4c5] bg-white/80 p-2"
+                >
+                  <div className="text-sm font-semibold text-[#2f413f]">
+                    {packet.specialist_id}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {packet.rule_ids.map((ruleId) => (
+                      <span key={ruleId} className="casebook-pill muted">
+                        {ruleId}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+              Specialist patches
+            </div>
+            <div className="space-y-2">
+              {run.specialist_outputs.map((output) => (
+                <div
+                  key={output.specialist_id}
+                  className="rounded-md border border-[#d9d4c5] bg-white/80 p-2"
+                >
+                  <div className="text-sm font-semibold text-[#2f413f]">
+                    {output.specialist_id}
+                  </div>
+                  <a
+                    className="mt-1 inline-block text-xs font-semibold text-[#2f5b50] underline"
+                    href={apiUrl(
+                      `/api/segmentation/runs/${run.run_id}/specialists/${output.specialist_id}.html`
+                    )}
+                  >
+                    open specialist packet
+                  </a>
+                  {output.patches.slice(0, 3).map((patch, index) => (
+                    <div
+                      key={`${output.specialist_id}-${patch.event_index}-${index}`}
+                      className="mt-1 font-mono text-xs text-[#5f594f]"
+                    >
+                      {patch.operation}@{patch.event_index}: {patch.text}
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </details>
+      {run.failure_routes.length ? (
+        <div className="mt-3 space-y-2">
+          {run.failure_routes.map((route) => (
+            <div key={`${route.rule_id}-${route.specialist_id}`} className="error-row">
+              <AlertTriangle size={15} />
+              <div>
+                <div className="font-semibold">
+                  {route.rule_id} {"->"} {route.specialist_id}
+                </div>
+                <div>{route.message}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SegmentationEvaluationPanel({
+  evaluation
+}: {
+  evaluation: SegmentationEvaluation;
+}) {
+  const metrics = evaluation.metrics;
+  return (
+    <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+      <div className="grid gap-3 sm:grid-cols-4">
+        <OutputFact label="Score" value={String(evaluation.score)} />
+        <OutputFact label="Utterances" value={String(metrics.utterance_count)} />
+        <OutputFact label="Times" value={String(metrics.time_marker_count)} />
+        <OutputFact label="Pauses" value={String(metrics.pause_marker_count)} />
+      </div>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        <div>
+          <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+            Speakers
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(metrics.speaker_counts).map(([speaker, count]) => (
+              <span key={speaker} className="casebook-pill">
+                {speaker}: {count}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">
+            Notation
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(metrics.special_notation_counts).map(([key, count]) => (
+              <span key={key} className="casebook-pill muted">
+                {key}: {count}
+              </span>
+            ))}
+          </div>
+        </div>
+      </div>
+      {evaluation.failures.length ? (
+        <div className="mt-3 space-y-2">
+          {evaluation.failures.map((failure, index) => (
+            <div key={`${failure.rule_id}-${index}`} className="error-row">
+              <AlertTriangle size={15} />
+              <div>
+                <div className="font-semibold">{failure.rule_id}</div>
+                <div>{failure.message}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RecentRunsPanel({ runs }: { runs: RunHistoryItem[] }) {
   return (
-    <Panel title="5. Recent Local Runs" icon={<Database size={18} />}>
+    <Panel title="7. Recent Local Runs" icon={<Database size={18} />}>
       {runs.length ? (
         <div className="recent-runs-list">
           {runs.slice(0, 5).map((item) => (
@@ -2070,9 +3126,9 @@ function Panel(props: { title: string; icon: React.ReactNode; children: React.Re
 
 function StatusTile(props: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
+    <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-2.5">
       <div className="flex items-center gap-2 text-[#47615d]">{props.icon}</div>
-      <div className="mt-2 text-xs uppercase text-[#756f64]">{props.label}</div>
+      <div className="mt-1.5 text-xs uppercase text-[#756f64]">{props.label}</div>
       <div className="mt-1 text-sm font-semibold">{props.value}</div>
     </div>
   );

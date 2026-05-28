@@ -3,12 +3,19 @@ import type {
   AgentJobEvidence,
   AgentJobResponse,
   BatchTranscript,
+  CUnitRulebookSummary,
   MetricId,
   MetricPlugin,
   PluginRequest,
   PluginRequestResponse,
   RunHistoryItem,
   RunResponse,
+  SegmentationCase,
+  SegmentationCorpusRun,
+  SegmentationCorpusRunResponse,
+  SegmentationEvaluationResponse,
+  SegmentationRun,
+  SegmentationRunResponse,
   SkillPack,
   SkillPackDraftResponse,
   SkillPackRefineResponse,
@@ -146,6 +153,200 @@ export async function createAgentJobEvidence(params: {
   }
   const payload = (await response.json()) as { evidence: AgentJobEvidence };
   return payload.evidence;
+}
+
+export async function listSegmentationCases(): Promise<SegmentationCase[]> {
+  const response = await fetch(`${API_BASE}/api/segmentation/cases`);
+  if (!response.ok) {
+    throw new Error("Could not load segmentation cases");
+  }
+  const payload = (await response.json()) as { cases: SegmentationCase[] };
+  return payload.cases;
+}
+
+export async function getSegmentationCase(caseId: string): Promise<SegmentationCase> {
+  const response = await fetch(`${API_BASE}/api/segmentation/cases/${caseId}`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not load segmentation case");
+  }
+  const payload = (await response.json()) as { case: SegmentationCase };
+  return payload.case;
+}
+
+export async function getSegmentationRulebook(): Promise<CUnitRulebookSummary> {
+  const response = await fetch(`${API_BASE}/api/segmentation/rulebook`);
+  if (!response.ok) {
+    throw new Error("Could not load C-unit rulebook");
+  }
+  const payload = (await response.json()) as { rulebook: CUnitRulebookSummary };
+  return payload.rulebook;
+}
+
+export async function evaluateSegmentationDraft(params: {
+  caseId: string;
+  draftText: string;
+}): Promise<SegmentationEvaluationResponse> {
+  const response = await fetch(`${API_BASE}/api/segmentation/evaluate`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      case_id: params.caseId,
+      draft_text: params.draftText
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not evaluate segmentation draft");
+  }
+  return response.json();
+}
+
+export async function createSegmentationRewriteJob(
+  caseId: string
+): Promise<AgentJobResponse> {
+  const response = await fetch(`${API_BASE}/api/segmentation/cases/${caseId}/rewrite-job`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not queue segmentation rewrite job");
+  }
+  return response.json();
+}
+
+export async function createSegmentationRun(params: {
+  sourceFilename: string;
+  descriptText: string;
+  ruleIds: string[];
+}): Promise<SegmentationRun> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      source_filename: params.sourceFilename,
+      descript_text: params.descriptText,
+      rule_ids: params.ruleIds
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not create segmentation run");
+  }
+  const payload = (await response.json()) as SegmentationRunResponse;
+  return payload.run;
+}
+
+export async function listSegmentationRuns(): Promise<SegmentationRun[]> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs`);
+  if (!response.ok) {
+    throw new Error("Could not load segmentation runs");
+  }
+  const payload = (await response.json()) as { runs: SegmentationRun[] };
+  return payload.runs;
+}
+
+export async function createSegmentationCorpusRun(
+  seed: number
+): Promise<SegmentationCorpusRun> {
+  const response = await fetch(`${API_BASE}/api/segmentation/corpus-runs`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ seed })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not run synthetic segmentation corpus");
+  }
+  const payload = (await response.json()) as SegmentationCorpusRunResponse;
+  return payload.corpus_run;
+}
+
+export async function listSegmentationCorpusRuns(): Promise<SegmentationCorpusRun[]> {
+  const response = await fetch(`${API_BASE}/api/segmentation/corpus-runs`);
+  if (!response.ok) {
+    throw new Error("Could not load segmentation corpus runs");
+  }
+  const payload = (await response.json()) as { corpus_runs: SegmentationCorpusRun[] };
+  return payload.corpus_runs;
+}
+
+export async function createSegmentationFileRun(params: {
+  file: File;
+  ruleIds: string[];
+}): Promise<SegmentationRun> {
+  const form = new FormData();
+  form.append("file", params.file);
+  form.append("rule_ids", JSON.stringify(params.ruleIds));
+  const response = await fetch(`${API_BASE}/api/segmentation/runs/files`, {
+    method: "POST",
+    body: form
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not create segmentation run from file");
+  }
+  const payload = (await response.json()) as SegmentationRunResponse;
+  return payload.run;
+}
+
+export async function verifySegmentationRun(runId: string): Promise<SegmentationRun> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs/${runId}/verify`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not verify segmentation run");
+  }
+  const payload = (await response.json()) as SegmentationRunResponse;
+  return payload.run;
+}
+
+export async function createSegmentationRunRewriteJob(
+  runId: string
+): Promise<AgentJobResponse> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs/${runId}/rewrite-job`, {
+    method: "POST"
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not queue segmentation rewrite job");
+  }
+  return response.json();
+}
+
+export async function analyzeSegmentationRun(
+  runId: string,
+  params?: {
+    selectedMetrics?: MetricId[];
+    disfluencyTokens?: string[];
+    skillPack?: unknown;
+  }
+): Promise<RunResponse> {
+  const response = await fetch(`${API_BASE}/api/segmentation/runs/${runId}/analysis`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      config: {
+        selected_metrics: params?.selectedMetrics,
+        disfluency_tokens: params?.disfluencyTokens,
+        ...(params?.skillPack ? { skill_pack: params.skillPack } : {})
+      }
+    })
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "Could not analyze segmentation run");
+  }
+  return response.json();
 }
 
 export async function createStudy(params: {

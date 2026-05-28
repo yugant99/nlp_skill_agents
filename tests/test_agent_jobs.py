@@ -7,6 +7,7 @@ from backend.app.main import app
 from backend.extensions.agent_jobs import (
     AgentJobStore,
     create_metric_plugin_build_job,
+    create_segmentation_rewrite_job,
 )
 from backend.extensions.plugin_requests import PluginRequestStore, create_plugin_request
 
@@ -100,6 +101,67 @@ def test_agent_job_store_rejects_unknown_status(tmp_path: Path) -> None:
         raise AssertionError("Expected invalid status to raise")
 
 
+def test_create_segmentation_rewrite_job_uses_html_runbook_and_evaluator_gate(
+    tmp_path: Path,
+) -> None:
+    job = create_segmentation_rewrite_job(
+        "pause_overlap_repair",
+        store=AgentJobStore(tmp_path),
+    )
+
+    assert job.id == "rewrite_pause_overlap_repair"
+    assert job.job_type == "segmentation_rewrite"
+    assert job.source_request_id == "pause_overlap_repair"
+    assert job.branch_name == "codex/segmentation-pause-overlap-repair"
+    assert job.prompt_path.endswith(
+        "agent_jobs/rewrite_pause_overlap_repair/rewrite_prompt.html"
+    )
+    assert job.runbook_path.endswith(
+        "agent_jobs/rewrite_pause_overlap_repair/runbook.html"
+    )
+    assert "backend/segmentation/evaluator.py" in job.allowed_files
+    assert ".venv/bin/pytest tests/test_segmentation_core.py -q" in (
+        job.verification_commands
+    )
+
+    prompt = (
+        tmp_path
+        / "agent_jobs"
+        / "rewrite_pause_overlap_repair"
+        / "rewrite_prompt.html"
+    ).read_text(encoding="utf-8")
+    runbook = (
+        tmp_path / "agent_jobs" / "rewrite_pause_overlap_repair" / "runbook.html"
+    ).read_text(encoding="utf-8")
+    assert "<!doctype html>" in prompt
+    assert "<!doctype html>" in runbook
+    assert "Synthetic case: pause_overlap_repair" in prompt
+    assert "Run the deterministic evaluator" in runbook
+    assert "official-source-guard" in runbook
+
+
+def test_segmentation_rewrite_job_includes_failed_rules_and_specialists(
+    tmp_path: Path,
+) -> None:
+    job = create_segmentation_rewrite_job(
+        "run_123",
+        failed_rule_ids=["pause-markers"],
+        target_specialist_ids=["timing_pause"],
+        store=AgentJobStore(tmp_path),
+    )
+
+    prompt = (tmp_path / "agent_jobs" / job.id / "rewrite_prompt.html").read_text(
+        encoding="utf-8"
+    )
+    runbook = (tmp_path / "agent_jobs" / job.id / "runbook.html").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pause-markers" in prompt
+    assert "timing_pause" in prompt
+    assert "targeted segmentation rewrite" in runbook
+
+
 def test_agent_job_api_creates_and_lists_build_jobs(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)
@@ -166,3 +228,23 @@ def test_agent_job_api_creates_and_lists_build_jobs(tmp_path: Path, monkeypatch)
 
     assert evidence_list_response.status_code == 200
     assert evidence_list_response.json()["evidence"][0]["summary"] == "70 passed"
+
+
+def test_segmentation_rewrite_job_api_creates_agent_job(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/segmentation/cases/redaction_omission_nonverbal/rewrite-job"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["job"]["id"] == "rewrite_redaction_omission_nonverbal"
+    assert payload["job"]["job_type"] == "segmentation_rewrite"
+    assert payload["job"]["runbook_path"].endswith(
+        "agent_jobs/rewrite_redaction_omission_nonverbal/runbook.html"
+    )
+    assert payload["artifact_path"].endswith(
+        "agent_jobs/rewrite_redaction_omission_nonverbal.json"
+    )

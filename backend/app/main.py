@@ -50,6 +50,7 @@ from backend.segmentation.pipeline import (
     segmentation_corpus_run_to_payload,
     segmentation_run_to_payload,
 )
+from backend.segmentation.rulebook import build_cunit_rulebook_summary
 from backend.segmentation.synthetic import build_synthetic_case, list_synthetic_cases
 from backend.storage.local_store import LocalRunStore, StoredRun
 from backend.storage.audit_log import AuditLogStore
@@ -344,6 +345,11 @@ def get_segmentation_case(case_id: str) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=404, detail="Segmentation case not found") from exc
     return {"case": _segmentation_case_payload(case)}
+
+
+@app.get("/api/segmentation/rulebook")
+def get_segmentation_rulebook() -> dict:
+    return {"rulebook": asdict(build_cunit_rulebook_summary())}
 
 
 @app.post("/api/segmentation/evaluate")

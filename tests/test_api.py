@@ -1006,6 +1006,23 @@ def test_segmentation_run_api_rejects_invalid_input(tmp_path, monkeypatch) -> No
     assert "not-a-rule" in unknown_rule_response.json()["detail"]
 
 
+def test_segmentation_rulebook_api_exposes_coverage_and_limits() -> None:
+    client = TestClient(app)
+
+    response = client.get("/api/segmentation/rulebook")
+
+    assert response.status_code == 200
+    payload = response.json()["rulebook"]
+    assert payload["supported_rule_count"] == 10
+    assert payload["demo_case_rule_count"] == 9
+    assert payload["corpus_rule_count"] == 10
+    assert payload["rule_definitions"][0]["rule_id"] == "speaker-markers"
+    assert any(
+        area["area_id"] == "cunit-boundaries" and area["status"] == "gap"
+        for area in payload["professor_grade_areas"]
+    )
+
+
 def test_segmentation_run_rewrite_job_uses_failed_rule_routing(
     tmp_path,
     monkeypatch,

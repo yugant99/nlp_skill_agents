@@ -155,7 +155,7 @@
   }
 
   .console-tabbar {
-    @apply grid shrink-0 gap-2 border-b border-[#e4ded0] bg-[#faf8f1] p-2 md:grid-cols-4;
+    @apply grid shrink-0 gap-2 border-b border-[#e4ded0] bg-[#faf8f1] p-2 md:grid-cols-5;
   }
 
   .console-tab {
@@ -233,6 +233,22 @@
 
   .inspector-facts {
     @apply mt-3 grid gap-3;
+  }
+
+  .adjudication-summary {
+    @apply grid gap-3 sm:grid-cols-2 xl:grid-cols-4;
+  }
+
+  .adjudication-boundaries {
+    @apply flex flex-wrap gap-2 rounded-md border border-[#e4ded0] bg-[#faf8f1] p-3;
+  }
+
+  .adjudication-decision {
+    @apply rounded-md border border-[#e4ded0] bg-white/85 p-3;
+  }
+
+  .adjudication-review {
+    @apply border-[#d7c4a1] bg-[#fffaf0];
   }
 
   .rulebook-gap {
@@ -313,6 +329,10 @@
 
   .casebook-pill.muted {
     @apply border-[#d9d4c5] text-[#756f64];
+  }
+
+  .casebook-pill.warning {
+    @apply border-[#d7c4a1] bg-[#fff8e8] text-[#765a24];
   }
 
   .metric-toggle {

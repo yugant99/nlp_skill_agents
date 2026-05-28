@@ -78,6 +78,7 @@ import { buildMetricMatrix } from "./matrixView";
 import type {
   AgentJob,
   BatchTranscript,
+  CUnitAdjudication,
   CUnitRulebookSummary,
   MetricId,
   MetricResult,
@@ -1534,7 +1535,7 @@ function SegmentationDemoPanel({
   onRunCorpus: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<
-    "source" | "gold" | "verification" | "tables"
+    "source" | "gold" | "adjudication" | "verification" | "tables"
   >("source");
   const runLabel = run
     ? `${run.status} · ${run.merge_evidence.applied_patch_count} patches`
@@ -1621,6 +1622,11 @@ function SegmentationDemoPanel({
         {[
           ["source", "Transcript", runSource ? "Loaded" : "Empty"],
           ["gold", "Gold Transcript", run ? run.status : "Draft"],
+          [
+            "adjudication",
+            "C-unit Decisions",
+            run ? `${run.cunit_adjudication.counted_cunit_count} C-units` : "Pending"
+          ],
           ["verification", "Verification", evaluation ? `Score ${evaluation.score}` : "Pending"],
           ["tables", "Analysis Tables", analysisRun ? `${analysisRun.results.length} tables` : "Pending"]
         ].map(([id, label, meta]) => (
@@ -1763,6 +1769,29 @@ function SegmentationDemoPanel({
             </div>
           ) : null}
 
+          {activeTab === "adjudication" ? (
+            <div className="console-view">
+              <div className="view-heading">
+                <div>
+                  <div className="section-kicker">Semantic adjudication</div>
+                  <h3>C-unit decisions</h3>
+                </div>
+                {run ? (
+                  <span className="casebook-pill">
+                    {run.cunit_adjudication.counted_cunit_count} counted
+                  </span>
+                ) : null}
+              </div>
+              {run ? (
+                <CUnitAdjudicationPanel adjudication={run.cunit_adjudication} />
+              ) : (
+                <div className="quiet-empty">
+                  Run the specialist pipeline to inspect semantic C-unit boundaries.
+                </div>
+              )}
+            </div>
+          ) : null}
+
           {activeTab === "tables" ? (
             <div className="console-view">
               <div className="view-heading">
@@ -1794,6 +1823,10 @@ function SegmentationDemoPanel({
               <OutputFact
                 label="Tables"
                 value={analysisRun ? String(analysisRun.results.length) : "0"}
+              />
+              <OutputFact
+                label="C-units"
+                value={run ? String(run.cunit_adjudication.counted_cunit_count) : "0"}
               />
             </div>
           </div>
@@ -2017,6 +2050,80 @@ function SegmentationCorpusRunPanel({
                 {result.failed_rule_ids.join(", ")}
               </div>
             ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CUnitAdjudicationPanel({
+  adjudication
+}: {
+  adjudication: CUnitAdjudication;
+}) {
+  const reviewDecisions = adjudication.decisions.filter(
+    (decision) => decision.needs_human_review
+  );
+  const primaryDecisions = [
+    ...reviewDecisions,
+    ...adjudication.decisions.filter((decision) => !decision.needs_human_review)
+  ].slice(0, 12);
+
+  return (
+    <div className="space-y-3">
+      <div className="adjudication-summary">
+        <OutputFact label="Participant turns" value={String(adjudication.participant_turn_count)} />
+        <OutputFact label="Examiner turns" value={String(adjudication.examiner_turn_count)} />
+        <OutputFact label="Counted C-units" value={String(adjudication.counted_cunit_count)} />
+        <OutputFact label="Needs review" value={String(adjudication.needs_review_count)} />
+      </div>
+      <div className="adjudication-boundaries">
+        {Object.entries(adjudication.boundary_type_counts).map(([boundaryType, count]) => (
+          <span key={boundaryType} className="casebook-pill muted">
+            {boundaryType}: {count}
+          </span>
+        ))}
+      </div>
+      <div className="space-y-2">
+        {primaryDecisions.map((decision) => (
+          <div
+            key={`${decision.event_index}-${decision.boundary_type}`}
+            className={
+              decision.needs_human_review
+                ? "adjudication-decision adjudication-review"
+                : "adjudication-decision"
+            }
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <div className="font-mono text-xs uppercase tracking-wide text-[#756f64]">
+                  event {decision.event_index} · {decision.speaker}
+                </div>
+                <div className="mt-1 text-sm font-semibold text-[#2f413f]">
+                  {decision.boundary_type}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                <span className="casebook-pill">
+                  {decision.cunit_count} C-unit{decision.cunit_count === 1 ? "" : "s"}
+                </span>
+                {decision.needs_human_review ? (
+                  <span className="casebook-pill warning">review</span>
+                ) : null}
+              </div>
+            </div>
+            <div className="mt-2 text-sm leading-6 text-[#3e3b35]">
+              {decision.cleaned_text || decision.raw_text}
+            </div>
+            {decision.excluded_maze ? (
+              <div className="mt-2 font-mono text-xs text-[#765a24]">
+                excluded maze: {decision.excluded_maze}
+              </div>
+            ) : null}
+            <p className="mt-2 text-xs leading-5 text-[#676157]">
+              {decision.rationale}
+            </p>
           </div>
         ))}
       </div>

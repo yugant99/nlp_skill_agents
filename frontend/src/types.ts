@@ -106,6 +106,31 @@ export type SegmentationEvaluationResponse = {
   evaluation: SegmentationEvaluation;
 };
 
+export type CUnitBoundaryDecision = {
+  event_index: number;
+  speaker: string;
+  raw_text: string;
+  cleaned_text: string;
+  boundary_type: string;
+  decision: string;
+  cunit_count: number;
+  rationale: string;
+  confidence: number;
+  needs_human_review: boolean;
+  excluded_maze: string;
+  evidence_terms: string[];
+};
+
+export type CUnitAdjudication = {
+  total_event_count: number;
+  participant_turn_count: number;
+  examiner_turn_count: number;
+  counted_cunit_count: number;
+  needs_review_count: number;
+  boundary_type_counts: Record<string, number>;
+  decisions: CUnitBoundaryDecision[];
+};
+
 export type CUnitRuleDefinition = {
   rule_id: string;
   label: string;
@@ -173,6 +198,7 @@ export type SegmentationRun = {
     applied_patch_count: number;
     conflicts: string[];
   };
+  cunit_adjudication: CUnitAdjudication;
   evaluation: SegmentationEvaluation | null;
   status: string;
   failure_routes: {

@@ -206,7 +206,7 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
       gates.
 - [ ] Replace direct final-path writes with recoverable writes.
 - [ ] Replace synthetic-only confidence claims with validated and calibrated limits.
-- [ ] Reconcile the README, old plans, checkpoint catalog, and current branch.
+- [x] Reconcile the README, old plans, checkpoint catalog, and current branch.
 
 ## Roadmap And Exit Gates
 

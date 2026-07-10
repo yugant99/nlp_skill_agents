@@ -56,7 +56,7 @@ from backend.storage.local_store import LocalRunStore, StoredRun
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.deployment_profiles import check_deployment_profile
 from backend.storage.library_store import LibraryStore
-from backend.storage.study_store import StudyWorkspaceStore
+from backend.storage.study_store import MAX_STUDY_PARTICIPANTS, StudyWorkspaceStore
 
 
 app = FastAPI(title="NLP Skill Agents", version="0.1.0")
@@ -152,7 +152,11 @@ class StudyCreateRequest(BaseModel):
 
 
 class StudySchemaRequest(BaseModel):
-    participant_count: int = Field(default=1, ge=1, le=4)
+    participant_count: int = Field(
+        default=1,
+        ge=1,
+        le=MAX_STUDY_PARTICIPANTS,
+    )
     conditions: list[str] | str = Field(default_factory=lambda: ["home", "lab"])
     week_count: int = Field(default=1, ge=1, le=52)
     custom_fields: list[str] = Field(default_factory=list)

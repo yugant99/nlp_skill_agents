@@ -199,7 +199,7 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 
 ### Demo Assumptions To Remove
 
-- [ ] Remove the four-participant study cap.
+- [x] Remove the four-participant study cap.
 - [x] Stop labeling arbitrary uploaded transcripts and merged outputs as synthetic.
 - [x] Replace unconditional `No cloud I/O` messaging with the active privacy mode.
 - [ ] Replace manually editable job statuses with enforced transition and evidence

@@ -30,6 +30,8 @@ export type StudySchemaRequestPayload = {
   custom_fields: string[];
 };
 
+export const MAX_STUDY_PARTICIPANTS = 10_000;
+
 export const CASEBOOK_TEMPLATES: Record<string, CasebookTemplate> = {
   caregiver_mobility: {
     id: "caregiver_mobility",
@@ -62,7 +64,10 @@ export function buildCasebookOptions(
   conditionText: string,
   weekCount: number
 ): CasebookOptions {
-  const boundedParticipants = Math.min(Math.max(Math.trunc(participantCount) || 1, 1), 4);
+  const boundedParticipants = Math.min(
+    Math.max(Math.trunc(participantCount) || 1, 1),
+    MAX_STUDY_PARTICIPANTS
+  );
   const boundedWeeks = Math.max(Math.trunc(weekCount) || 1, 1);
   return {
     participants: Array.from({ length: boundedParticipants }, (_, index) => `P${index + 1}`),
@@ -86,7 +91,10 @@ export function casebookRequestFromControls(
   controls: CasebookControls
 ): StudySchemaRequestPayload {
   return {
-    participant_count: Math.min(Math.max(Math.trunc(controls.participantCount) || 1, 1), 4),
+    participant_count: Math.min(
+      Math.max(Math.trunc(controls.participantCount) || 1, 1),
+      MAX_STUDY_PARTICIPANTS
+    ),
     conditions: normalizeConditionList(controls.conditions),
     week_count: Math.max(Math.trunc(controls.weekCount) || 1, 1),
     custom_fields: normalizeConditionList(controls.customFields)

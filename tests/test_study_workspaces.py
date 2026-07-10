@@ -188,7 +188,7 @@ def test_study_schema_is_saved_and_attached_to_batch_outputs(tmp_path: Path) -> 
     schema = store.save_study_schema(
         study.id,
         {
-            "participant_count": 4,
+            "participant_count": 8,
             "conditions": "home, lab, clinic",
             "week_count": 3,
             "custom_fields": ["site", "arm"],
@@ -222,7 +222,16 @@ def test_study_schema_is_saved_and_attached_to_batch_outputs(tmp_path: Path) -> 
 
     schema_path = tmp_path / "studies" / study.id / "study_schema.json"
     assert schema_path.exists()
-    assert schema.participants == ["P1", "P2", "P3", "P4"]
+    assert schema.participants == [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "P8",
+    ]
     assert schema.conditions == ["home", "lab", "clinic"]
     assert schema.weeks == ["week_1", "week_2", "week_3"]
     assert schema.custom_fields == ["site", "arm"]
@@ -230,7 +239,7 @@ def test_study_schema_is_saved_and_attached_to_batch_outputs(tmp_path: Path) -> 
     aggregate_payload = json.loads(
         (batch.aggregate_dir / "aggregate_results.json").read_text(encoding="utf-8")
     )
-    assert aggregate_payload["study_schema"]["participant_count"] == 4
+    assert aggregate_payload["study_schema"]["participant_count"] == 8
     assert aggregate_payload["study_schema"]["conditions"] == ["home", "lab", "clinic"]
     assert aggregate_payload["study_schema"]["weeks"] == ["week_1", "week_2", "week_3"]
     assert aggregate_payload["study_schema"]["custom_fields"] == ["site", "arm"]

@@ -16,6 +16,9 @@ from backend.analysis.transcripts import StudyConfig
 from backend.storage.audit_log import AuditLogStore
 
 
+MAX_STUDY_PARTICIPANTS = 10_000
+
+
 @dataclass(frozen=True)
 class StudyWorkspace:
     id: str
@@ -490,7 +493,11 @@ def _normalized_metadata(payload: Any) -> dict[str, str]:
 
 
 def _study_schema_from_payload(study_id: str, payload: dict[str, Any]) -> StudySchema:
-    participant_count = _bounded_positive_int(payload.get("participant_count"), 1, 4)
+    participant_count = _bounded_positive_int(
+        payload.get("participant_count"),
+        1,
+        MAX_STUDY_PARTICIPANTS,
+    )
     week_count = _bounded_positive_int(payload.get("week_count"), 1, 52)
     conditions = _normalized_string_list(payload.get("conditions")) or ["home", "lab"]
     custom_fields = _normalized_string_list(payload.get("custom_fields"))

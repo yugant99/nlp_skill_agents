@@ -69,6 +69,7 @@ import {
 import { exportCasebookCsv, parseCasebookCsv } from "./casebookCsv";
 import {
   CASEBOOK_TEMPLATES,
+  MAX_STUDY_PARTICIPANTS,
   buildCasebookOptions,
   casebookRequestFromControls,
   schemaControlsFromStudySchema,
@@ -2646,7 +2647,7 @@ function StudyWorkspacePanel({
                 <input
                   className="field-input"
                   min={1}
-                  max={4}
+                  max={MAX_STUDY_PARTICIPANTS}
                   type="number"
                   value={casebookParticipantCount}
                   onChange={(event) =>

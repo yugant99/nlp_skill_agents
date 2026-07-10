@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   CASEBOOK_TEMPLATES,
+  MAX_STUDY_PARTICIPANTS,
   buildCasebookOptions,
   casebookRequestFromControls,
   normalizeConditionList,
@@ -10,9 +11,9 @@ import {
   validateBatchAssignments
 } from "../../local_data/tmp/frontend-tests/casebookDesign.js";
 
-test("builds deterministic participant condition and week options", () => {
-  assert.deepEqual(buildCasebookOptions(3, "home, lab, telehealth", 2), {
-    participants: ["P1", "P2", "P3"],
+test("builds participant options beyond the old four-participant demo cap", () => {
+  assert.deepEqual(buildCasebookOptions(8, "home, lab, telehealth", 2), {
+    participants: ["P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8"],
     conditions: ["home", "lab", "telehealth"],
     weeks: ["week_1", "week_2"]
   });
@@ -65,17 +66,24 @@ test("exposes professor-facing casebook templates", () => {
 test("converts controls into backend schema request payload", () => {
   assert.deepEqual(
     casebookRequestFromControls({
-      participantCount: 4,
+      participantCount: 8,
       conditions: "home, lab, home",
       weekCount: 3,
       customFields: "site, arm, site"
     }),
     {
-      participant_count: 4,
+      participant_count: 8,
       conditions: ["home", "lab"],
       week_count: 3,
       custom_fields: ["site", "arm"]
     }
+  );
+});
+
+test("keeps participant option generation within the resource guard", () => {
+  assert.equal(
+    buildCasebookOptions(MAX_STUDY_PARTICIPANTS + 1, "home", 1).participants.length,
+    MAX_STUDY_PARTICIPANTS
   );
 });
 

@@ -5,7 +5,7 @@ import os
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -124,6 +124,7 @@ class SegmentationRunCreateRequest(BaseModel):
     source_filename: str = Field(default="descript_export.txt", min_length=1)
     descript_text: str = Field(min_length=1)
     rule_ids: list[str] = Field(default_factory=list)
+    source: Literal["researcher_provided", "synthetic"] = "researcher_provided"
 
 
 class SegmentationCorpusRunCreateRequest(BaseModel):
@@ -391,6 +392,7 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
             source_filename=request.source_filename,
             descript_text=request.descript_text,
             rule_ids=request.rule_ids,
+            source=request.source,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -445,6 +447,7 @@ async def create_segmentation_file_run(
             source_filename=file.filename or "descript_export.txt",
             descript_text=content,
             rule_ids=parsed_rule_ids,
+            source="researcher_provided",
         )
     except UnicodeDecodeError as exc:
         raise HTTPException(

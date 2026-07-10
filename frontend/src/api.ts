@@ -2,6 +2,7 @@ import type {
   AgentJob,
   AgentJobEvidence,
   AgentJobResponse,
+  AgentJobTransition,
   BatchTranscript,
   CUnitRulebookSummary,
   DeploymentProfile,
@@ -124,7 +125,7 @@ export async function listAgentJobs(): Promise<AgentJob[]> {
 
 export async function updateAgentJobStatus(
   jobId: string,
-  status: string
+  status: AgentJobTransition
 ): Promise<AgentJobResponse> {
   const response = await fetch(`${API_BASE}/api/agent-jobs/${jobId}`, {
     method: "PATCH",

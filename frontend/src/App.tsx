@@ -67,6 +67,7 @@ import {
   updateBatchTranscriptMetadata
 } from "./batchTranscripts";
 import { exportCasebookCsv, parseCasebookCsv } from "./casebookCsv";
+import { agentJobActions } from "./agentJobLifecycle";
 import {
   CASEBOOK_TEMPLATES,
   MAX_STUDY_PARTICIPANTS,
@@ -81,6 +82,7 @@ import { privacyModeLabel } from "./privacyMode";
 import { segmentationSourceLabel } from "./segmentationProvenance";
 import type {
   AgentJob,
+  AgentJobTransition,
   BatchTranscript,
   CUnitAdjudication,
   CUnitRulebookSummary,
@@ -582,7 +584,7 @@ export function App() {
     }
   }
 
-  async function updatePluginJobStatus(jobId: string, status: string) {
+  async function updatePluginJobStatus(jobId: string, status: AgentJobTransition) {
     try {
       setError("");
       const response = await updateAgentJobStatus(jobId, status);
@@ -3118,7 +3120,7 @@ function PluginCatalog({
   onRequestExpectedChange: (value: string) => void;
   onSubmitRequest: () => void;
   onQueueBuildJob: (requestId: string) => void;
-  onUpdateJobStatus: (jobId: string, status: string) => void;
+  onUpdateJobStatus: (jobId: string, status: AgentJobTransition) => void;
   onRecordEvidence: (jobId: string) => void;
 }) {
   if (!plugins.length) {
@@ -3244,12 +3246,7 @@ function PluginCatalog({
                   {job.runbook_path}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {[
-                    ["in_progress", "Start"],
-                    ["blocked", "Block"],
-                    ["verified", "Verify"],
-                    ["merged", "Merge"]
-                  ].map(([status, label]) => (
+                  {agentJobActions(job).map(({ status, label }) => (
                     <button
                       key={status}
                       className="json-upload-button"
@@ -3259,12 +3256,19 @@ function PluginCatalog({
                       {label}
                     </button>
                   ))}
+                  {job.available_transitions.length === 0 ? (
+                    <span className="self-center text-xs text-[#756f64]">
+                      {job.status === "merged"
+                        ? "Lifecycle complete"
+                        : "Waiting for required evidence"}
+                    </span>
+                  ) : null}
                   <button
                     className="json-upload-button"
                     type="button"
                     onClick={() => onRecordEvidence(job.id)}
                   >
-                    Evidence
+                    Review note
                   </button>
                 </div>
               </div>

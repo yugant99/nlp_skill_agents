@@ -57,15 +57,20 @@ export type PluginRequestResponse = {
 export type AgentJob = {
   id: string;
   job_type: string;
-  status: string;
+  status: AgentJobStatus;
   source_request_id: string;
   branch_name: string;
   prompt_path: string;
   runbook_path: string;
   allowed_files: string[];
   verification_commands: string[];
+  available_transitions: AgentJobTransition[];
   created_at: string;
 };
+
+export type AgentJobStatus = "queued" | "in_progress" | "blocked" | "verified" | "merged";
+
+export type AgentJobTransition = Exclude<AgentJobStatus, "queued">;
 
 export type AgentJobResponse = {
   job: AgentJob;

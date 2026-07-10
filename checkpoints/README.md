@@ -62,6 +62,7 @@ Each checkpoint should record:
 - [2026-05-24 C-unit segmentation demo](2026-05-24-cunit-segmentation-demo.html)
 - [2026-05-24 C-unit developer-experience review](2026-05-24-cunit-devex-review.html)
 - [2026-07-10 Phase 0 repository truth](2026-07-10-phase0-repository-truth.md)
+- [2026-07-10 Phase 0 active privacy mode](2026-07-10-phase0-active-privacy-mode.md)
 
 ## Completion Bar
 

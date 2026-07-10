@@ -604,7 +604,7 @@ def test_study_schema_api_persists_casebook_design(tmp_path, monkeypatch) -> Non
     update_response = client.put(
         f"/api/studies/{study_id}/schema",
         json={
-            "participant_count": 4,
+            "participant_count": 8,
             "conditions": ["home", "lab", "clinic"],
             "week_count": 3,
             "custom_fields": ["site", "arm"],
@@ -615,12 +615,27 @@ def test_study_schema_api_persists_casebook_design(tmp_path, monkeypatch) -> Non
     assert update_response.status_code == 200
     schema = update_response.json()["schema"]
     assert schema["study_id"] == study_id
-    assert schema["participants"] == ["P1", "P2", "P3", "P4"]
+    assert schema["participants"] == [
+        "P1",
+        "P2",
+        "P3",
+        "P4",
+        "P5",
+        "P6",
+        "P7",
+        "P8",
+    ]
     assert schema["conditions"] == ["home", "lab", "clinic"]
     assert schema["weeks"] == ["week_1", "week_2", "week_3"]
     assert schema["custom_fields"] == ["site", "arm"]
     assert read_response.status_code == 200
     assert read_response.json()["schema"] == schema
+
+    oversized_response = client.put(
+        f"/api/studies/{study_id}/schema",
+        json={"participant_count": 10_001},
+    )
+    assert oversized_response.status_code == 422
 
 
 def test_study_batch_history_api_lists_and_loads_results(tmp_path, monkeypatch) -> None:

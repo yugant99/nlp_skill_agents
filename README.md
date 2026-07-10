@@ -28,9 +28,9 @@ The older study-metrics workspace remains available underneath that workflow:
 - manage study workspaces, casebook metadata, batch history, and exports;
 - draft or refine skill packs locally, with optional OpenRouter authoring.
 
-Agent jobs in the current codebase are prompts, statuses, evidence records, and
-implementation packets. They are not yet a durable autonomous worker system and
-cannot be treated as production agent execution.
+Agent jobs in the current codebase are prompts, evidence-gated status transitions,
+evidence records, and implementation packets. They are not yet a durable
+autonomous worker system and cannot be treated as production agent execution.
 
 ## Data And Network Boundary
 
@@ -100,6 +100,7 @@ npm run test:batch
 npm run test:casebook
 npm run test:matrix
 npm run test:casebook-csv
+npm run test:agent-jobs
 npm run test:privacy
 npm run test:provenance
 ```

@@ -201,7 +201,7 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 
 - [ ] Remove the four-participant study cap.
 - [ ] Stop labeling arbitrary uploaded transcripts and merged outputs as synthetic.
-- [ ] Replace unconditional `No cloud I/O` messaging with the active privacy mode.
+- [x] Replace unconditional `No cloud I/O` messaging with the active privacy mode.
 - [ ] Replace manually editable job statuses with enforced transition and evidence
       gates.
 - [ ] Replace direct final-path writes with recoverable writes.

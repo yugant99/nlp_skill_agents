@@ -805,8 +805,11 @@ def test_deployment_profile_endpoint_reports_secure_offline_status(
     tmp_path,
     monkeypatch,
 ) -> None:
+    from backend.llm import openrouter
+
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(openrouter, "_DOTENV_LOADED", True)
     client = TestClient(app)
 
     response = client.get("/api/deployment-profile/secure-offline")

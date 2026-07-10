@@ -101,6 +101,7 @@ npm run test:casebook
 npm run test:matrix
 npm run test:casebook-csv
 npm run test:privacy
+npm run test:provenance
 ```
 
 Every feature follows the branch, commit, test, pull-request, merge, and cleanup

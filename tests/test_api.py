@@ -910,7 +910,10 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
 
     assert response.status_code == 200
     run = response.json()["run"]
-    assert run["source"] == "synthetic"
+    assert run["source"] == "researcher_provided"
+    assert run["merged_draft"].startswith(
+        "Researcher-provided transcript: session"
+    )
     assert run["status"] == "verified"
     assert run["rule_plan"][0]["specialist_id"] == "speaker_turn"
     assert run["specialist_outputs"][0]["patches"]
@@ -922,11 +925,13 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
 
     assert fetch_response.status_code == 200
     assert fetch_response.json()["run"]["run_id"] == run["run_id"]
+    assert fetch_response.json()["run"]["source"] == "researcher_provided"
 
     verify_response = client.post(f"/api/segmentation/runs/{run['run_id']}/verify")
 
     assert verify_response.status_code == 200
     assert verify_response.json()["run"]["run_id"] == run["run_id"]
+    assert verify_response.json()["run"]["source"] == "researcher_provided"
     assert verify_response.json()["run"]["evaluation"]["score"] == 100
 
 
@@ -958,6 +963,10 @@ def test_segmentation_run_api_accepts_uploaded_txt_file(tmp_path, monkeypatch) -
     assert response.status_code == 200
     run = response.json()["run"]
     assert run["source_filename"] == "descript_export.txt"
+    assert run["source"] == "researcher_provided"
+    assert run["merged_draft"].startswith(
+        "Researcher-provided transcript: descript_export"
+    )
     assert run["status"] == "verified"
     assert run["events"][0]["source_filename"] == "descript_export.txt"
 
@@ -1002,11 +1011,21 @@ def test_segmentation_run_api_rejects_invalid_input(tmp_path, monkeypatch) -> No
             "rule_ids": ["not-a-rule"],
         },
     )
+    unknown_source_response = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "session.txt",
+            "descript_text": "[00:00:00] P: Good morning.",
+            "rule_ids": ["speaker-markers"],
+            "source": "external",
+        },
+    )
 
     assert empty_response.status_code == 400
     assert "descript_text" in empty_response.json()["detail"]
     assert unknown_rule_response.status_code == 400
     assert "not-a-rule" in unknown_rule_response.json()["detail"]
+    assert unknown_source_response.status_code == 422
 
 
 def test_segmentation_rulebook_api_exposes_coverage_and_limits() -> None:
@@ -1102,8 +1121,12 @@ def test_segmentation_run_api_lists_runs_and_downloads_exports(
     assert list_response.status_code == 200
     assert list_response.json()["runs"][0]["run_id"] == run["run_id"]
     assert transcript_response.status_code == 200
+    assert transcript_response.text.startswith(
+        "Researcher-provided transcript: export_me"
+    )
     assert "P: Good morning." in transcript_response.text
     assert evidence_response.status_code == 200
+    assert evidence_response.json()["source"] == "researcher_provided"
     assert evidence_response.json()["evaluation"]["score"] == 100
     assert specialist_response.status_code == 200
     assert "Do not rewrite the full transcript" in specialist_response.text
@@ -1128,6 +1151,11 @@ def test_segmentation_corpus_run_api_creates_and_lists_regression_batch(
     assert corpus_run["seed"] == 19
     assert corpus_run["total_case_count"] == 4
     assert corpus_run["regression_fail_count"] == 0
+    synthetic_run = client.get(
+        f"/api/segmentation/runs/{corpus_run['results'][0]['run_id']}"
+    ).json()["run"]
+    assert synthetic_run["source"] == "synthetic"
+    assert synthetic_run["merged_draft"].startswith("Synthetic run:")
     assert any(
         result["expected_status"] == "failed"
         and result["failed_rule_ids"] == ["official-source-guard"]

@@ -17,6 +17,7 @@ import type {
   SegmentationEvaluationResponse,
   SegmentationRun,
   SegmentationRunResponse,
+  SegmentationSource,
   SkillPack,
   SkillPackDraftResponse,
   SkillPackRefineResponse,
@@ -232,6 +233,7 @@ export async function createSegmentationRun(params: {
   sourceFilename: string;
   descriptText: string;
   ruleIds: string[];
+  source: SegmentationSource;
 }): Promise<SegmentationRun> {
   const response = await fetch(`${API_BASE}/api/segmentation/runs`, {
     method: "POST",
@@ -241,7 +243,8 @@ export async function createSegmentationRun(params: {
     body: JSON.stringify({
       source_filename: params.sourceFilename,
       descript_text: params.descriptText,
-      rule_ids: params.ruleIds
+      rule_ids: params.ruleIds,
+      source: params.source
     })
   });
   if (!response.ok) {

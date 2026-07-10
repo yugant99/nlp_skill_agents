@@ -37,6 +37,8 @@ RULE_TO_SPECIALIST = {
     "official-source-guard": "source_guard",
 }
 
+SEGMENTATION_SOURCES = {"researcher_provided", "synthetic"}
+
 
 @dataclass(frozen=True)
 class RuleWorkPacket:
@@ -81,7 +83,7 @@ class SegmentationRun:
     evaluation: SegmentationEvaluation | None
     status: str
     failure_routes: list[dict[str, str]]
-    source: str = "synthetic"
+    source: str = "researcher_provided"
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
@@ -124,9 +126,12 @@ class SegmentationRunStore:
         source_filename: str,
         descript_text: str,
         rule_ids: list[str],
+        source: str = "researcher_provided",
     ) -> SegmentationRun:
         if not descript_text.strip():
             raise ValueError("descript_text must be non-empty")
+        if source not in SEGMENTATION_SOURCES:
+            raise ValueError(f"Unsupported segmentation source: {source}")
         normalized_rule_ids = _normalize_rule_ids(rule_ids)
         events = extract_descript_events(descript_text, source_filename)
         if not events:
@@ -148,6 +153,7 @@ class SegmentationRunStore:
             source_filename,
             events,
             specialist_outputs,
+            source=source,
         )
         evaluation = evaluate_segmented_draft(
             merged_draft,
@@ -171,6 +177,7 @@ class SegmentationRunStore:
             evaluation=evaluation,
             status=status,
             failure_routes=failure_routes,
+            source=source,
         )
         self.persist_run(run)
         return run
@@ -185,6 +192,7 @@ class SegmentationRunStore:
                 source_filename=f"{case.case_id}.txt",
                 descript_text=case.descript_text,
                 rule_ids=case.rule_ids,
+                source="synthetic",
             )
             expected_status = _expected_status_for_case(case)
             failed_rule_ids = (
@@ -267,6 +275,7 @@ class SegmentationRunStore:
             run.source_filename,
             run.events,
             specialist_outputs,
+            source=run.source,
         )
         evaluation = evaluate_segmented_draft(
             merged_draft,
@@ -457,9 +466,16 @@ def merge_specialist_outputs(
     source_filename: str,
     events: list[RawTranscriptEvent],
     outputs: list[SpecialistOutput],
+    *,
+    source: str,
 ) -> tuple[str, MergeEvidence]:
     patches = [patch for output in outputs for patch in output.patches]
-    lines = [f"Synthetic run: {Path(source_filename).stem}"]
+    source_label = (
+        "Synthetic run"
+        if source == "synthetic"
+        else "Researcher-provided transcript"
+    )
+    lines = [f"{source_label}: {Path(source_filename).stem}"]
     conflicts: list[str] = []
     applied = 0
     for event_index, event in enumerate(events):

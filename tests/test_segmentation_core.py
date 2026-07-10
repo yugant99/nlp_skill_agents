@@ -288,6 +288,8 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     )
 
     assert run.status == "verified"
+    assert run.source == "researcher_provided"
+    assert run.merged_draft.startswith("Researcher-provided transcript: session")
     assert [packet.specialist_id for packet in run.rule_plan] == [
         "speaker_turn",
         "timing_pause",
@@ -380,6 +382,10 @@ def test_segmentation_corpus_run_store_runs_generated_cases_and_summarizes_cover
     loaded = store.load_corpus_run(corpus_run.corpus_run_id)
     listed = store.list_corpus_runs()
 
+    first_run = store.load_run(corpus_run.results[0].run_id)
+    assert first_run.source == "synthetic"
+    assert first_run.merged_draft.startswith("Synthetic run:")
+
     assert loaded.corpus_run_id == corpus_run.corpus_run_id
     assert [item.corpus_run_id for item in listed] == [corpus_run.corpus_run_id]
 
@@ -415,6 +421,7 @@ def test_segmentation_run_store_remerges_submitted_specialist_patches(
     )
 
     assert updated.status == "needs_rewrite"
+    assert updated.source == "researcher_provided"
     assert "; :03" not in updated.merged_draft
     assert updated.failure_routes[0]["rule_id"] == "pause-markers"
     assert updated.failure_routes[0]["specialist_id"] == "timing_pause"
@@ -424,4 +431,25 @@ def test_segmentation_run_store_remerges_submitted_specialist_patches(
         if output.specialist_id == "timing_pause"
     )
     assert timing_output.evidence["submitted_by"] == "specialist_agent"
-    assert store.load_run(run.run_id).merged_draft == updated.merged_draft
+    loaded = store.load_run(run.run_id)
+    assert loaded.merged_draft == updated.merged_draft
+    assert loaded.source == "researcher_provided"
+
+
+def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import SegmentationRunStore
+
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="legacy.txt",
+        descript_text="[00:00:00] P: Good morning.",
+        rule_ids=["speaker-markers"],
+    )
+    run_path = tmp_path / "segmentation_runs" / f"{run.run_id}.json"
+    payload = json.loads(run_path.read_text(encoding="utf-8"))
+    payload.pop("source")
+    run_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert store.load_run(run.run_id).source == "synthetic"

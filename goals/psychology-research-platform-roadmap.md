@@ -1,7 +1,9 @@
 # Psychology Research Platform Roadmap
 
-Status: Active product north star  
-Created: 2026-07-10  
+Status: Active product north star
+
+Created: 2026-07-10
+
 Initial source branch: `codex/cunit-demo-system` at `f3f2d36`
 
 This document is the current product-direction and gap-tracking source of truth.

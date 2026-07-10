@@ -29,6 +29,7 @@ from backend.analysis.skill_packs import (
 )
 from backend.analysis.transcripts import StudyConfig, extract_transcript_text
 from backend.extensions.agent_jobs import (
+    AgentJob,
     AgentJobStore,
     agent_job_evidence_to_payload,
     agent_job_to_payload,
@@ -284,30 +285,32 @@ def create_metric_plugin_build_job_endpoint(request_id: str) -> dict:
         store=job_store,
     )
     return {
-        "job": agent_job_to_payload(job),
+        "job": _agent_job_api_payload(job_store, job),
         "artifact_path": str(job_store.jobs_dir / f"{job.id}.json"),
     }
 
 
 @app.get("/api/agent-jobs")
 def list_agent_jobs() -> dict:
+    store = AgentJobStore(_local_data_root())
     return {
         "jobs": [
-            agent_job_to_payload(job)
-            for job in AgentJobStore(_local_data_root()).list_jobs()
+            _agent_job_api_payload(store, job)
+            for job in store.list_jobs()
         ]
     }
 
 
 @app.patch("/api/agent-jobs/{job_id}")
 def update_agent_job_status(job_id: str, request: AgentJobStatusUpdateRequest) -> dict:
+    store = AgentJobStore(_local_data_root())
     try:
-        job = AgentJobStore(_local_data_root()).update_status(job_id, request.status)
+        job = store.update_status(job_id, request.status)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Agent job not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"job": agent_job_to_payload(job)}
+    return {"job": _agent_job_api_payload(store, job)}
 
 
 @app.post("/api/agent-jobs/{job_id}/evidence")
@@ -319,6 +322,8 @@ def add_agent_job_evidence(job_id: str, request: AgentJobEvidenceCreateRequest) 
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Agent job not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"evidence": agent_job_evidence_to_payload(evidence)}
 
 
@@ -384,7 +389,7 @@ def create_segmentation_rewrite_job_endpoint(case_id: str) -> dict:
     job_store = AgentJobStore(_local_data_root())
     job = create_segmentation_rewrite_job(case_id, store=job_store)
     return {
-        "job": agent_job_to_payload(job),
+        "job": _agent_job_api_payload(job_store, job),
         "artifact_path": str(job_store.jobs_dir / f"{job.id}.json"),
     }
 
@@ -557,7 +562,7 @@ def create_segmentation_run_rewrite_job(run_id: str) -> dict:
         store=job_store,
     )
     return {
-        "job": agent_job_to_payload(job),
+        "job": _agent_job_api_payload(job_store, job),
         "artifact_path": str(job_store.jobs_dir / f"{job.id}.json"),
     }
 
@@ -1016,6 +1021,13 @@ def _run_response(run, stored: StoredRun) -> dict:
             }
             for result in run.results
         ],
+    }
+
+
+def _agent_job_api_payload(store: AgentJobStore, job: AgentJob) -> dict:
+    return {
+        **agent_job_to_payload(job),
+        "available_transitions": store.available_transitions(job.id),
     }
 
 

@@ -1,10 +1,12 @@
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
 from backend.extensions.agent_jobs import (
+    AgentJob,
     AgentJobStore,
     create_metric_plugin_build_job,
     create_segmentation_rewrite_job,
@@ -101,6 +103,75 @@ def test_agent_job_store_rejects_unknown_status(tmp_path: Path) -> None:
         raise AssertionError("Expected invalid status to raise")
 
 
+def test_agent_job_store_enforces_lifecycle_and_evidence_gates(
+    tmp_path: Path,
+) -> None:
+    store = AgentJobStore(tmp_path)
+    job = AgentJob(
+        id="build_gate_test",
+        job_type="metric_plugin_build",
+        status="queued",
+        source_request_id="gate_test",
+        branch_name="codex/plugin-gate-test",
+        prompt_path="prompt.md",
+        runbook_path=str(tmp_path / "agent_jobs" / "build_gate_test" / "runbook.md"),
+        allowed_files=["backend/analysis/metrics.py"],
+        verification_commands=["pytest focused", "npm run build"],
+    )
+    store.persist(job)
+
+    assert store.available_transitions(job.id) == ["in_progress", "blocked"]
+    with pytest.raises(ValueError, match="cannot transition from queued to verified"):
+        store.update_status(job.id, "verified")
+
+    blocked = store.update_status(job.id, "blocked")
+    assert blocked.status == "blocked"
+    assert store.available_transitions(job.id) == ["in_progress"]
+
+    in_progress = store.update_status(job.id, "in_progress")
+    assert in_progress.status == "in_progress"
+    assert store.available_transitions(job.id) == ["blocked"]
+
+    with pytest.raises(ValueError, match="Unsupported agent job evidence status"):
+        store.add_evidence(
+            job.id,
+            {"gate": "unknown", "command": "pytest focused", "status": "unknown"},
+        )
+
+    store.add_evidence(
+        job.id,
+        {"gate": "focused", "command": "pytest focused", "status": "failed"},
+    )
+    with pytest.raises(ValueError, match="pytest focused; npm run build"):
+        store.update_status(job.id, "verified")
+
+    store.add_evidence(
+        job.id,
+        {"gate": "focused", "command": "pytest focused", "status": "passed"},
+    )
+    store.add_evidence(
+        job.id,
+        {"gate": "build", "command": "npm run build", "status": "passed"},
+    )
+    assert store.available_transitions(job.id) == ["blocked", "verified"]
+
+    verified = store.update_status(job.id, "verified")
+    assert verified.status == "verified"
+    assert store.available_transitions(job.id) == []
+    with pytest.raises(ValueError, match="requires passed merge evidence"):
+        store.update_status(job.id, "merged")
+
+    store.add_evidence(
+        job.id,
+        {"gate": "merge", "command": "gh pr merge 123 --merge", "status": "passed"},
+    )
+    assert store.available_transitions(job.id) == ["merged"]
+
+    merged = store.update_status(job.id, "merged")
+    assert merged.status == "merged"
+    assert store.available_transitions(job.id) == []
+
+
 def test_create_segmentation_rewrite_job_uses_html_runbook_and_evaluator_gate(
     tmp_path: Path,
 ) -> None:
@@ -184,6 +255,7 @@ def test_agent_job_api_creates_and_lists_build_jobs(tmp_path: Path, monkeypatch)
     payload = create_response.json()
     assert payload["job"]["id"] == "build_repair_sequence_metric"
     assert payload["job"]["status"] == "queued"
+    assert payload["job"]["available_transitions"] == ["in_progress", "blocked"]
     assert payload["job"]["runbook_path"].endswith(
         "agent_jobs/build_repair_sequence_metric/runbook.md"
     )
@@ -196,38 +268,91 @@ def test_agent_job_api_creates_and_lists_build_jobs(tmp_path: Path, monkeypatch)
         "build_repair_sequence_metric"
     ]
 
-    update_response = client.patch(
+    invalid_evidence_response = client.post(
+        "/api/agent-jobs/build_repair_sequence_metric/evidence",
+        json={
+            "gate": "unverified",
+            "command": "not run",
+            "status": "unknown",
+            "summary": "",
+        },
+    )
+    assert invalid_evidence_response.status_code == 400
+
+    invalid_transition_response = client.patch(
         "/api/agent-jobs/build_repair_sequence_metric",
         json={"status": "verified"},
     )
+    assert invalid_transition_response.status_code == 400
 
-    assert update_response.status_code == 200
-    assert update_response.json()["job"]["status"] == "verified"
-    assert client.get("/api/agent-jobs").json()["jobs"][0]["status"] == "verified"
+    start_response = client.patch(
+        "/api/agent-jobs/build_repair_sequence_metric",
+        json={"status": "in_progress"},
+    )
+    assert start_response.status_code == 200
+    assert start_response.json()["job"]["available_transitions"] == ["blocked"]
 
-    evidence_response = client.post(
+    verification_commands = payload["job"]["verification_commands"]
+    for index, command in enumerate(verification_commands, start=1):
+        evidence_response = client.post(
+            "/api/agent-jobs/build_repair_sequence_metric/evidence",
+            json={
+                "gate": f"verification_{index}",
+                "command": command,
+                "status": "passed",
+                "summary": "Command passed.",
+            },
+        )
+        assert evidence_response.status_code == 200
+
+    evidence = evidence_response.json()["evidence"]
+    assert evidence["gate"] == f"verification_{len(verification_commands)}"
+    assert evidence["artifact_path"].endswith(
+        f"agent_jobs/build_repair_sequence_metric/evidence/verification_{len(verification_commands)}.json"
+    )
+
+    listed_job = client.get("/api/agent-jobs").json()["jobs"][0]
+    assert listed_job["available_transitions"] == ["blocked", "verified"]
+
+    verify_response = client.patch(
+        "/api/agent-jobs/build_repair_sequence_metric",
+        json={"status": "verified"},
+    )
+    assert verify_response.status_code == 200
+    assert verify_response.json()["job"]["status"] == "verified"
+    assert verify_response.json()["job"]["available_transitions"] == []
+
+    premature_merge_response = client.patch(
+        "/api/agent-jobs/build_repair_sequence_metric",
+        json={"status": "merged"},
+    )
+    assert premature_merge_response.status_code == 400
+
+    merge_evidence_response = client.post(
         "/api/agent-jobs/build_repair_sequence_metric/evidence",
         json={
-            "gate": "backend_tests",
-            "command": ".venv/bin/pytest -q",
+            "gate": "merge",
+            "command": "gh pr merge 123 --merge",
             "status": "passed",
-            "summary": "70 passed",
+            "summary": "Merged to the default branch.",
         },
     )
+    assert merge_evidence_response.status_code == 200
 
-    assert evidence_response.status_code == 200
-    evidence = evidence_response.json()["evidence"]
-    assert evidence["gate"] == "backend_tests"
-    assert evidence["artifact_path"].endswith(
-        "agent_jobs/build_repair_sequence_metric/evidence/backend_tests.json"
+    merge_response = client.patch(
+        "/api/agent-jobs/build_repair_sequence_metric",
+        json={"status": "merged"},
     )
+    assert merge_response.status_code == 200
+    assert merge_response.json()["job"]["status"] == "merged"
+    assert merge_response.json()["job"]["available_transitions"] == []
 
     evidence_list_response = client.get(
         "/api/agent-jobs/build_repair_sequence_metric/evidence"
     )
 
     assert evidence_list_response.status_code == 200
-    assert evidence_list_response.json()["evidence"][0]["summary"] == "70 passed"
+    assert evidence_list_response.json()["evidence"][0]["gate"] == "merge"
 
 
 def test_segmentation_rewrite_job_api_creates_agent_job(tmp_path: Path, monkeypatch) -> None:

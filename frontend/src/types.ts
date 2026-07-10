@@ -1,5 +1,7 @@
 export type MetricId = string;
 
+export type SegmentationSource = "researcher_provided" | "synthetic";
+
 export type DeploymentProfileCheck = {
   id: string;
   status: string;
@@ -218,7 +220,7 @@ export type SegmentationRun = {
     specialist_id: string;
     message: string;
   }[];
-  source: "synthetic";
+  source: SegmentationSource;
   created_at: string;
 };
 

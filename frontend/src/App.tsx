@@ -77,6 +77,7 @@ import {
 } from "./casebookDesign";
 import { buildMetricMatrix } from "./matrixView";
 import { privacyModeLabel } from "./privacyMode";
+import { segmentationSourceLabel } from "./segmentationProvenance";
 import type {
   AgentJob,
   BatchTranscript,
@@ -91,6 +92,7 @@ import type {
   SegmentationCorpusRun,
   SegmentationEvaluation,
   SegmentationRun,
+  SegmentationSource,
   SkillPack,
   StudyBatchResponse,
   StudyBatchRunDetail,
@@ -233,6 +235,8 @@ export function App() {
     useState<SegmentationEvaluation | null>(null);
   const [segmentationRunSource, setSegmentationRunSource] = useState("");
   const [segmentationRunFile, setSegmentationRunFile] = useState<File | null>(null);
+  const [segmentationRunSourceType, setSegmentationRunSourceType] =
+    useState<SegmentationSource>("researcher_provided");
   const [segmentationRun, setSegmentationRun] = useState<SegmentationRun | null>(null);
   const [segmentationAnalysisRun, setSegmentationAnalysisRun] =
     useState<RunResponse | null>(null);
@@ -306,6 +310,7 @@ export function App() {
           setSelectedSegmentationCase(cases[0]);
           setSegmentationDraft(cases[0].gold_text);
           setSegmentationRunSource(cases[0].descript_text);
+          setSegmentationRunSourceType("synthetic");
         }
       })
       .catch(() => setSegmentationStatus("Could not load segmentation cases."));
@@ -615,6 +620,8 @@ export function App() {
       setSelectedSegmentationCase(nextCase);
       setSegmentationDraft(nextCase.gold_text);
       setSegmentationRunSource(nextCase.descript_text);
+      setSegmentationRunFile(null);
+      setSegmentationRunSourceType("synthetic");
       setSegmentationRun(null);
       setSegmentationAnalysisRun(null);
       setSegmentationEvaluation(null);
@@ -622,6 +629,16 @@ export function App() {
       setSegmentationStatus("");
       setError(err instanceof Error ? err.message : "Could not load segmentation case");
     }
+  }
+
+  function selectExistingSegmentationRun(nextRun: SegmentationRun) {
+    setSegmentationRun(nextRun);
+    setSegmentationRunSource(nextRun.descript_text);
+    setSegmentationRunFile(null);
+    setSegmentationRunSourceType(nextRun.source);
+    setSegmentationDraft(nextRun.merged_draft);
+    setSegmentationEvaluation(nextRun.evaluation);
+    setSegmentationAnalysisRun(null);
   }
 
   async function runSegmentationEvaluation() {
@@ -680,7 +697,8 @@ export function App() {
               ? `${selectedSegmentationCase.case_id}.txt`
               : "pasted_descript_export.txt",
             descriptText: segmentationRunSource,
-            ruleIds
+            ruleIds,
+            source: segmentationRunSourceType
           });
       setSegmentationRun(nextRun);
       setSegmentationAnalysisRun(null);
@@ -772,7 +790,8 @@ export function App() {
               ? `${selectedSegmentationCase.case_id}.txt`
               : "pasted_descript_export.txt",
             descriptText: segmentationRunSource,
-            ruleIds
+            ruleIds,
+            source: segmentationRunSourceType
           });
       setSegmentationRun(nextSegmentationRun);
       setSegmentationRuns(await listSegmentationRuns());
@@ -1361,6 +1380,7 @@ export function App() {
               draft={segmentationDraft}
               evaluation={segmentationEvaluation}
               runSource={segmentationRunSource}
+              runSourceType={segmentationRunSourceType}
               runFile={segmentationRunFile}
               run={segmentationRun}
               analysisRun={segmentationAnalysisRun}
@@ -1374,9 +1394,15 @@ export function App() {
               onRunSourceChange={(value) => {
                 setSegmentationRunSource(value);
                 setSegmentationRunFile(null);
+                setSegmentationRunSourceType("researcher_provided");
               }}
-              onRunFileChange={setSegmentationRunFile}
-              onSelectRun={setSegmentationRun}
+              onRunFileChange={(nextFile) => {
+                setSegmentationRunFile(nextFile);
+                if (nextFile) {
+                  setSegmentationRunSourceType("researcher_provided");
+                }
+              }}
+              onSelectRun={selectExistingSegmentationRun}
               onUseGoldDraft={() =>
                 selectedSegmentationCase
                   ? setSegmentationDraft(selectedSegmentationCase.gold_text)
@@ -1493,6 +1519,7 @@ function SegmentationDemoPanel({
   draft,
   evaluation,
   runSource,
+  runSourceType,
   runFile,
   run,
   analysisRun,
@@ -1523,6 +1550,7 @@ function SegmentationDemoPanel({
   draft: string;
   evaluation: SegmentationEvaluation | null;
   runSource: string;
+  runSourceType: SegmentationSource;
   runFile: File | null;
   run: SegmentationRun | null;
   analysisRun: RunResponse | null;
@@ -1661,7 +1689,9 @@ function SegmentationDemoPanel({
                   <div className="section-kicker">Source</div>
                   <h3>Transcript input</h3>
                 </div>
-                {selectedCase ? <span className="casebook-pill">{selectedCase.source}</span> : null}
+                <span className="casebook-pill">
+                  {segmentationSourceLabel(runSourceType)}
+                </span>
               </div>
               <div className="two-pane-editor">
                 <div>
@@ -1926,8 +1956,6 @@ function SegmentationDemoPanel({
                     type="button"
                     onClick={() => {
                       onSelectRun(item);
-                      onRunSourceChange(item.descript_text);
-                      onDraftChange(item.merged_draft);
                       setActiveTab("gold");
                     }}
                   >
@@ -2236,6 +2264,9 @@ function SegmentationRunPanel({ run }: { run: SegmentationRun }) {
     <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1] p-3">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <span className="casebook-pill">{run.status}</span>
+        <span className="casebook-pill muted">
+          {segmentationSourceLabel(run.source)}
+        </span>
         <span className="casebook-pill muted">
           {run.rule_plan.length} specialist packet
           {run.rule_plan.length === 1 ? "" : "s"}

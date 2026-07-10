@@ -4,6 +4,7 @@ import type {
   AgentJobResponse,
   BatchTranscript,
   CUnitRulebookSummary,
+  DeploymentProfile,
   MetricId,
   MetricPlugin,
   PluginRequest,
@@ -33,6 +34,16 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
 export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
+}
+
+export async function getDeploymentProfile(
+  profile = "secure-offline"
+): Promise<DeploymentProfile> {
+  const response = await fetch(`${API_BASE}/api/deployment-profile/${profile}`);
+  if (!response.ok) {
+    throw new Error("Could not load privacy mode");
+  }
+  return response.json();
 }
 
 export async function loadSkillPack(): Promise<SkillPack> {

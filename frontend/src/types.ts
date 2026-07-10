@@ -1,5 +1,17 @@
 export type MetricId = string;
 
+export type DeploymentProfileCheck = {
+  id: string;
+  status: string;
+  message: string;
+};
+
+export type DeploymentProfile = {
+  profile: string;
+  ready: boolean;
+  checks: DeploymentProfileCheck[];
+};
+
 export type MetricResult = {
   metric_id: MetricId;
   label: string;

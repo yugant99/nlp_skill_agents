@@ -10,7 +10,8 @@
     "test:batch": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/batchTranscripts.ts && node tests/batchTranscripts.test.mjs",
     "test:casebook": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/casebookDesign.ts && node tests/casebookDesign.test.mjs",
     "test:matrix": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/matrixView.ts && node tests/matrixView.test.mjs",
-    "test:casebook-csv": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/casebookCsv.ts && node tests/casebookCsv.test.mjs"
+    "test:casebook-csv": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/casebookCsv.ts && node tests/casebookCsv.test.mjs",
+    "test:privacy": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/privacyMode.ts && node tests/privacyMode.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",

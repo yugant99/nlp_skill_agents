@@ -4,6 +4,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from backend.llm.openrouter import is_openrouter_configured
+
 
 def check_deployment_profile(profile: str) -> dict[str, Any]:
     normalized_profile = profile or "dev"
@@ -33,7 +35,7 @@ def _local_data_root_check() -> dict[str, str]:
 
 
 def _network_llm_disabled_check() -> dict[str, str]:
-    if os.environ.get("OPENROUTER_API_KEY"):
+    if is_openrouter_configured():
         return {
             "id": "network_llm_disabled",
             "status": "failed",

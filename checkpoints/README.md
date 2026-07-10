@@ -4,6 +4,17 @@ This folder tracks what has been completed, what is being built, and what must b
 
 Use checkpoints as the project memory for autonomous work. Each substantial feature should add or update a checkpoint entry before it is considered done.
 
+## Current Source Of Truth
+
+- [Psychology Research Platform Roadmap](../goals/psychology-research-platform-roadmap.md)
+  defines the active product boundary, end goal, gap register, delivery rules, and
+  phase gates.
+- Checkpoints below are historical implementation and verification records. They
+  prove what existed at a point in time but do not override the active roadmap or
+  current code.
+- [V1/V2/V3 Roadmap](../goals/v1-v2-v3-roadmap.md) is retained as historical
+  planning context.
+
 ## Checkpoint Format
 
 Each checkpoint should record:
@@ -48,6 +59,9 @@ Each checkpoint should record:
 - [2026-05-17 NVivo gap slices](2026-05-17-nvivo-gap-slices.md)
 - [2026-05-17 Study batch history](2026-05-17-study-batch-history.md)
 - [2026-05-17 Batch run drilldown](2026-05-17-batch-run-drilldown.md)
+- [2026-05-24 C-unit segmentation demo](2026-05-24-cunit-segmentation-demo.html)
+- [2026-05-24 C-unit developer-experience review](2026-05-24-cunit-devex-review.html)
+- [2026-07-10 Phase 0 repository truth](2026-07-10-phase0-repository-truth.md)
 
 ## Completion Bar
 

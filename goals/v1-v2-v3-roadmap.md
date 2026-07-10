@@ -1,5 +1,8 @@
 # NLP Skill Agents Roadmap
 
+> Historical roadmap. The active product north star and demo-to-production plan is
+> [Psychology Research Platform Roadmap](psychology-research-platform-roadmap.md).
+
 This roadmap keeps the project dynamic-first. The core product direction is not "add one hardcoded metric at a time"; it is "let researchers define study-specific analysis skills, then run those skills through local deterministic tools, with agent assistance where it is safe."
 
 ## V1: Dynamic Config Skills

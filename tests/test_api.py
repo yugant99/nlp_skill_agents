@@ -1018,7 +1018,7 @@ def test_segmentation_rulebook_api_exposes_coverage_and_limits() -> None:
     assert payload["corpus_rule_count"] == 10
     assert payload["rule_definitions"][0]["rule_id"] == "speaker-markers"
     assert any(
-        area["area_id"] == "cunit-boundaries" and area["status"] == "gap"
+        area["area_id"] == "cunit-boundaries" and area["status"] == "supported"
         for area in payload["professor_grade_areas"]
     )
 
@@ -1040,6 +1040,8 @@ def test_segmentation_run_rewrite_job_uses_failed_rule_routing(
     run = create_response.json()["run"]
 
     assert run["status"] == "needs_rewrite"
+    assert run["cunit_adjudication"]["counted_cunit_count"] == 1
+    assert run["cunit_adjudication"]["decisions"][0]["boundary_type"]
     assert run["failure_routes"] == [
         {
             "rule_id": "overlap-markers",

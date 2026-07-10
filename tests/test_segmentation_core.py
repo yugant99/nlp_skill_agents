@@ -11,7 +11,76 @@ from backend.segmentation.rulebook import (
 from backend.segmentation.synthetic import build_synthetic_case, list_synthetic_cases
 
 
-def test_rulebook_declares_supported_rules_and_professor_grade_gaps() -> None:
+def test_semantic_cunit_adjudicator_classifies_boundary_decisions() -> None:
+    from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
+
+    events = extract_descript_events(
+        """
+        [00:00:00] P: I picked up the cup and I moved it to the tray.
+        [00:00:04] P: Because it was full.
+        [00:00:06] P: Yes.
+        [00:00:08] P: Uh, I wa want [unintelligible].
+        [00:00:11] Av: What happened next?
+        """,
+        source_filename="semantic_fixture.txt",
+    )
+
+    adjudication = adjudicate_cunit_boundaries(events)
+
+    assert adjudication.participant_turn_count == 4
+    assert adjudication.examiner_turn_count == 1
+    assert adjudication.counted_cunit_count == 3
+    assert adjudication.needs_review_count == 2
+    assert adjudication.boundary_type_counts == {
+        "coordination-split": 1,
+        "dependent-clause-attachment": 1,
+        "ellipsis-minimal-response": 1,
+        "maze-revision-unintelligible": 1,
+        "examiner-prompt": 1,
+    }
+
+    coordination = adjudication.decisions[0]
+    assert coordination.boundary_type == "coordination-split"
+    assert coordination.cunit_count == 2
+    assert "coordinate clause" in coordination.rationale
+
+    dependent = adjudication.decisions[1]
+    assert dependent.boundary_type == "dependent-clause-attachment"
+    assert dependent.cunit_count == 0
+    assert dependent.needs_human_review is True
+
+    maze = adjudication.decisions[3]
+    assert maze.boundary_type == "maze-revision-unintelligible"
+    assert maze.excluded_maze == "Uh, wa"
+    assert maze.needs_human_review is True
+
+
+def test_semantic_cunit_adjudicator_counts_nominal_subject_clauses() -> None:
+    from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
+
+    events = extract_descript_events(
+        """
+        [00:00:00] P: Good morning, Mira.
+        [00:00:02] P: The blue cup is beside the plate.
+        [00:00:04] P: The water might spill.
+        [00:00:06] P: It feels lighter.
+        """,
+        source_filename="nominal_subject_fixture.txt",
+    )
+
+    adjudication = adjudicate_cunit_boundaries(events)
+
+    assert adjudication.counted_cunit_count == 4
+    assert adjudication.needs_review_count == 0
+    assert [decision.boundary_type for decision in adjudication.decisions] == [
+        "formulaic-communicative-unit",
+        "independent-clause",
+        "independent-clause",
+        "independent-clause",
+    ]
+
+
+def test_rulebook_declares_supported_rules_and_professor_grade_semantic_coverage() -> None:
     summary = build_cunit_rulebook_summary()
 
     assert SUPPORTED_RULE_IDS == [
@@ -31,8 +100,12 @@ def test_rulebook_declares_supported_rules_and_professor_grade_gaps() -> None:
     assert summary.corpus_rule_count == 10
     assert any(area.area_id == "cunit-boundaries" for area in PROFESSOR_GRADE_RULE_AREAS)
     assert any(
-        area.status == "gap"
+        area.status == "supported"
         and "independent clause" in area.scientist_language.lower()
+        for area in PROFESSOR_GRADE_RULE_AREAS
+    )
+    assert any(
+        area.area_id == "ellipsis-minimal-response" and area.status == "supported"
         for area in PROFESSOR_GRADE_RULE_AREAS
     )
 
@@ -85,6 +158,20 @@ def test_synthetic_demo_transcripts_are_large_enough_for_scientist_demo() -> Non
 
         assert len(descript_lines) >= 65, case.case_id
         assert len(gold_lines) >= 65, case.case_id
+
+
+def test_default_synthetic_case_exercises_semantic_cunit_decisions() -> None:
+    from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
+
+    case = build_synthetic_case("pause_overlap_repair")
+    events = extract_descript_events(case.descript_text, source_filename="demo.txt")
+
+    adjudication = adjudicate_cunit_boundaries(events)
+
+    assert adjudication.boundary_type_counts["coordination-split"] >= 1
+    assert adjudication.boundary_type_counts["dependent-clause-attachment"] >= 1
+    assert adjudication.boundary_type_counts["ellipsis-minimal-response"] >= 1
+    assert adjudication.boundary_type_counts["maze-revision-unintelligible"] >= 1
 
 
 def test_extract_descript_events_reads_timestamped_speaker_turns() -> None:
@@ -207,6 +294,9 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
         "repair_overlap",
     ]
     assert run.merged_draft
+    assert run.cunit_adjudication is not None
+    assert run.cunit_adjudication.counted_cunit_count >= 1
+    assert run.cunit_adjudication.decisions[0].rationale
     assert run.evaluation is not None
     assert run.evaluation.score == 100
     assert all(output.patches for output in run.specialist_outputs)
@@ -247,6 +337,8 @@ def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) ->
     assert transcript_path.read_text(encoding="utf-8") == run.merged_draft
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["run_id"] == run.run_id
+    assert evidence["cunit_adjudication"]["counted_cunit_count"] >= 1
+    assert evidence["cunit_adjudication"]["decisions"][0]["boundary_type"]
     assert evidence["evaluation"]["score"] == 100
 
 

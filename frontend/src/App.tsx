@@ -34,6 +34,7 @@ import {
   createTextAnalysisRun,
   draftSkillPack,
   evaluateSegmentationDraft,
+  getDeploymentProfile,
   getSegmentationCase,
   getSegmentationRulebook,
   getStudyBatch,
@@ -75,6 +76,7 @@ import {
   type CasebookOptions
 } from "./casebookDesign";
 import { buildMetricMatrix } from "./matrixView";
+import { privacyModeLabel } from "./privacyMode";
 import type {
   AgentJob,
   BatchTranscript,
@@ -242,6 +244,7 @@ export function App() {
   const [segmentationRulebook, setSegmentationRulebook] =
     useState<CUnitRulebookSummary | null>(null);
   const [segmentationStatus, setSegmentationStatus] = useState("");
+  const [privacyMode, setPrivacyMode] = useState("Checking mode");
   const [error, setError] = useState("");
   const [isRunning, setIsRunning] = useState(false);
 
@@ -292,6 +295,9 @@ export function App() {
     getSegmentationRulebook()
       .then(setSegmentationRulebook)
       .catch(() => setSegmentationRulebook(null));
+    getDeploymentProfile()
+      .then((profile) => setPrivacyMode(privacyModeLabel(profile)))
+      .catch(() => setPrivacyMode("Status unavailable"));
     listSegmentationCases()
       .then((cases) => {
         setSegmentationCases(cases);
@@ -1062,7 +1068,7 @@ export function App() {
             </p>
           </div>
           <div className="status-ribbon self-end">
-            <StatusTile icon={<ShieldCheck size={18} />} label="Local" value="No cloud I/O" />
+            <StatusTile icon={<ShieldCheck size={18} />} label="Privacy" value={privacyMode} />
             <StatusTile icon={<Sparkles size={18} />} label="Agents" value="Patch-based" />
             <StatusTile icon={<TableProperties size={18} />} label="Output" value="Transcript + tables" />
           </div>

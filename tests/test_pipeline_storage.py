@@ -3,9 +3,12 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from backend.analysis.pipeline import execute_analysis
 from backend.analysis.transcripts import StudyConfig
 from backend.storage.local_store import LocalRunStore
+from backend.storage.sqlite_migrations import SchemaCompatibilityError
 from backend.storage.source_blob_store import SourceBlobStore
 
 
@@ -131,6 +134,15 @@ def test_local_store_migrates_existing_run_metadata_schema(tmp_path: Path) -> No
     assert listed[0]["source_media_type"] == run.source_media_type
     assert listed[0]["transcript_sha256"] == run.transcript_sha256
     assert listed[0]["transcript_revision_id"] == run.transcript_revision_id
+    assert [migration["version"] for migration in store.migration_status()] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+    with sqlite3.connect(tmp_path / "runs.sqlite3") as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 5
 
 
 def test_local_store_lists_recent_runs_newest_first(tmp_path: Path) -> None:
@@ -153,3 +165,11 @@ def test_local_store_lists_recent_runs_newest_first(tmp_path: Path) -> None:
     assert [row["source_filename"] for row in rows] == ["second.txt", "first.txt"]
     assert rows[0]["metric_count"] == 1
     assert rows[0]["results_json"].endswith("results.json")
+
+
+def test_local_store_rejects_newer_analysis_schema(tmp_path: Path) -> None:
+    with sqlite3.connect(tmp_path / "runs.sqlite3") as connection:
+        connection.execute("pragma user_version = 99")
+
+    with pytest.raises(SchemaCompatibilityError, match="newer"):
+        LocalRunStore(tmp_path).list_runs()

@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
@@ -17,6 +18,49 @@ def test_health_endpoint() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok", "storage": "local"}
+
+
+def test_storage_schema_status_reports_applied_migrations(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    response = client.get("/api/storage/schema-status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["compatible"] is True
+    assert payload["databases"]["analysis_runs"]["current_version"] == 5
+    assert [
+        migration["name"]
+        for migration in payload["databases"]["analysis_runs"]["migrations"]
+    ] == [
+        "create-base-analysis-runs",
+        "add-evidence-identity",
+        "add-source-import-identity",
+        "add-project-source-lineage",
+        "index-analysis-run-history",
+    ]
+    assert payload["databases"]["evidence_catalog"]["current_version"] == 3
+    assert [
+        migration["name"]
+        for migration in payload["databases"]["evidence_catalog"]["migrations"]
+    ] == [
+        "create-import-catalog",
+        "add-project-source-lineage",
+        "index-workspace-history",
+    ]
+
+
+def test_storage_schema_status_rejects_newer_database(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    with sqlite3.connect(tmp_path / "evidence.sqlite3") as connection:
+        connection.execute("pragma user_version = 99")
+    client = TestClient(app)
+
+    response = client.get("/api/storage/schema-status")
+
+    assert response.status_code == 409
+    assert "newer than supported version 3" in response.json()["detail"]
 
 
 def test_default_skill_pack_endpoint() -> None:

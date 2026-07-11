@@ -22,6 +22,7 @@ from backend.segmentation.models import (
 )
 from backend.segmentation.rulebook import SUPPORTED_RULE_IDS
 from backend.segmentation.synthetic import OFFICIAL_SOURCE_GUARD_TOKENS
+from backend.storage.atomic import atomic_write_text
 
 
 RULE_TO_SPECIALIST = {
@@ -328,16 +329,16 @@ class SegmentationRunStore:
 
     def persist_run(self, run: SegmentationRun) -> None:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
-        (self.runs_dir / f"{run.run_id}.json").write_text(
+        atomic_write_text(
+            self.runs_dir / f"{run.run_id}.json",
             json.dumps(segmentation_run_to_payload(run), indent=2),
-            encoding="utf-8",
         )
 
     def persist_corpus_run(self, corpus_run: SegmentationCorpusRun) -> None:
         self.corpus_runs_dir.mkdir(parents=True, exist_ok=True)
-        (self.corpus_runs_dir / f"{corpus_run.corpus_run_id}.json").write_text(
+        atomic_write_text(
+            self.corpus_runs_dir / f"{corpus_run.corpus_run_id}.json",
             json.dumps(segmentation_corpus_run_to_payload(corpus_run), indent=2),
-            encoding="utf-8",
         )
 
     def load_run(self, run_id: str) -> SegmentationRun:
@@ -381,7 +382,7 @@ class SegmentationRunStore:
         export_dir = self.runs_dir / run_id / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
         transcript_path = export_dir / "final_transcript.txt"
-        transcript_path.write_text(run.merged_draft, encoding="utf-8")
+        atomic_write_text(transcript_path, run.merged_draft)
         return transcript_path
 
     def write_evidence_bundle(self, run_id: str) -> Path:
@@ -389,9 +390,9 @@ class SegmentationRunStore:
         export_dir = self.runs_dir / run_id / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = export_dir / "evidence.json"
-        evidence_path.write_text(
+        atomic_write_text(
+            evidence_path,
             json.dumps(segmentation_run_to_payload(run), indent=2),
-            encoding="utf-8",
         )
         return evidence_path
 
@@ -545,7 +546,8 @@ def _write_specialist_artifact(
         "</li>"
         for index, event in enumerate(events)
     )
-    artifact_path.write_text(
+    atomic_write_text(
+        artifact_path,
         f"""<!doctype html>
 <html lang="en">
   <head>
@@ -567,7 +569,6 @@ def _write_specialist_artifact(
   </body>
 </html>
 """,
-        encoding="utf-8",
     )
     return artifact_path
 

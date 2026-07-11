@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.storage.audit_log import AuditLogStore
+from backend.storage.atomic import atomic_write_text
 
 
 @dataclass(frozen=True)
@@ -90,7 +91,7 @@ class LibraryStore:
         version = _version(payload)
         artifact_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = artifact_dir / f"{_identifier(entry_id)}-{_identifier(version)}.json"
-        artifact_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        atomic_write_text(artifact_path, json.dumps(payload, indent=2))
         entry = LibraryEntry(
             id=entry_id,
             version=version,
@@ -100,9 +101,9 @@ class LibraryStore:
             notes=notes,
         )
         metadata_path = artifact_path.with_suffix(".metadata.json")
-        metadata_path.write_text(
+        atomic_write_text(
+            metadata_path,
             json.dumps({**asdict(entry), "artifact_path": str(entry.artifact_path)}, indent=2),
-            encoding="utf-8",
         )
         self._write_manifest()
         self.audit_log.record(
@@ -120,7 +121,8 @@ class LibraryStore:
 
     def _write_manifest(self) -> None:
         self.library_dir.mkdir(parents=True, exist_ok=True)
-        self.manifest_path.write_text(
+        atomic_write_text(
+            self.manifest_path,
             json.dumps(
                 {
                     "created_at": datetime.now(UTC).isoformat(),
@@ -134,7 +136,6 @@ class LibraryStore:
                 },
                 indent=2,
             ),
-            encoding="utf-8",
         )
 
 

@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from backend.storage.atomic import atomic_write_text
+
 
 @dataclass(frozen=True)
 class PluginRequestExample:
@@ -41,16 +43,16 @@ class PluginRequestStore:
     def persist(self, request: PluginRequest) -> StoredPluginRequest:
         self.requests_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = self.requests_dir / f"{request.id}.json"
-        artifact_path.write_text(
+        atomic_write_text(
+            artifact_path,
             json.dumps(plugin_request_to_payload(request), indent=2),
-            encoding="utf-8",
         )
         prompt_dir = self.requests_dir / request.id
         prompt_dir.mkdir(parents=True, exist_ok=True)
         implementation_prompt_path = prompt_dir / "implementation_prompt.md"
-        implementation_prompt_path.write_text(
+        atomic_write_text(
+            implementation_prompt_path,
             build_implementation_prompt(request),
-            encoding="utf-8",
         )
         return StoredPluginRequest(
             request=request,

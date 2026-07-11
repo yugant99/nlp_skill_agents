@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.analysis.pipeline import AnalysisRun
+from backend.storage.atomic import atomic_text_writer, atomic_write_text
 
 
 @dataclass(frozen=True)
@@ -36,9 +37,9 @@ class LocalRunStore:
         export_dir.mkdir(parents=True, exist_ok=True)
 
         results_json = run_dir / "results.json"
-        results_json.write_text(
+        atomic_write_text(
+            results_json,
             json.dumps(_run_to_payload(run), indent=2),
-            encoding="utf-8",
         )
         for result in run.results:
             _write_metric_csv(export_dir / f"{result.metric_id}.csv", result.rows)
@@ -137,7 +138,7 @@ def _skill_pack_payload(run: AnalysisRun) -> dict[str, str] | None:
 
 def _write_metric_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     fieldnames = _ordered_fieldnames(rows)
-    with path.open("w", newline="", encoding="utf-8") as csv_file:
+    with atomic_text_writer(path, newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)

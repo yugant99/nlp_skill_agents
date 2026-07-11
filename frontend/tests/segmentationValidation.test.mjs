@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   RULE_CHECK_LIMIT_TEXT,
   ruleCheckSummary,
+  segmentationRunStatusLabel,
   validationStatusLabel
 } from "../../local_data/tmp/frontend-tests/segmentationValidation.js";
 
@@ -28,4 +29,9 @@ test("surfaces the unvalidated domain status", () => {
     validationStatusLabel({ status: "unknown" }),
     "Validation status unavailable"
   );
+});
+
+test("labels workflow status as rule checks rather than research validation", () => {
+  assert.equal(segmentationRunStatusLabel("verified"), "rule checks passed");
+  assert.equal(segmentationRunStatusLabel("needs_rewrite"), "needs rule repair");
 });

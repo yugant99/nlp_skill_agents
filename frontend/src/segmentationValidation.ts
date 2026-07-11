@@ -22,3 +22,13 @@ export function validationStatusLabel(
     ? "Not domain validated"
     : "Validation status unavailable";
 }
+
+export function segmentationRunStatusLabel(status: string): string {
+  if (status === "verified") {
+    return "rule checks passed";
+  }
+  if (status === "needs_rewrite") {
+    return "needs rule repair";
+  }
+  return status.replaceAll("_", " ");
+}

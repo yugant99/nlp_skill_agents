@@ -4,8 +4,14 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from uuid import uuid4
+
+from backend.storage.atomic import atomic_write_text
+
+
+_AUDIT_WRITE_LOCK = Lock()
 
 
 @dataclass(frozen=True)
@@ -43,8 +49,16 @@ class AuditLogStore:
             actor=actor,
             metadata=metadata or {},
         )
-        with self.events_path.open("a", encoding="utf-8") as events_file:
-            events_file.write(json.dumps(asdict(event)) + "\n")
+        event_line = json.dumps(asdict(event)) + "\n"
+        with _AUDIT_WRITE_LOCK:
+            existing_events = (
+                self.events_path.read_text(encoding="utf-8")
+                if self.events_path.exists()
+                else ""
+            )
+            if existing_events and not existing_events.endswith("\n"):
+                raise ValueError("Audit log ends with an incomplete record")
+            atomic_write_text(self.events_path, existing_events + event_line)
         return event
 
     def list_events(self, limit: int = 100) -> list[dict[str, Any]]:

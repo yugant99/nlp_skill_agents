@@ -31,6 +31,16 @@ def apply_migrations(
             f"{database_name} schema version {current_version} is newer than "
             f"supported version {latest_version}"
         )
+    ledger_exists = connection.execute(
+        """
+        select 1 from sqlite_master
+        where type = 'table' and name = 'schema_migrations'
+        """
+    ).fetchone()
+    if current_version and ledger_exists is None:
+        raise SchemaCompatibilityError(
+            f"{database_name} migration ledger disagrees with user_version"
+        )
     connection.execute(
         """
         create table if not exists schema_migrations (
@@ -46,7 +56,8 @@ def apply_migrations(
             "select version, name from schema_migrations order by version"
         )
     }
-    if recorded and max(recorded) != current_version:
+    expected_recorded_versions = set(range(1, current_version + 1))
+    if set(recorded) != expected_recorded_versions:
         raise SchemaCompatibilityError(
             f"{database_name} migration ledger disagrees with user_version"
         )
@@ -60,22 +71,28 @@ def apply_migrations(
     for migration in migrations:
         if migration.version <= current_version:
             continue
+        if connection.in_transaction:
+            raise SchemaCompatibilityError(
+                f"{database_name} migration requires an inactive connection"
+            )
         try:
-            with connection:
-                migration.apply(connection)
-                connection.execute(
-                    """
-                    insert into schema_migrations (version, name, applied_at)
-                    values (?, ?, ?)
-                    """,
-                    (
-                        migration.version,
-                        migration.name,
-                        datetime.now(UTC).isoformat(),
-                    ),
-                )
-                connection.execute(f"pragma user_version = {migration.version}")
-        except sqlite3.Error as exc:
+            connection.execute("begin immediate")
+            migration.apply(connection)
+            connection.execute(
+                """
+                insert into schema_migrations (version, name, applied_at)
+                values (?, ?, ?)
+                """,
+                (
+                    migration.version,
+                    migration.name,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+            connection.execute(f"pragma user_version = {migration.version}")
+            connection.commit()
+        except Exception as exc:
+            connection.rollback()
             raise SchemaCompatibilityError(
                 f"{database_name} migration {migration.version} ({migration.name}) failed"
             ) from exc

@@ -64,6 +64,7 @@ from backend.storage.project_archive import (
     ProjectArchiveStore,
 )
 from backend.storage.source_blob_store import SourceBlobIntegrityError, SourceBlobStore
+from backend.storage.sqlite_migrations import SchemaCompatibilityError
 from backend.storage.study_store import MAX_STUDY_PARTICIPANTS, StudyWorkspaceStore
 
 
@@ -196,6 +197,28 @@ class LibraryApprovalRequest(BaseModel):
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "storage": "local"}
+
+
+@app.get("/api/storage/schema-status")
+def storage_schema_status() -> dict:
+    try:
+        analysis_migrations = LocalRunStore(_local_data_root()).migration_status()
+        evidence_migrations = EvidenceCatalog(_local_data_root()).migration_status()
+    except SchemaCompatibilityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "compatible": True,
+        "databases": {
+            "analysis_runs": {
+                "current_version": analysis_migrations[-1]["version"],
+                "migrations": analysis_migrations,
+            },
+            "evidence_catalog": {
+                "current_version": evidence_migrations[-1]["version"],
+                "migrations": evidence_migrations,
+            },
+        },
+    }
 
 
 @app.get("/api/skill-packs/default")

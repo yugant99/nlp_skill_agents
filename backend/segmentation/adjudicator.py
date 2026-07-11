@@ -3,6 +3,11 @@ from __future__ import annotations
 import re
 from collections import Counter
 
+from backend.evidence.identifiers import (
+    cunit_evidence_id,
+    passage_evidence_id,
+    transcript_evidence_identity,
+)
 from backend.segmentation.models import (
     CUnitAdjudication,
     CUnitBoundaryDecision,
@@ -141,8 +146,14 @@ _UNINTELLIGIBLE_PATTERN = re.compile(
 def adjudicate_cunit_boundaries(
     events: list[RawTranscriptEvent],
 ) -> CUnitAdjudication:
+    fallback_revision_id = transcript_evidence_identity(
+        "\n".join(
+            f"{event.timestamp_seconds}\0{event.speaker}\0{event.text}"
+            for event in events
+        )
+    ).transcript_revision_id
     decisions = [
-        _classify_event(index, event)
+        _classify_event(index, event, fallback_revision_id)
         for index, event in enumerate(events)
     ]
     boundary_counts = Counter(decision.boundary_type for decision in decisions)
@@ -157,7 +168,11 @@ def adjudicate_cunit_boundaries(
     )
 
 
-def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecision:
+def _classify_event(
+    index: int,
+    event: RawTranscriptEvent,
+    fallback_revision_id: str,
+) -> CUnitBoundaryDecision:
     raw_text = event.text.strip()
     cleaned_text, excluded_maze, maze_terms = _clean_maze_material(raw_text)
     normalized = _normalize(cleaned_text)
@@ -175,6 +190,7 @@ def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecis
             False,
             excluded_maze,
             ["speaker-role"],
+            fallback_revision_id,
         )
 
     if _UNINTELLIGIBLE_PATTERN.search(raw_text):
@@ -189,6 +205,7 @@ def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecis
             True,
             excluded_maze,
             [*maze_terms, "unintelligible-material"],
+            fallback_revision_id,
         )
 
     if tokens and tokens[0].lower() in DEPENDENT_STARTERS:
@@ -203,6 +220,7 @@ def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecis
             True,
             excluded_maze,
             [tokens[0].lower()],
+            fallback_revision_id,
         )
 
     if normalized in MINIMAL_RESPONSES:
@@ -217,6 +235,7 @@ def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecis
             False,
             excluded_maze,
             [normalized],
+            fallback_revision_id,
         )
 
     if _is_formulaic_cunit(normalized):
@@ -231,6 +250,7 @@ def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecis
             False,
             excluded_maze,
             [normalized],
+            fallback_revision_id,
         )
 
     if _has_coordinate_clause(cleaned_text):
@@ -245,6 +265,7 @@ def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecis
             False,
             excluded_maze,
             ["and + subject"],
+            fallback_revision_id,
         )
 
     if _has_independent_clause(tokens):
@@ -259,6 +280,7 @@ def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecis
             False,
             excluded_maze,
             ["subject-predicate"],
+            fallback_revision_id,
         )
 
     return _decision(
@@ -272,6 +294,7 @@ def _classify_event(index: int, event: RawTranscriptEvent) -> CUnitBoundaryDecis
         True,
         excluded_maze,
         ["fragment"],
+        fallback_revision_id,
     )
 
 
@@ -286,7 +309,12 @@ def _decision(
     needs_review: bool,
     excluded_maze: str,
     evidence_terms: list[str],
+    fallback_revision_id: str,
 ) -> CUnitBoundaryDecision:
+    passage_id = event.passage_id or passage_evidence_id(
+        fallback_revision_id,
+        index,
+    )
     return CUnitBoundaryDecision(
         event_index=index,
         speaker=event.speaker,
@@ -300,6 +328,11 @@ def _decision(
         needs_human_review=needs_review,
         excluded_maze=excluded_maze,
         evidence_terms=[term for term in evidence_terms if term],
+        passage_id=passage_id,
+        cunit_ids=[
+            cunit_evidence_id(passage_id, ordinal)
+            for ordinal in range(cunit_count)
+        ],
     )
 
 

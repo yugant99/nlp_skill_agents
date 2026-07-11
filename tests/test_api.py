@@ -149,6 +149,9 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["source_filename"] == "vr009.txt"
+    assert payload["source_id"].startswith("src_")
+    assert len(payload["transcript_sha256"]) == 64
+    assert payload["transcript_revision_id"].startswith("trv_")
     assert [result["metric_id"] for result in payload["results"]] == [
         "base_metrics",
         "disfluency_metrics",
@@ -740,13 +743,23 @@ def test_study_batch_run_drilldown_api_lists_and_loads_one_run(
     assert loaded_response.status_code == 200
     loaded = loaded_response.json()["run"]
     assert loaded["source_filename"] == "P1_home_week1.txt"
-    assert loaded["turns"][0] == {
+    assert list_response.json()["runs"][0]["source_id"] == loaded["source_id"]
+    assert (
+        list_response.json()["runs"][0]["transcript_revision_id"]
+        == loaded["transcript_revision_id"]
+    )
+    assert {
+        key: value
+        for key, value in loaded["turns"][0].items()
+        if key != "passage_id"
+    } == {
         "turn_index": 0,
         "role": "caregiver",
         "speaker_label": "Caregiver",
         "raw_prefix": "P1_c",
         "text": "Hello?",
     }
+    assert loaded["turns"][0]["passage_id"].startswith("psg_")
     assert loaded["results"][0]["metric_id"] == "base_metrics"
 
 
@@ -930,6 +943,11 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
     assert response.status_code == 200
     run = response.json()["run"]
     assert run["source"] == "researcher_provided"
+    assert run["source_id"].startswith("src_")
+    assert len(run["transcript_sha256"]) == 64
+    assert run["transcript_revision_id"].startswith("trv_")
+    assert run["events"][0]["passage_id"].startswith("psg_")
+    assert run["cunit_adjudication"]["decisions"][0]["cunit_ids"]
     assert run["merged_draft"].startswith(
         "Researcher-provided transcript: session"
     )

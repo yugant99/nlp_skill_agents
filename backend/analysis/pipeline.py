@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from backend.evidence.identifiers import transcript_evidence_identity
+
 from backend.analysis.metrics import (
     calculate_base_metrics,
     calculate_care_plan_commitment_metrics,
@@ -164,6 +166,9 @@ METRIC_REGISTRY = metric_calculators()
 @dataclass(frozen=True)
 class AnalysisRun:
     run_id: str
+    source_id: str
+    transcript_sha256: str
+    transcript_revision_id: str
     source_filename: str
     created_at: str
     transcript: Transcript
@@ -175,6 +180,7 @@ def execute_analysis(
     config: StudyConfig,
     source_filename: str,
 ) -> AnalysisRun:
+    identity = transcript_evidence_identity(content)
     selected_metrics = config.selected_metrics or DEFAULT_SELECTED_METRICS
     resolved_config = StudyConfig(
         participant_id=config.participant_id,
@@ -196,6 +202,9 @@ def execute_analysis(
         results.append(get_metric_plugin(metric_id).calculate(transcript))
     return AnalysisRun(
         run_id=uuid4().hex,
+        source_id=identity.source_id,
+        transcript_sha256=identity.transcript_sha256,
+        transcript_revision_id=identity.transcript_revision_id,
         source_filename=source_filename,
         created_at=datetime.now(UTC).isoformat(),
         transcript=transcript,

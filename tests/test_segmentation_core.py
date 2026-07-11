@@ -39,6 +39,10 @@ def test_semantic_cunit_adjudicator_classifies_boundary_decisions() -> None:
         decision.confidence_status == "not_calibrated"
         for decision in adjudication.decisions
     )
+    assert all(
+        decision.passage_id.startswith("psg_")
+        for decision in adjudication.decisions
+    )
     assert adjudication.boundary_type_counts == {
         "coordination-split": 1,
         "dependent-clause-attachment": 1,
@@ -50,6 +54,8 @@ def test_semantic_cunit_adjudicator_classifies_boundary_decisions() -> None:
     coordination = adjudication.decisions[0]
     assert coordination.boundary_type == "coordination-split"
     assert coordination.cunit_count == 2
+    assert len(coordination.cunit_ids) == 2
+    assert len(set(coordination.cunit_ids)) == 2
     assert "coordinate clause" in coordination.rationale
 
     dependent = adjudication.decisions[1]
@@ -309,6 +315,10 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
 
     assert run.status == "verified"
     assert run.source == "researcher_provided"
+    assert run.source_id.startswith("src_")
+    assert len(run.transcript_sha256) == 64
+    assert run.transcript_revision_id.startswith("trv_")
+    assert all(event.passage_id.startswith("psg_") for event in run.events)
     assert run.merged_draft.startswith("Researcher-provided transcript: session")
     assert [packet.specialist_id for packet in run.rule_plan] == [
         "speaker_turn",
@@ -335,6 +345,29 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     assert loaded.run_id == run.run_id
     assert loaded.status == run.status
 
+    repeated = store.create_run(
+        source_filename="renamed-session.txt",
+        descript_text="[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+        rule_ids=[
+            "speaker-markers",
+            "timestamp-markers",
+            "pause-markers",
+            "filled-pauses",
+        ],
+    )
+    assert repeated.run_id != run.run_id
+    assert repeated.source_id == run.source_id
+    assert repeated.transcript_sha256 == run.transcript_sha256
+    assert repeated.transcript_revision_id == run.transcript_revision_id
+    assert [event.passage_id for event in repeated.events] == [
+        event.passage_id for event in run.events
+    ]
+    assert [
+        decision.cunit_ids for decision in repeated.cunit_adjudication.decisions
+    ] == [
+        decision.cunit_ids for decision in run.cunit_adjudication.decisions
+    ]
+
 
 def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) -> None:
     from backend.segmentation.pipeline import SegmentationRunStore
@@ -359,8 +392,13 @@ def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) ->
     assert transcript_path.read_text(encoding="utf-8") == run.merged_draft
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["run_id"] == run.run_id
+    assert evidence["source_id"] == run.source_id
+    assert evidence["transcript_sha256"] == run.transcript_sha256
+    assert evidence["transcript_revision_id"] == run.transcript_revision_id
     assert evidence["cunit_adjudication"]["counted_cunit_count"] >= 1
     assert evidence["cunit_adjudication"]["decisions"][0]["boundary_type"]
+    assert evidence["cunit_adjudication"]["decisions"][0]["passage_id"]
+    assert evidence["cunit_adjudication"]["decisions"][0]["cunit_ids"]
     assert evidence["evaluation"]["passed_rule_count"] == evidence["evaluation"][
         "configured_rule_count"
     ]
@@ -474,6 +512,11 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     run_path = tmp_path / "segmentation_runs" / f"{run.run_id}.json"
     payload = json.loads(run_path.read_text(encoding="utf-8"))
     payload.pop("source")
+    payload.pop("source_id")
+    payload.pop("transcript_sha256")
+    payload.pop("transcript_revision_id")
+    for event in payload["events"]:
+        event.pop("passage_id")
     payload["evaluation"]["score"] = 100
     payload["evaluation"].pop("configured_rule_count")
     payload["evaluation"].pop("passed_rule_count")
@@ -482,10 +525,16 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     for decision in payload["cunit_adjudication"]["decisions"]:
         decision["confidence"] = 0.82
         decision.pop("confidence_status")
+        decision.pop("passage_id")
+        decision.pop("cunit_ids")
     run_path.write_text(json.dumps(payload), encoding="utf-8")
 
     loaded = store.load_run(run.run_id)
     assert loaded.source == "synthetic"
+    assert loaded.source_id.startswith("src_")
+    assert len(loaded.transcript_sha256) == 64
+    assert loaded.transcript_revision_id.startswith("trv_")
+    assert all(event.passage_id.startswith("psg_") for event in loaded.events)
     assert loaded.evaluation is not None
     assert loaded.evaluation.configured_rule_count == 1
     assert loaded.evaluation.passed_rule_count == 1
@@ -494,8 +543,15 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
         decision.confidence_status == "not_calibrated"
         for decision in loaded.cunit_adjudication.decisions
     )
+    assert all(
+        decision.passage_id.startswith("psg_")
+        for decision in loaded.cunit_adjudication.decisions
+    )
 
     store.persist_run(loaded)
     rewritten = json.loads(run_path.read_text(encoding="utf-8"))
     assert "score" not in rewritten["evaluation"]
     assert "confidence" not in rewritten["cunit_adjudication"]["decisions"][0]
+    assert rewritten["source_id"] == loaded.source_id
+    assert rewritten["events"][0]["passage_id"]
+    assert rewritten["cunit_adjudication"]["decisions"][0]["passage_id"]

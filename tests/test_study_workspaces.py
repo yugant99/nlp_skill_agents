@@ -319,8 +319,20 @@ def test_study_workspace_lists_and_loads_batch_run_drilldown(tmp_path: Path) -> 
     ]
     assert run_summaries[0]["metadata"]["participant_id"] == "P1"
     assert run_summaries[0]["turn_count"] == 2
+    assert run_summaries[0]["source_id"] == loaded_run["source_id"]
+    assert (
+        run_summaries[0]["transcript_sha256"]
+        == loaded_run["transcript_sha256"]
+    )
+    assert (
+        run_summaries[0]["transcript_revision_id"]
+        == loaded_run["transcript_revision_id"]
+    )
     assert loaded_run["source_filename"] == "P1_home_week1.txt"
-    assert loaded_run["turns"] == [
+    assert [
+        {key: value for key, value in turn.items() if key != "passage_id"}
+        for turn in loaded_run["turns"]
+    ] == [
         {
             "turn_index": 0,
             "role": "caregiver",
@@ -336,7 +348,47 @@ def test_study_workspace_lists_and_loads_batch_run_drilldown(tmp_path: Path) -> 
             "text": "Hi.",
         },
     ]
+    assert all(turn["passage_id"].startswith("psg_") for turn in loaded_run["turns"])
+    assert len({turn["passage_id"] for turn in loaded_run["turns"]}) == 2
     assert loaded_run["results"][0]["metric_id"] == "base_metrics"
+
+
+def test_study_workspace_lists_legacy_batch_runs_without_identity_fields(
+    tmp_path: Path,
+) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Legacy Batch Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "legacy_batch_pack",
+            "name": "Legacy Batch Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [
+            {
+                "source_filename": "legacy.txt",
+                "content": "P1_c: Hello.\nP1_p: Hi.",
+            }
+        ],
+    )
+    run_path = next((batch.aggregate_dir / "runs").glob("*.json"))
+    payload = json.loads(run_path.read_text(encoding="utf-8"))
+    payload.pop("source_id")
+    payload.pop("transcript_sha256")
+    payload.pop("transcript_revision_id")
+    run_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = store.list_batch_runs(study.id, batch.batch_id)[0]
+
+    assert summary["source_id"] == ""
+    assert summary["transcript_sha256"] == ""
+    assert summary["transcript_revision_id"] == ""
 
 
 def test_study_workspace_exports_reproducibility_bundle(tmp_path: Path) -> None:

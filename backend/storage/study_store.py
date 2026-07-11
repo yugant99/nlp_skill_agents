@@ -215,6 +215,9 @@ class StudyWorkspaceStore:
 
             run_payload = {
                 "run_id": run.run_id,
+                "source_id": run.source_id,
+                "transcript_sha256": run.transcript_sha256,
+                "transcript_revision_id": run.transcript_revision_id,
                 "source_filename": run.source_filename,
                 "metadata": metadata,
                 "created_at": run.created_at,
@@ -426,6 +429,11 @@ def _batch_run_from_payload(payload: dict[str, Any]) -> StudyBatchRun:
 def _batch_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_id": payload["run_id"],
+        "source_id": str(payload.get("source_id") or ""),
+        "transcript_sha256": str(
+            payload.get("transcript_sha256") or payload.get("source_sha256") or ""
+        ),
+        "transcript_revision_id": str(payload.get("transcript_revision_id") or ""),
         "source_filename": payload["source_filename"],
         "metadata": payload.get("metadata", {}),
         "created_at": payload["created_at"],

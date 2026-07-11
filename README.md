@@ -20,6 +20,11 @@ The primary workflow is source-preserving C-unit segmentation:
 - apply patches, verify the result, and export evidence artifacts;
 - run the tracked synthetic regression corpus.
 
+Analysis and segmentation evidence carries content-addressed source and transcript
+revision IDs backed by the SHA-256 of the exact transcript text supplied to the
+pipeline. Parsed turns and segmentation events have stable passage IDs, and
+counted C-unit candidates have stable C-unit IDs within that immutable revision.
+
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are
 not estimates of accuracy, inter-rater reliability, or psychology-domain validity.
@@ -59,6 +64,7 @@ disabled. A configured `OPENROUTER_API_KEY` causes that profile check to fail.
 ```text
 backend/app/           FastAPI entry point and HTTP API
 backend/analysis/      Transcript parsing, deterministic metrics, and skill packs
+backend/evidence/      Shared source, revision, passage, and C-unit identifiers
 backend/segmentation/  C-unit parsing, adjudication, patching, evaluation, and runs
 backend/extensions/    Agent-job and plugin-request artifacts
 backend/storage/       Local JSON, CSV, SQLite, study, audit, and library stores

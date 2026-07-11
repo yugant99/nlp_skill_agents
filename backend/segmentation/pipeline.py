@@ -80,6 +80,9 @@ class MergeEvidence:
 class SegmentationRun:
     run_id: str
     import_id: str
+    project_source_id: str
+    parent_transcript_revision_id: str
+    workspace_id: str
     source_blob_sha256: str
     source_media_type: str
     source_id: str
@@ -144,6 +147,9 @@ class SegmentationRunStore:
         source: str = "researcher_provided",
         source_bytes: bytes | None = None,
         source_media_type: str = "text/plain",
+        project_source_id: str = "",
+        parent_transcript_revision_id: str = "",
+        workspace_id: str = "local-default",
     ) -> SegmentationRun:
         if not descript_text.strip():
             raise ValueError("descript_text must be non-empty")
@@ -154,6 +160,13 @@ class SegmentationRunStore:
             descript_text,
             source_bytes=source_bytes,
             source_media_type=source_media_type,
+            project_source_id=project_source_id,
+        )
+        EvidenceCatalog(self.root).validate_lineage(
+            project_source_id=import_identity.project_source_id,
+            parent_transcript_revision_id=parent_transcript_revision_id,
+            workspace_id=workspace_id or "local-default",
+            transcript_revision_id=identity.transcript_revision_id,
         )
         normalized_rule_ids = _normalize_rule_ids(rule_ids)
         events = extract_descript_events(descript_text, source_filename)
@@ -189,6 +202,9 @@ class SegmentationRunStore:
         run = SegmentationRun(
             run_id=run_id,
             import_id=import_identity.import_id,
+            project_source_id=import_identity.project_source_id,
+            parent_transcript_revision_id=parent_transcript_revision_id,
+            workspace_id=workspace_id or "local-default",
             source_blob_sha256=import_identity.source_blob_sha256,
             source_media_type=import_identity.source_media_type,
             source_id=identity.source_id,
@@ -320,6 +336,9 @@ class SegmentationRunStore:
         updated_run = SegmentationRun(
             run_id=run.run_id,
             import_id=run.import_id,
+            project_source_id=run.project_source_id,
+            parent_transcript_revision_id=run.parent_transcript_revision_id,
+            workspace_id=run.workspace_id,
             source_blob_sha256=run.source_blob_sha256,
             source_media_type=run.source_media_type,
             source_id=run.source_id,
@@ -368,15 +387,14 @@ class SegmentationRunStore:
 
     def persist_run(self, run: SegmentationRun) -> None:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(
-            self.runs_dir / f"{run.run_id}.json",
-            json.dumps(segmentation_run_to_payload(run), indent=2),
-        )
         EvidenceCatalog(self.root).record_import(
             EvidenceImportRecord(
                 import_id=run.import_id,
                 run_id=run.run_id,
                 pipeline="segmentation",
+                project_source_id=run.project_source_id,
+                parent_transcript_revision_id=run.parent_transcript_revision_id,
+                workspace_id=run.workspace_id,
                 source_id=run.source_id,
                 source_filename=run.source_filename,
                 source_media_type=run.source_media_type,
@@ -385,6 +403,10 @@ class SegmentationRunStore:
                 transcript_sha256=run.transcript_sha256,
                 imported_at=run.created_at,
             )
+        )
+        atomic_write_text(
+            self.runs_dir / f"{run.run_id}.json",
+            json.dumps(segmentation_run_to_payload(run), indent=2),
         )
 
     def persist_corpus_run(self, corpus_run: SegmentationCorpusRun) -> None:
@@ -639,6 +661,7 @@ def segmentation_corpus_run_to_payload(
 def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
     descript_text = str(payload["descript_text"])
     identity = transcript_evidence_identity(descript_text)
+    import_id = str(payload.get("import_id") or f"imp_legacy_{payload['run_id']}")
     transcript_revision_id = str(
         payload.get("transcript_revision_id") or identity.transcript_revision_id
     )
@@ -648,7 +671,14 @@ def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
     )
     return SegmentationRun(
         run_id=str(payload["run_id"]),
-        import_id=str(payload.get("import_id") or f"imp_legacy_{payload['run_id']}"),
+        import_id=import_id,
+        project_source_id=str(
+            payload.get("project_source_id") or f"psrc_legacy_{import_id}"
+        ),
+        parent_transcript_revision_id=str(
+            payload.get("parent_transcript_revision_id") or ""
+        ),
+        workspace_id=str(payload.get("workspace_id") or "legacy"),
         source_blob_sha256=str(payload.get("source_blob_sha256") or ""),
         source_media_type=str(payload.get("source_media_type") or "unknown"),
         source_id=str(payload.get("source_id") or identity.source_id),

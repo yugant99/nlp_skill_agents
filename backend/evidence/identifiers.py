@@ -15,6 +15,7 @@ class TranscriptEvidenceIdentity:
 @dataclass(frozen=True)
 class SourceImportIdentity:
     import_id: str
+    project_source_id: str
     source_blob_sha256: str
     source_media_type: str
 
@@ -33,10 +34,12 @@ def source_import_identity(
     *,
     source_bytes: bytes | None = None,
     source_media_type: str = "text/plain",
+    project_source_id: str = "",
 ) -> SourceImportIdentity:
     blob = source_bytes if source_bytes is not None else content.encode("utf-8")
     return SourceImportIdentity(
         import_id=f"imp_{uuid4().hex}",
+        project_source_id=project_source_id or f"psrc_{uuid4().hex}",
         source_blob_sha256=sha256(blob).hexdigest(),
         source_media_type=source_media_type or "application/octet-stream",
     )

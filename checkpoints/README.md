@@ -70,6 +70,7 @@ Each checkpoint should record:
 - [2026-07-10 Phase 0 calibrated confidence](2026-07-10-phase0-calibrated-confidence.md)
 - [2026-07-10 Phase 1 canonical evidence identifiers](2026-07-10-phase1-canonical-evidence-identifiers.md)
 - [2026-07-10 Phase 1 source import identity](2026-07-10-phase1-source-import-identity.md)
+- [2026-07-10 Phase 1 source revision lineage](2026-07-10-phase1-source-revision-lineage.md)
 
 ## Completion Bar
 

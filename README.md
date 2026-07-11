@@ -28,6 +28,10 @@ Each ingestion also receives a distinct import ID and records the SHA-256 of the
 actual uploaded blob, or the exact UTF-8 bytes for pasted text, in
 `evidence.sqlite3`. Re-recording an import or revision may be idempotent but cannot
 change its identity fields.
+Project source records group those immutable revisions inside either a study or
+the local default workspace. A revised import must name its existing project
+source and parent transcript revision; invalid cross-source or cross-workspace
+lineage is rejected before run artifacts are created.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

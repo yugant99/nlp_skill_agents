@@ -54,8 +54,16 @@ def test_source_import_identity_hashes_original_blob_bytes() -> None:
 
     assert first.import_id.startswith("imp_")
     assert first.import_id != repeated.import_id
+    assert first.project_source_id.startswith("psrc_")
+    assert first.project_source_id != repeated.project_source_id
     assert first.source_blob_sha256 == repeated.source_blob_sha256
     assert first.source_blob_sha256 != transcript_evidence_identity(
         content
     ).transcript_sha256
     assert first.source_media_type == "text/plain"
+
+    revised = source_import_identity(
+        "P1: revised",
+        project_source_id=first.project_source_id,
+    )
+    assert revised.project_source_id == first.project_source_id

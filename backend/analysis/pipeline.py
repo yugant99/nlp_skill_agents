@@ -170,6 +170,9 @@ METRIC_REGISTRY = metric_calculators()
 class AnalysisRun:
     run_id: str
     import_id: str
+    project_source_id: str
+    parent_transcript_revision_id: str
+    workspace_id: str
     source_blob_sha256: str
     source_media_type: str
     source_id: str
@@ -188,12 +191,16 @@ def execute_analysis(
     *,
     source_bytes: bytes | None = None,
     source_media_type: str = "text/plain",
+    project_source_id: str = "",
+    parent_transcript_revision_id: str = "",
+    workspace_id: str = "local-default",
 ) -> AnalysisRun:
     identity = transcript_evidence_identity(content)
     import_identity = source_import_identity(
         content,
         source_bytes=source_bytes,
         source_media_type=source_media_type,
+        project_source_id=project_source_id,
     )
     selected_metrics = config.selected_metrics or DEFAULT_SELECTED_METRICS
     resolved_config = StudyConfig(
@@ -217,6 +224,9 @@ def execute_analysis(
     return AnalysisRun(
         run_id=uuid4().hex,
         import_id=import_identity.import_id,
+        project_source_id=import_identity.project_source_id,
+        parent_transcript_revision_id=parent_transcript_revision_id,
+        workspace_id=workspace_id or "local-default",
         source_blob_sha256=import_identity.source_blob_sha256,
         source_media_type=import_identity.source_media_type,
         source_id=identity.source_id,

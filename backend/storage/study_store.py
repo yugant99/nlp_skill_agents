@@ -208,6 +208,11 @@ class StudyWorkspaceStore:
                     source_media_type=str(
                         item.get("source_media_type") or "text/plain"
                     ),
+                    project_source_id=str(item.get("project_source_id") or ""),
+                    parent_transcript_revision_id=str(
+                        item.get("parent_transcript_revision_id") or ""
+                    ),
+                    workspace_id=study_id,
                 )
             except (ValueError, KeyError) as exc:
                 failures.append(
@@ -221,6 +226,11 @@ class StudyWorkspaceStore:
             run_payload = {
                 "run_id": run.run_id,
                 "import_id": run.import_id,
+                "project_source_id": run.project_source_id,
+                "parent_transcript_revision_id": (
+                    run.parent_transcript_revision_id
+                ),
+                "workspace_id": run.workspace_id,
                 "source_blob_sha256": run.source_blob_sha256,
                 "source_media_type": run.source_media_type,
                 "source_id": run.source_id,
@@ -233,23 +243,32 @@ class StudyWorkspaceStore:
                 "turns": [asdict(turn) for turn in run.transcript.turns],
                 "results": [asdict(result) for result in run.results],
             }
+            evidence_record = EvidenceImportRecord(
+                import_id=run.import_id,
+                run_id=run.run_id,
+                pipeline="study_batch",
+                project_source_id=run.project_source_id,
+                parent_transcript_revision_id=run.parent_transcript_revision_id,
+                workspace_id=run.workspace_id,
+                source_id=run.source_id,
+                source_filename=run.source_filename,
+                source_media_type=run.source_media_type,
+                source_blob_sha256=run.source_blob_sha256,
+                transcript_revision_id=run.transcript_revision_id,
+                transcript_sha256=run.transcript_sha256,
+                imported_at=run.created_at,
+            )
+            evidence_catalog = EvidenceCatalog(self.root)
+            evidence_catalog.validate_lineage(
+                project_source_id=run.project_source_id,
+                parent_transcript_revision_id=run.parent_transcript_revision_id,
+                workspace_id=run.workspace_id,
+                transcript_revision_id=run.transcript_revision_id,
+            )
+            evidence_catalog.record_import(evidence_record)
             atomic_write_text(
                 runs_dir / f"{run.run_id}.json",
                 json.dumps(run_payload, indent=2),
-            )
-            EvidenceCatalog(self.root).record_import(
-                EvidenceImportRecord(
-                    import_id=run.import_id,
-                    run_id=run.run_id,
-                    pipeline="study_batch",
-                    source_id=run.source_id,
-                    source_filename=run.source_filename,
-                    source_media_type=run.source_media_type,
-                    source_blob_sha256=run.source_blob_sha256,
-                    transcript_revision_id=run.transcript_revision_id,
-                    transcript_sha256=run.transcript_sha256,
-                    imported_at=run.created_at,
-                )
             )
             successes.append(run_payload)
 
@@ -452,6 +471,11 @@ def _batch_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_id": payload["run_id"],
         "import_id": str(payload.get("import_id") or ""),
+        "project_source_id": str(payload.get("project_source_id") or ""),
+        "parent_transcript_revision_id": str(
+            payload.get("parent_transcript_revision_id") or ""
+        ),
+        "workspace_id": str(payload.get("workspace_id") or ""),
         "source_blob_sha256": str(payload.get("source_blob_sha256") or ""),
         "source_media_type": str(payload.get("source_media_type") or ""),
         "source_id": str(payload.get("source_id") or ""),

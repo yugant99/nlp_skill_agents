@@ -75,6 +75,8 @@ class TextRunRequest(BaseModel):
     source_filename: str = Field(default="pasted_transcript.txt", min_length=1)
     content: str = Field(min_length=1)
     config: dict = Field(default_factory=dict)
+    project_source_id: str = Field(default="")
+    parent_transcript_revision_id: str = Field(default="")
 
 
 class SkillPackTextRequest(BaseModel):
@@ -127,6 +129,8 @@ class SegmentationRunCreateRequest(BaseModel):
     descript_text: str = Field(min_length=1)
     rule_ids: list[str] = Field(default_factory=list)
     source: Literal["researcher_provided", "synthetic"] = "researcher_provided"
+    project_source_id: str = Field(default="")
+    parent_transcript_revision_id: str = Field(default="")
 
 
 class SegmentationCorpusRunCreateRequest(BaseModel):
@@ -168,6 +172,8 @@ class StudyTextTranscript(BaseModel):
     source_filename: str = Field(min_length=1)
     content: str = Field(min_length=1)
     metadata: dict[str, str] = Field(default_factory=dict)
+    project_source_id: str = Field(default="")
+    parent_transcript_revision_id: str = Field(default="")
 
 
 class StudyTextBatchRequest(BaseModel):
@@ -403,6 +409,8 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
             descript_text=request.descript_text,
             rule_ids=request.rule_ids,
             source=request.source,
+            project_source_id=request.project_source_id,
+            parent_transcript_revision_id=request.parent_transcript_revision_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -442,6 +450,8 @@ def list_segmentation_runs() -> dict:
 @app.post("/api/segmentation/runs/files")
 async def create_segmentation_file_run(
     rule_ids: Annotated[str, Form()] = "[]",
+    project_source_id: Annotated[str, Form()] = "",
+    parent_transcript_revision_id: Annotated[str, Form()] = "",
     file: UploadFile = File(...),
 ) -> dict:
     suffix = Path(file.filename or "").suffix.lower()
@@ -461,6 +471,8 @@ async def create_segmentation_file_run(
             source="researcher_provided",
             source_bytes=source_bytes,
             source_media_type=file.content_type or "application/octet-stream",
+            project_source_id=project_source_id,
+            parent_transcript_revision_id=parent_transcript_revision_id,
         )
     except UnicodeDecodeError as exc:
         raise HTTPException(
@@ -514,7 +526,10 @@ def analyze_segmentation_run(
         config,
         source_filename=source_filename,
     )
-    stored = LocalRunStore(_local_data_root()).persist_run(run)
+    try:
+        stored = LocalRunStore(_local_data_root()).persist_run(run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _run_response(run, stored)
 
 
@@ -843,6 +858,8 @@ def refine_skill_pack_endpoint(request: SkillPackRefineRequest) -> dict:
 async def create_run(
     config: Annotated[str, Form()],
     file: Annotated[UploadFile, File()],
+    project_source_id: Annotated[str, Form()] = "",
+    parent_transcript_revision_id: Annotated[str, Form()] = "",
 ) -> dict:
     try:
         parsed_config = _study_config_from_json(config)
@@ -863,8 +880,13 @@ async def create_run(
         source_filename=file.filename or "transcript",
         source_bytes=source_bytes,
         source_media_type=source_media_type,
+        project_source_id=project_source_id,
+        parent_transcript_revision_id=parent_transcript_revision_id,
     )
-    stored = LocalRunStore(_local_data_root()).persist_run(run)
+    try:
+        stored = LocalRunStore(_local_data_root()).persist_run(run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _run_response(run, stored)
 
 
@@ -878,8 +900,13 @@ def create_text_run(request: TextRunRequest) -> dict:
         request.content,
         config,
         source_filename=request.source_filename,
+        project_source_id=request.project_source_id,
+        parent_transcript_revision_id=request.parent_transcript_revision_id,
     )
-    stored = LocalRunStore(_local_data_root()).persist_run(run)
+    try:
+        stored = LocalRunStore(_local_data_root()).persist_run(run)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _run_response(run, stored)
 
 
@@ -891,6 +918,14 @@ def list_runs() -> dict:
 @app.get("/api/evidence/imports")
 def list_evidence_imports() -> dict:
     return {"imports": EvidenceCatalog(_local_data_root()).list_imports()}
+
+
+@app.get("/api/evidence/sources/{project_source_id}")
+def get_evidence_source_history(project_source_id: str) -> dict:
+    try:
+        return EvidenceCatalog(_local_data_root()).source_history(project_source_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Evidence source not found") from exc
 
 
 @app.get("/api/runs/{run_id}/exports/{filename}")
@@ -918,6 +953,8 @@ def _execute_or_400(
     *,
     source_bytes: bytes | None = None,
     source_media_type: str = "text/plain",
+    project_source_id: str = "",
+    parent_transcript_revision_id: str = "",
 ):
     try:
         return execute_analysis(
@@ -926,6 +963,8 @@ def _execute_or_400(
             source_filename,
             source_bytes=source_bytes,
             source_media_type=source_media_type,
+            project_source_id=project_source_id,
+            parent_transcript_revision_id=parent_transcript_revision_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1030,6 +1069,9 @@ def _run_response(run, stored: StoredRun) -> dict:
     return {
         "run_id": run.run_id,
         "import_id": run.import_id,
+        "project_source_id": run.project_source_id,
+        "parent_transcript_revision_id": run.parent_transcript_revision_id,
+        "workspace_id": run.workspace_id,
         "source_blob_sha256": run.source_blob_sha256,
         "source_media_type": run.source_media_type,
         "source_id": run.source_id,

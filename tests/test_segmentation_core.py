@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from backend.segmentation.descript import extract_descript_events
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.rulebook import (
@@ -316,6 +318,9 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     assert run.status == "verified"
     assert run.source == "researcher_provided"
     assert run.import_id.startswith("imp_")
+    assert run.project_source_id.startswith("psrc_")
+    assert run.parent_transcript_revision_id == ""
+    assert run.workspace_id == "local-default"
     assert len(run.source_blob_sha256) == 64
     assert run.source_media_type == "text/plain"
     assert run.source_id.startswith("src_")
@@ -360,6 +365,7 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     )
     assert repeated.run_id != run.run_id
     assert repeated.import_id != run.import_id
+    assert repeated.project_source_id != run.project_source_id
     assert repeated.source_blob_sha256 == run.source_blob_sha256
     assert repeated.source_id == run.source_id
     assert repeated.transcript_sha256 == run.transcript_sha256
@@ -412,6 +418,45 @@ def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) ->
     ]
     assert "score" not in evidence["evaluation"]
     assert "confidence" not in evidence["cunit_adjudication"]["decisions"][0]
+
+
+def test_segmentation_store_records_and_validates_revision_lineage(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import SegmentationRunStore
+    from backend.storage.evidence_catalog import EvidenceCatalog
+
+    store = SegmentationRunStore(tmp_path)
+    first = store.create_run(
+        source_filename="session.txt",
+        descript_text="[00:00:00] P: I start here.",
+        rule_ids=["speaker-markers"],
+    )
+    second = store.create_run(
+        source_filename="session-revised.txt",
+        descript_text="[00:00:00] P: I start over here.",
+        rule_ids=["speaker-markers"],
+        project_source_id=first.project_source_id,
+        parent_transcript_revision_id=first.transcript_revision_id,
+    )
+
+    history = EvidenceCatalog(tmp_path).source_history(first.project_source_id)
+    assert second.project_source_id == first.project_source_id
+    assert second.parent_transcript_revision_id == first.transcript_revision_id
+    assert [item["transcript_revision_id"] for item in history["revisions"]] == [
+        first.transcript_revision_id,
+        second.transcript_revision_id,
+    ]
+
+    with pytest.raises(ValueError, match="Parent revision does not belong"):
+        store.create_run(
+            source_filename="invalid.txt",
+            descript_text="[00:00:00] P: This parent is invalid.",
+            rule_ids=["speaker-markers"],
+            project_source_id=first.project_source_id,
+            parent_transcript_revision_id="trv_missing",
+        )
+    assert len(list((tmp_path / "segmentation_runs").glob("*.json"))) == 2
 
 
 def test_segmentation_corpus_run_store_runs_generated_cases_and_summarizes_coverage(
@@ -521,6 +566,9 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     payload = json.loads(run_path.read_text(encoding="utf-8"))
     payload.pop("source")
     payload.pop("import_id")
+    payload.pop("project_source_id")
+    payload.pop("parent_transcript_revision_id")
+    payload.pop("workspace_id")
     payload.pop("source_blob_sha256")
     payload.pop("source_media_type")
     payload.pop("source_id")
@@ -543,6 +591,9 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     loaded = store.load_run(run.run_id)
     assert loaded.source == "synthetic"
     assert loaded.import_id == f"imp_legacy_{run.run_id}"
+    assert loaded.project_source_id == f"psrc_legacy_imp_legacy_{run.run_id}"
+    assert loaded.parent_transcript_revision_id == ""
+    assert loaded.workspace_id == "legacy"
     assert loaded.source_blob_sha256 == ""
     assert loaded.source_media_type == "unknown"
     assert loaded.source_id.startswith("src_")
@@ -568,6 +619,7 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     assert "confidence" not in rewritten["cunit_adjudication"]["decisions"][0]
     assert rewritten["source_id"] == loaded.source_id
     assert rewritten["import_id"] == loaded.import_id
+    assert rewritten["project_source_id"] == loaded.project_source_id
     assert rewritten["source_blob_sha256"] == ""
     assert rewritten["events"][0]["passage_id"]
     assert rewritten["cunit_adjudication"]["decisions"][0]["passage_id"]

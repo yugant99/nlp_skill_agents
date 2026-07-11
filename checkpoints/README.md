@@ -71,6 +71,7 @@ Each checkpoint should record:
 - [2026-07-10 Phase 1 canonical evidence identifiers](2026-07-10-phase1-canonical-evidence-identifiers.md)
 - [2026-07-10 Phase 1 source import identity](2026-07-10-phase1-source-import-identity.md)
 - [2026-07-10 Phase 1 source revision lineage](2026-07-10-phase1-source-revision-lineage.md)
+- [2026-07-10 Phase 1 source blob retention](2026-07-10-phase1-source-blob-retention.md)
 
 ## Completion Bar
 

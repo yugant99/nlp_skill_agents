@@ -32,6 +32,9 @@ Project source records group those immutable revisions inside either a study or
 the local default workspace. A revised import must name its existing project
 source and parent transcript revision; invalid cross-source or cross-workspace
 lineage is rejected before run artifacts are created.
+Original source blobs are retained locally at content-addressed SHA-256 paths.
+New writes verify their expected digest, existing blobs are reverified before
+deduplication, and every read used by the verification API rehashes the bytes.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

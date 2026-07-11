@@ -68,6 +68,7 @@ was protected by the production build and all frontend helper suites.
 
 - `4d7b3cc Add stable analysis evidence identifiers`
 - `eeeffa8 Attach stable IDs to segmentation evidence`
+- `2dc19cc Clarify transcript content hashing`
 
 ## Known Limitations And Rollback
 

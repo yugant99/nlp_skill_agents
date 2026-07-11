@@ -205,7 +205,8 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 - [x] Replace manually editable job statuses with enforced transition and evidence
       gates.
 - [x] Replace direct final-path writes with recoverable writes.
-- [ ] Replace synthetic-only confidence claims with validated and calibrated limits.
+- [x] Replace synthetic-only confidence claims with explicit evidence scope,
+      unvalidated status, and calibrated claim limits.
 - [x] Reconcile the README, old plans, checkpoint catalog, and current branch.
 
 ## Roadmap And Exit Gates

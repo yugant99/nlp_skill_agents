@@ -34,6 +34,8 @@ parent/child ancestry without relying on filenames, run order, or mutable UI sta
   segmentation sources use `local-default`.
 - A child revision records `parent_transcript_revision_id`; its parent must already
   belong to the same project source and workspace.
+- Reimporting an existing revision is allowed, but new transcript content under an
+  existing project source must name a parent and cannot create a second root.
 - Rejects missing parents, parents from another source, source/workspace conflicts,
   self-parenting, and attempts to rewrite established ancestry.
 - Carries project-source, parent-revision, and workspace identity through analysis,
@@ -71,6 +73,7 @@ all frontend helper suites.
 
 - `168e47a Add project source revision lineage`
 - `1804b88 Wire source lineage through research runs`
+- `f79f679 Require parents for new source revisions`
 
 ## Known Limitations And Rollback
 

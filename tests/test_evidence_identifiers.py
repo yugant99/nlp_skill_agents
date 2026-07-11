@@ -14,8 +14,8 @@ def test_transcript_identity_is_content_addressed_and_stable() -> None:
     assert first != changed
     assert first.source_id.startswith("src_")
     assert first.transcript_revision_id.startswith("trv_")
-    assert len(first.source_sha256) == 64
-    assert int(first.source_sha256, 16) >= 0
+    assert len(first.transcript_sha256) == 64
+    assert int(first.transcript_sha256, 16) >= 0
 
 
 def test_passage_and_cunit_ids_are_stable_within_a_revision() -> None:

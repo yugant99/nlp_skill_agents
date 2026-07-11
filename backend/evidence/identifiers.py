@@ -7,16 +7,16 @@ from hashlib import sha256
 @dataclass(frozen=True)
 class TranscriptEvidenceIdentity:
     source_id: str
-    source_sha256: str
+    transcript_sha256: str
     transcript_revision_id: str
 
 
 def transcript_evidence_identity(content: str) -> TranscriptEvidenceIdentity:
-    source_sha256 = sha256(content.encode("utf-8")).hexdigest()
+    transcript_sha256 = sha256(content.encode("utf-8")).hexdigest()
     return TranscriptEvidenceIdentity(
-        source_id=f"src_{source_sha256[:32]}",
-        source_sha256=source_sha256,
-        transcript_revision_id=f"trv_{source_sha256[:32]}",
+        source_id=f"src_{transcript_sha256[:32]}",
+        transcript_sha256=transcript_sha256,
+        transcript_revision_id=f"trv_{transcript_sha256[:32]}",
     )
 
 

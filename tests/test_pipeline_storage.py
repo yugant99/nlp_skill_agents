@@ -21,7 +21,7 @@ def test_execute_analysis_runs_selected_metric_skills() -> None:
 
     assert run.source_filename == "vr007.txt"
     assert run.source_id.startswith("src_")
-    assert len(run.source_sha256) == 64
+    assert len(run.transcript_sha256) == 64
     assert run.transcript_revision_id.startswith("trv_")
     assert all(turn.passage_id.startswith("psg_") for turn in run.transcript.turns)
     assert [result.metric_id for result in run.results] == [
@@ -48,7 +48,7 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
     result_payload = json.loads(stored.results_json.read_text(encoding="utf-8"))
     assert result_payload["source_filename"] == "vr008.txt"
     assert result_payload["source_id"] == run.source_id
-    assert result_payload["source_sha256"] == run.source_sha256
+    assert result_payload["transcript_sha256"] == run.transcript_sha256
     assert result_payload["transcript_revision_id"] == run.transcript_revision_id
     assert [metric["metric_id"] for metric in result_payload["results"]] == [
         "base_metrics",
@@ -65,7 +65,7 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
     with sqlite3.connect(tmp_path / "runs.sqlite3") as connection:
         db_rows = connection.execute(
             """
-            select run_id, source_id, source_sha256, transcript_revision_id,
+            select run_id, source_id, transcript_sha256, transcript_revision_id,
                    source_filename, metric_count
             from analysis_runs
             """
@@ -74,7 +74,7 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
         (
             stored.run_id,
             run.source_id,
-            run.source_sha256,
+            run.transcript_sha256,
             run.transcript_revision_id,
             "vr008.txt",
             3,
@@ -106,7 +106,7 @@ def test_local_store_migrates_existing_run_metadata_schema(tmp_path: Path) -> No
 
     listed = store.list_runs()
     assert listed[0]["source_id"] == run.source_id
-    assert listed[0]["source_sha256"] == run.source_sha256
+    assert listed[0]["transcript_sha256"] == run.transcript_sha256
     assert listed[0]["transcript_revision_id"] == run.transcript_revision_id
 
 

@@ -167,7 +167,7 @@ METRIC_REGISTRY = metric_calculators()
 class AnalysisRun:
     run_id: str
     source_id: str
-    source_sha256: str
+    transcript_sha256: str
     transcript_revision_id: str
     source_filename: str
     created_at: str
@@ -203,7 +203,7 @@ def execute_analysis(
     return AnalysisRun(
         run_id=uuid4().hex,
         source_id=identity.source_id,
-        source_sha256=identity.source_sha256,
+        transcript_sha256=identity.transcript_sha256,
         transcript_revision_id=identity.transcript_revision_id,
         source_filename=source_filename,
         created_at=datetime.now(UTC).isoformat(),

@@ -316,7 +316,7 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     assert run.status == "verified"
     assert run.source == "researcher_provided"
     assert run.source_id.startswith("src_")
-    assert len(run.source_sha256) == 64
+    assert len(run.transcript_sha256) == 64
     assert run.transcript_revision_id.startswith("trv_")
     assert all(event.passage_id.startswith("psg_") for event in run.events)
     assert run.merged_draft.startswith("Researcher-provided transcript: session")
@@ -357,7 +357,7 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     )
     assert repeated.run_id != run.run_id
     assert repeated.source_id == run.source_id
-    assert repeated.source_sha256 == run.source_sha256
+    assert repeated.transcript_sha256 == run.transcript_sha256
     assert repeated.transcript_revision_id == run.transcript_revision_id
     assert [event.passage_id for event in repeated.events] == [
         event.passage_id for event in run.events
@@ -393,7 +393,7 @@ def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) ->
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["run_id"] == run.run_id
     assert evidence["source_id"] == run.source_id
-    assert evidence["source_sha256"] == run.source_sha256
+    assert evidence["transcript_sha256"] == run.transcript_sha256
     assert evidence["transcript_revision_id"] == run.transcript_revision_id
     assert evidence["cunit_adjudication"]["counted_cunit_count"] >= 1
     assert evidence["cunit_adjudication"]["decisions"][0]["boundary_type"]
@@ -513,7 +513,7 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     payload = json.loads(run_path.read_text(encoding="utf-8"))
     payload.pop("source")
     payload.pop("source_id")
-    payload.pop("source_sha256")
+    payload.pop("transcript_sha256")
     payload.pop("transcript_revision_id")
     for event in payload["events"]:
         event.pop("passage_id")
@@ -532,7 +532,7 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     loaded = store.load_run(run.run_id)
     assert loaded.source == "synthetic"
     assert loaded.source_id.startswith("src_")
-    assert len(loaded.source_sha256) == 64
+    assert len(loaded.transcript_sha256) == 64
     assert loaded.transcript_revision_id.startswith("trv_")
     assert all(event.passage_id.startswith("psg_") for event in loaded.events)
     assert loaded.evaluation is not None

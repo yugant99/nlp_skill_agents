@@ -78,7 +78,7 @@ class MergeEvidence:
 class SegmentationRun:
     run_id: str
     source_id: str
-    source_sha256: str
+    transcript_sha256: str
     transcript_revision_id: str
     source_filename: str
     descript_text: str
@@ -177,7 +177,7 @@ class SegmentationRunStore:
         run = SegmentationRun(
             run_id=run_id,
             source_id=identity.source_id,
-            source_sha256=identity.source_sha256,
+            transcript_sha256=identity.transcript_sha256,
             transcript_revision_id=identity.transcript_revision_id,
             source_filename=source_filename,
             descript_text=descript_text,
@@ -305,7 +305,7 @@ class SegmentationRunStore:
         updated_run = SegmentationRun(
             run_id=run.run_id,
             source_id=run.source_id,
-            source_sha256=run.source_sha256,
+            transcript_sha256=run.transcript_sha256,
             transcript_revision_id=run.transcript_revision_id,
             source_filename=run.source_filename,
             descript_text=run.descript_text,
@@ -617,7 +617,11 @@ def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
     return SegmentationRun(
         run_id=str(payload["run_id"]),
         source_id=str(payload.get("source_id") or identity.source_id),
-        source_sha256=str(payload.get("source_sha256") or identity.source_sha256),
+        transcript_sha256=str(
+            payload.get("transcript_sha256")
+            or payload.get("source_sha256")
+            or identity.transcript_sha256
+        ),
         transcript_revision_id=transcript_revision_id,
         source_filename=str(payload["source_filename"]),
         descript_text=descript_text,

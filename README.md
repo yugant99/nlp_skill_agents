@@ -21,9 +21,9 @@ The primary workflow is source-preserving C-unit segmentation:
 - run the tracked synthetic regression corpus.
 
 Analysis and segmentation evidence carries content-addressed source and transcript
-revision IDs backed by the full source SHA-256. Parsed turns and segmentation
-events have stable passage IDs, and counted C-unit candidates have stable C-unit
-IDs within that immutable revision.
+revision IDs backed by the SHA-256 of the exact transcript text supplied to the
+pipeline. Parsed turns and segmentation events have stable passage IDs, and
+counted C-unit candidates have stable C-unit IDs within that immutable revision.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

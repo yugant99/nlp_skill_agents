@@ -221,7 +221,7 @@ export type SegmentationSpecialistOutput = {
 export type SegmentationRun = {
   run_id: string;
   source_id: string;
-  source_sha256: string;
+  transcript_sha256: string;
   transcript_revision_id: string;
   source_filename: string;
   descript_text: string;
@@ -340,7 +340,7 @@ export type StudyBatchSummary = StudyBatchResponse["batch"];
 export type StudyBatchRunSummary = {
   run_id: string;
   source_id: string;
-  source_sha256: string;
+  transcript_sha256: string;
   transcript_revision_id: string;
   source_filename: string;
   metadata: Record<string, string>;
@@ -364,7 +364,7 @@ export type StudyBatchRunDetail = StudyBatchRunSummary & {
 export type RunResponse = {
   run_id: string;
   source_id: string;
-  source_sha256: string;
+  transcript_sha256: string;
   transcript_revision_id: string;
   source_filename: string;
   created_at: string;
@@ -434,7 +434,7 @@ export type ExportLink = {
 export type RunHistoryItem = {
   run_id: string;
   source_id: string;
-  source_sha256: string;
+  transcript_sha256: string;
   transcript_revision_id: string;
   source_filename: string;
   created_at: string;

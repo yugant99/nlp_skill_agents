@@ -31,8 +31,8 @@ on a run ID, filename, or mutable UI position.
 
 ## Implemented
 
-- Added a shared content-addressed evidence identity contract with a full SHA-256,
-  source ID, transcript-revision ID, passage IDs, and C-unit IDs.
+- Added a shared content-addressed evidence identity contract with a transcript
+  content SHA-256, source ID, transcript-revision ID, passage IDs, and C-unit IDs.
 - Analysis runs, API responses, local result JSON, run history, study-batch run
   details, and study-batch summaries now carry source and revision identity.
 - Parsed analysis turns and Descript segmentation events now carry passage IDs.
@@ -72,15 +72,20 @@ was protected by the production build and all frontend helper suites.
 ## Known Limitations And Rollback
 
 - Source identity is content-addressed because the current product does not yet
-  have a project-owned source registry. Two byte-identical imports intentionally
-  share an ID; any byte change creates a new source and revision ID.
+  have a project-owned source registry. Two identical transcript-text inputs
+  intentionally share an ID; any transcript-text change creates a new source and
+  revision ID.
+- `transcript_sha256` covers the exact text supplied to the analysis or
+  segmentation pipeline. It is not a hash of the original TXT or DOCX file bytes;
+  immutable source-blob storage and hashing remain open Phase 1 work.
 - Revision ancestry, import-instance identity, filename history, and explicit
   replacement relationships still need canonical SQLite entities and migrations.
 - Passage IDs are revision-and-ordinal based. Editing transcript bytes creates a
   new revision namespace rather than pretending old offsets still identify the
   same evidence.
 - The public IDs use 128 bits of the SHA-256-derived value for readability while
-  every record also carries the complete source SHA-256 for integrity checks.
+  every record also carries the complete transcript-content SHA-256 for integrity
+  checks.
 - Pre-feature SQLite rows and legacy study-batch summaries have empty identity
   values because the original transcript bytes are not available there. They must
   be re-imported to obtain truthful content hashes.

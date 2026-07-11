@@ -320,7 +320,10 @@ def test_study_workspace_lists_and_loads_batch_run_drilldown(tmp_path: Path) -> 
     assert run_summaries[0]["metadata"]["participant_id"] == "P1"
     assert run_summaries[0]["turn_count"] == 2
     assert run_summaries[0]["source_id"] == loaded_run["source_id"]
-    assert run_summaries[0]["source_sha256"] == loaded_run["source_sha256"]
+    assert (
+        run_summaries[0]["transcript_sha256"]
+        == loaded_run["transcript_sha256"]
+    )
     assert (
         run_summaries[0]["transcript_revision_id"]
         == loaded_run["transcript_revision_id"]
@@ -377,14 +380,14 @@ def test_study_workspace_lists_legacy_batch_runs_without_identity_fields(
     run_path = next((batch.aggregate_dir / "runs").glob("*.json"))
     payload = json.loads(run_path.read_text(encoding="utf-8"))
     payload.pop("source_id")
-    payload.pop("source_sha256")
+    payload.pop("transcript_sha256")
     payload.pop("transcript_revision_id")
     run_path.write_text(json.dumps(payload), encoding="utf-8")
 
     summary = store.list_batch_runs(study.id, batch.batch_id)[0]
 
     assert summary["source_id"] == ""
-    assert summary["source_sha256"] == ""
+    assert summary["transcript_sha256"] == ""
     assert summary["transcript_revision_id"] == ""
 
 

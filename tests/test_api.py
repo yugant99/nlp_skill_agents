@@ -150,7 +150,7 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
     payload = response.json()
     assert payload["source_filename"] == "vr009.txt"
     assert payload["source_id"].startswith("src_")
-    assert len(payload["source_sha256"]) == 64
+    assert len(payload["transcript_sha256"]) == 64
     assert payload["transcript_revision_id"].startswith("trv_")
     assert [result["metric_id"] for result in payload["results"]] == [
         "base_metrics",
@@ -944,7 +944,7 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
     run = response.json()["run"]
     assert run["source"] == "researcher_provided"
     assert run["source_id"].startswith("src_")
-    assert len(run["source_sha256"]) == 64
+    assert len(run["transcript_sha256"]) == 64
     assert run["transcript_revision_id"].startswith("trv_")
     assert run["events"][0]["passage_id"].startswith("psg_")
     assert run["cunit_adjudication"]["decisions"][0]["cunit_ids"]

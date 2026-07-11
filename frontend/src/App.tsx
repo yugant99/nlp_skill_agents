@@ -80,6 +80,11 @@ import {
 import { buildMetricMatrix } from "./matrixView";
 import { privacyModeLabel } from "./privacyMode";
 import { segmentationSourceLabel } from "./segmentationProvenance";
+import {
+  RULE_CHECK_LIMIT_TEXT,
+  ruleCheckSummary,
+  validationStatusLabel
+} from "./segmentationValidation";
 import type {
   AgentJob,
   AgentJobTransition,
@@ -659,7 +664,7 @@ export function App() {
       setSegmentationStatus(
         response.evaluation.failures.length
           ? `${response.evaluation.failures.length} rule issue detected.`
-          : "Verifier accepted this synthetic draft."
+          : `Synthetic fixture passed ${ruleCheckSummary(response.evaluation)}; this is not a domain-validity result.`
       );
     } catch (err) {
       setSegmentationStatus("");
@@ -832,7 +837,7 @@ export function App() {
       setSegmentationCorpusRuns(await listSegmentationCorpusRuns());
       setSegmentationRuns(await listSegmentationRuns());
       setSegmentationStatus(
-        `Synthetic corpus ${nextCorpusRun.status}: ${nextCorpusRun.regression_pass_count}/${nextCorpusRun.total_case_count} regression checks passed.`
+        `Synthetic corpus ${nextCorpusRun.status}: ${nextCorpusRun.regression_pass_count}/${nextCorpusRun.total_case_count} fixture outcomes passed; no accuracy estimate is implied.`
       );
     } catch (err) {
       setSegmentationStatus("");
@@ -1666,7 +1671,11 @@ function SegmentationDemoPanel({
             "C-unit Decisions",
             run ? `${run.cunit_adjudication.counted_cunit_count} C-units` : "Pending"
           ],
-          ["verification", "Verification", evaluation ? `Score ${evaluation.score}` : "Pending"],
+          [
+            "verification",
+            "Verification",
+            evaluation ? ruleCheckSummary(evaluation) : "Pending"
+          ],
           ["tables", "Analysis Tables", analysisRun ? `${analysisRun.results.length} tables` : "Pending"]
         ].map(([id, label, meta]) => (
           <button
@@ -1821,13 +1830,15 @@ function SegmentationDemoPanel({
                   <div className="section-kicker">Verification</div>
                   <h3>Rule evidence</h3>
                 </div>
-                {evaluation ? <span className="casebook-pill">score {evaluation.score}</span> : null}
+                {evaluation ? (
+                  <span className="casebook-pill">{ruleCheckSummary(evaluation)}</span>
+                ) : null}
               </div>
               {evaluation ? (
                 <SegmentationEvaluationPanel evaluation={evaluation} />
               ) : (
                 <div className="quiet-empty">
-                  Run the verifier to see score, notation counts, and routed failures.
+                  Run the verifier to see configured rule checks, notation counts, and routed failures.
                 </div>
               )}
             </div>
@@ -1912,24 +1923,27 @@ function SegmentationDemoPanel({
           </div>
           {rulebook ? (
             <div className="inspector-section">
-              <div className="section-kicker">Agent coverage</div>
-              <h3>What it knows now</h3>
+              <div className="section-kicker">Validation status</div>
+              <h3>{validationStatusLabel(rulebook.validation)}</h3>
               <div className="inspector-facts">
                 <OutputFact
-                  label="Supported rules"
-                  value={String(rulebook.supported_rule_count)}
+                  label="Implemented rules"
+                  value={String(rulebook.implemented_rule_count)}
                 />
                 <OutputFact
-                  label="Demo covers"
-                  value={`${rulebook.demo_case_rule_count}/10`}
+                  label="Tracked fixtures"
+                  value={`${rulebook.tracked_fixture_rule_count}/${rulebook.implemented_rule_count}`}
                 />
                 <OutputFact
-                  label="Corpus covers"
-                  value={`${rulebook.corpus_rule_count}/10`}
+                  label="Generated fixtures"
+                  value={`${rulebook.generated_fixture_rule_count}/${rulebook.implemented_rule_count}`}
                 />
               </div>
+              <p className="mt-3 text-xs leading-5 text-[#676157]">
+                {rulebook.validation.claim_boundary}
+              </p>
               <div className="mt-3 grid gap-2">
-                {rulebook.professor_grade_areas.slice(0, 3).map((area) => (
+                {rulebook.method_areas.slice(0, 3).map((area) => (
                   <div key={area.area_id} className="rulebook-gap">
                     <div>
                       <span>{area.label}</span>
@@ -2104,7 +2118,7 @@ function SegmentationCorpusRunPanel({
               </div>
               <div className="font-mono text-xs text-[#756f64]">
                 {result.outcome} · {result.status}/{result.expected_status} ·{" "}
-                {result.score}
+                {ruleCheckSummary(result)}
               </div>
             </div>
             {result.failed_rule_ids.length ? (
@@ -2134,6 +2148,10 @@ function CUnitAdjudicationPanel({
 
   return (
     <div className="space-y-3">
+      <div className="rounded-md border border-[#d7c89f] bg-[#fff8e6] px-3 py-2 text-xs leading-5 text-[#765a24]">
+        Not domain validated. These are deterministic proposals with no calibrated
+        confidence; researcher review remains authoritative.
+      </div>
       <div className="adjudication-summary">
         <OutputFact label="Participant turns" value={String(adjudication.participant_turn_count)} />
         <OutputFact label="Examiner turns" value={String(adjudication.examiner_turn_count)} />
@@ -2387,11 +2405,14 @@ function SegmentationEvaluationPanel({
   return (
     <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
       <div className="grid gap-3 sm:grid-cols-4">
-        <OutputFact label="Score" value={String(evaluation.score)} />
+        <OutputFact label="Rule checks" value={ruleCheckSummary(evaluation)} />
         <OutputFact label="Utterances" value={String(metrics.utterance_count)} />
         <OutputFact label="Times" value={String(metrics.time_marker_count)} />
         <OutputFact label="Pauses" value={String(metrics.pause_marker_count)} />
       </div>
+      <p className="mt-3 text-xs leading-5 text-[#676157]">
+        {RULE_CHECK_LIMIT_TEXT}
+      </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <div>
           <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">

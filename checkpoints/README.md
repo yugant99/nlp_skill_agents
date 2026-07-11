@@ -65,6 +65,7 @@ Each checkpoint should record:
 - [2026-07-10 Phase 0 active privacy mode](2026-07-10-phase0-active-privacy-mode.md)
 - [2026-07-10 Phase 0 segmentation provenance](2026-07-10-phase0-segmentation-provenance.md)
 - [2026-07-10 Phase 0 study participant cap](2026-07-10-phase0-study-participant-cap.md)
+- [2026-07-10 Phase 0 agent-job gates](2026-07-10-phase0-agent-job-gates.md)
 
 ## Completion Bar
 

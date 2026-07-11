@@ -10,6 +10,14 @@ from backend.extensions.plugin_requests import PluginRequest
 
 
 AGENT_JOB_STATUSES = {"queued", "in_progress", "blocked", "verified", "merged"}
+AGENT_JOB_EVIDENCE_STATUSES = {"passed", "failed"}
+AGENT_JOB_TRANSITIONS = {
+    "queued": {"in_progress", "blocked"},
+    "in_progress": {"blocked", "verified"},
+    "blocked": {"in_progress"},
+    "verified": {"merged"},
+    "merged": set(),
+}
 
 
 @dataclass(frozen=True)
@@ -82,17 +90,47 @@ class AgentJobStore:
     def update_status(self, job_id: str, status: str) -> AgentJob:
         if status not in AGENT_JOB_STATUSES:
             raise ValueError(f"Unsupported agent job status: {status}")
-        job_path = self.jobs_dir / f"{job_id}.json"
-        if not job_path.exists():
-            raise FileNotFoundError(job_id)
-        job = agent_job_from_payload(json.loads(job_path.read_text(encoding="utf-8")))
+        job = self._load_job(job_id)
+        if status == job.status:
+            return job
+        if status not in AGENT_JOB_TRANSITIONS[job.status]:
+            raise ValueError(
+                f"Agent job cannot transition from {job.status} to {status}"
+            )
+        evidence = self.list_evidence(job_id)
+        if status == "verified":
+            missing_commands = _missing_verification_commands(job, evidence)
+            if missing_commands:
+                raise ValueError(
+                    "Agent job is missing passed evidence for: "
+                    + "; ".join(missing_commands)
+                )
+        if status == "merged" and not _has_passed_merge_evidence(evidence):
+            raise ValueError("Agent job requires passed merge evidence")
         updated = replace(job, status=status)
         self.persist(updated)
         return updated
 
+    def available_transitions(self, job_id: str) -> list[str]:
+        job = self._load_job(job_id)
+        candidates = set(AGENT_JOB_TRANSITIONS[job.status])
+        evidence = self.list_evidence(job_id)
+        if "verified" in candidates and _missing_verification_commands(job, evidence):
+            candidates.remove("verified")
+        if "merged" in candidates and not _has_passed_merge_evidence(evidence):
+            candidates.remove("merged")
+        return [
+            status
+            for status in ["in_progress", "blocked", "verified", "merged"]
+            if status in candidates
+        ]
+
     def add_evidence(self, job_id: str, payload: dict[str, Any]) -> AgentJobEvidence:
         self._require_job(job_id)
         gate = _safe_gate_name(str(payload.get("gate") or "verification"))
+        status = str(payload.get("status") or "").strip().lower()
+        if status not in AGENT_JOB_EVIDENCE_STATUSES:
+            raise ValueError(f"Unsupported agent job evidence status: {status}")
         evidence_dir = self.jobs_dir / job_id / "evidence"
         evidence_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = evidence_dir / f"{gate}.json"
@@ -100,7 +138,7 @@ class AgentJobStore:
             job_id=job_id,
             gate=gate,
             command=str(payload.get("command") or ""),
-            status=str(payload.get("status") or "unknown"),
+            status=status,
             summary=str(payload.get("summary") or ""),
             artifact_path=str(artifact_path),
         )
@@ -124,6 +162,39 @@ class AgentJobStore:
     def _require_job(self, job_id: str) -> None:
         if not (self.jobs_dir / f"{job_id}.json").exists():
             raise FileNotFoundError(job_id)
+
+    def _load_job(self, job_id: str) -> AgentJob:
+        job_path = self.jobs_dir / f"{job_id}.json"
+        if not job_path.exists():
+            raise FileNotFoundError(job_id)
+        return agent_job_from_payload(
+            json.loads(job_path.read_text(encoding="utf-8"))
+        )
+
+
+def _missing_verification_commands(
+    job: AgentJob,
+    evidence: list[AgentJobEvidence],
+) -> list[str]:
+    passed_commands = {
+        item.command.strip()
+        for item in evidence
+        if item.status == "passed" and item.command.strip()
+    }
+    return [
+        command
+        for command in job.verification_commands
+        if command not in passed_commands
+    ]
+
+
+def _has_passed_merge_evidence(evidence: list[AgentJobEvidence]) -> bool:
+    return any(
+        item.gate == "merge"
+        and item.status == "passed"
+        and bool(item.command.strip())
+        for item in evidence
+    )
 
 
 def create_metric_plugin_build_job(

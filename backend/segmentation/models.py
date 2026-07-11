@@ -41,7 +41,8 @@ class SegmentationRuleFailure:
 
 @dataclass(frozen=True)
 class SegmentationEvaluation:
-    score: int
+    configured_rule_count: int
+    passed_rule_count: int
     metrics: SegmentationMetrics
     failures: list[SegmentationRuleFailure]
 
@@ -56,7 +57,7 @@ class CUnitBoundaryDecision:
     decision: str
     cunit_count: int
     rationale: str
-    confidence: float
+    confidence_status: str
     needs_human_review: bool
     excluded_maze: str = ""
     evidence_terms: list[str] = field(default_factory=list)
@@ -71,3 +72,5 @@ class CUnitAdjudication:
     needs_review_count: int
     boundary_type_counts: dict[str, int]
     decisions: list[CUnitBoundaryDecision]
+    validation_status: str = "not_domain_validated"
+    evidence_scope: str = "deterministic_heuristics_and_synthetic_fixtures"

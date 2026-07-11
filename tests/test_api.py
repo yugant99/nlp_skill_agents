@@ -878,8 +878,12 @@ def test_segmentation_api_evaluates_draft_against_synthetic_rules() -> None:
     )
 
     assert good_response.status_code == 200
-    assert good_response.json()["evaluation"]["score"] == 100
-    assert good_response.json()["evaluation"]["failures"] == []
+    good_evaluation = good_response.json()["evaluation"]
+    assert good_evaluation["passed_rule_count"] == good_evaluation[
+        "configured_rule_count"
+    ]
+    assert "score" not in good_evaluation
+    assert good_evaluation["failures"] == []
 
     assert bad_response.status_code == 200
     failures = {
@@ -947,7 +951,8 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
     assert verify_response.status_code == 200
     assert verify_response.json()["run"]["run_id"] == run["run_id"]
     assert verify_response.json()["run"]["source"] == "researcher_provided"
-    assert verify_response.json()["run"]["evaluation"]["score"] == 100
+    evaluation = verify_response.json()["run"]["evaluation"]
+    assert evaluation["passed_rule_count"] == evaluation["configured_rule_count"]
 
 
 def test_segmentation_run_api_accepts_uploaded_txt_file(tmp_path, monkeypatch) -> None:
@@ -1050,13 +1055,16 @@ def test_segmentation_rulebook_api_exposes_coverage_and_limits() -> None:
 
     assert response.status_code == 200
     payload = response.json()["rulebook"]
-    assert payload["supported_rule_count"] == 10
-    assert payload["demo_case_rule_count"] == 9
-    assert payload["corpus_rule_count"] == 10
+    assert payload["implemented_rule_count"] == 10
+    assert payload["tracked_fixture_rule_count"] == 9
+    assert payload["generated_fixture_rule_count"] == 10
+    assert payload["validation"]["status"] == "not_domain_validated"
+    assert "not accuracy" in payload["validation"]["claim_boundary"]
     assert payload["rule_definitions"][0]["rule_id"] == "speaker-markers"
     assert any(
-        area["area_id"] == "cunit-boundaries" and area["status"] == "supported"
-        for area in payload["professor_grade_areas"]
+        area["area_id"] == "cunit-boundaries"
+        and area["status"] == "implemented-unvalidated"
+        for area in payload["method_areas"]
     )
 
 
@@ -1142,7 +1150,9 @@ def test_segmentation_run_api_lists_runs_and_downloads_exports(
     assert "P: Good morning." in transcript_response.text
     assert evidence_response.status_code == 200
     assert evidence_response.json()["source"] == "researcher_provided"
-    assert evidence_response.json()["evaluation"]["score"] == 100
+    evaluation = evidence_response.json()["evaluation"]
+    assert evaluation["passed_rule_count"] == evaluation["configured_rule_count"]
+    assert "score" not in evaluation
     assert specialist_response.status_code == 200
     assert "Do not rewrite the full transcript" in specialist_response.text
 

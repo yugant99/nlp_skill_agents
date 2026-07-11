@@ -96,7 +96,8 @@ class SegmentationCorpusCaseResult:
     status: str
     expected_status: str
     outcome: str
-    score: int
+    configured_rule_count: int
+    passed_rule_count: int
     rule_ids: list[str]
     failed_rule_ids: list[str]
 
@@ -210,7 +211,12 @@ class SegmentationRunStore:
                     status=run.status,
                     expected_status=expected_status,
                     outcome=outcome,
-                    score=run.evaluation.score if run.evaluation else 0,
+                    configured_rule_count=(
+                        run.evaluation.configured_rule_count if run.evaluation else 0
+                    ),
+                    passed_rule_count=(
+                        run.evaluation.passed_rule_count if run.evaluation else 0
+                    ),
                     rule_ids=case.rule_ids,
                     failed_rule_ids=failed_rule_ids,
                 )
@@ -644,7 +650,12 @@ def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
                 for event in payload.get("events", [])
             ],
         ),
-        evaluation=_evaluation_from_payload(payload.get("evaluation")),
+        evaluation=_evaluation_from_payload(
+            payload.get("evaluation"),
+            expected_rule_ids=[
+                str(rule_id) for rule_id in payload.get("rule_ids", [])
+            ],
+        ),
         status=str(payload.get("status") or "created"),
         failure_routes=[
             {
@@ -673,22 +684,7 @@ def segmentation_corpus_run_from_payload(
             str(rule_id) for rule_id in payload.get("rule_coverage", [])
         ],
         results=[
-            SegmentationCorpusCaseResult(
-                case_id=str(result["case_id"]),
-                title=str(result.get("title") or ""),
-                run_id=str(result["run_id"]),
-                status=str(result.get("status") or "failed"),
-                expected_status=str(result.get("expected_status") or "verified"),
-                outcome=str(result.get("outcome") or "failed"),
-                score=int(result.get("score", 0)),
-                rule_ids=[
-                    str(rule_id) for rule_id in result.get("rule_ids", [])
-                ],
-                failed_rule_ids=[
-                    str(rule_id)
-                    for rule_id in result.get("failed_rule_ids", [])
-                ],
-            )
+            _corpus_case_result_from_payload(result)
             for result in payload.get("results", [])
         ],
         source=str(payload.get("source") or "synthetic"),
@@ -835,12 +831,30 @@ def _expected_status_for_case(case) -> str:
     return "verified"
 
 
-def _evaluation_from_payload(payload: dict[str, Any] | None) -> SegmentationEvaluation | None:
+def _evaluation_from_payload(
+    payload: dict[str, Any] | None,
+    *,
+    expected_rule_ids: list[str] | None = None,
+) -> SegmentationEvaluation | None:
     if not payload:
         return None
     metrics_payload = payload["metrics"]
+    configured_rule_count = int(
+        payload.get("configured_rule_count", len(set(expected_rule_ids or [])))
+    )
+    failed_rule_ids = {
+        str(failure.get("rule_id") or "")
+        for failure in payload.get("failures", [])
+    }
+    passed_rule_count = int(
+        payload.get(
+            "passed_rule_count",
+            max(0, configured_rule_count - len(failed_rule_ids)),
+        )
+    )
     return SegmentationEvaluation(
-        score=int(payload["score"]),
+        configured_rule_count=configured_rule_count,
+        passed_rule_count=passed_rule_count,
         metrics=SegmentationMetrics(
             line_count=int(metrics_payload["line_count"]),
             utterance_count=int(metrics_payload["utterance_count"]),
@@ -893,7 +907,9 @@ def _adjudication_from_payload(
                 decision=str(decision.get("decision") or ""),
                 cunit_count=int(decision.get("cunit_count", 0)),
                 rationale=str(decision.get("rationale") or ""),
-                confidence=float(decision.get("confidence", 0)),
+                confidence_status=str(
+                    decision.get("confidence_status") or "not_calibrated"
+                ),
                 needs_human_review=bool(decision.get("needs_human_review", False)),
                 excluded_maze=str(decision.get("excluded_maze") or ""),
                 evidence_terms=[
@@ -902,4 +918,40 @@ def _adjudication_from_payload(
             )
             for decision in payload.get("decisions", [])
         ],
+        validation_status=str(
+            payload.get("validation_status") or "not_domain_validated"
+        ),
+        evidence_scope=str(
+            payload.get("evidence_scope")
+            or "deterministic_heuristics_and_synthetic_fixtures"
+        ),
+    )
+
+
+def _corpus_case_result_from_payload(
+    payload: dict[str, Any],
+) -> SegmentationCorpusCaseResult:
+    rule_ids = [str(rule_id) for rule_id in payload.get("rule_ids", [])]
+    failed_rule_ids = [
+        str(rule_id) for rule_id in payload.get("failed_rule_ids", [])
+    ]
+    configured_rule_count = int(
+        payload.get("configured_rule_count", len(set(rule_ids)))
+    )
+    return SegmentationCorpusCaseResult(
+        case_id=str(payload["case_id"]),
+        title=str(payload.get("title") or ""),
+        run_id=str(payload["run_id"]),
+        status=str(payload.get("status") or "failed"),
+        expected_status=str(payload.get("expected_status") or "verified"),
+        outcome=str(payload.get("outcome") or "failed"),
+        configured_rule_count=configured_rule_count,
+        passed_rule_count=int(
+            payload.get(
+                "passed_rule_count",
+                max(0, configured_rule_count - len(set(failed_rule_ids))),
+            )
+        ),
+        rule_ids=rule_ids,
+        failed_rule_ids=failed_rule_ids,
     )

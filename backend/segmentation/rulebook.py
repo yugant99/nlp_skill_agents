@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from backend.segmentation.corpus import generate_synthetic_corpus
+from backend.segmentation.models import SyntheticSegmentationCase
+from backend.segmentation.synthetic import list_synthetic_cases
+
 
 SUPPORTED_RULE_IDS = [
     "speaker-markers",
@@ -28,7 +32,7 @@ class CUnitRuleDefinition:
 
 
 @dataclass(frozen=True)
-class ProfessorGradeRuleArea:
+class CUnitMethodArea:
     area_id: str
     label: str
     status: str
@@ -36,12 +40,21 @@ class ProfessorGradeRuleArea:
 
 
 @dataclass(frozen=True)
+class SegmentationValidationProfile:
+    status: str
+    evidence_scope: str
+    claim_boundary: str
+    limitations: list[str]
+
+
+@dataclass(frozen=True)
 class CUnitRulebookSummary:
-    supported_rule_count: int
-    demo_case_rule_count: int
-    corpus_rule_count: int
+    implemented_rule_count: int
+    tracked_fixture_rule_count: int
+    generated_fixture_rule_count: int
+    validation: SegmentationValidationProfile
     rule_definitions: list[CUnitRuleDefinition]
-    professor_grade_areas: list[ProfessorGradeRuleArea]
+    method_areas: list[CUnitMethodArea]
 
 
 RULE_DEFINITIONS = [
@@ -128,60 +141,85 @@ RULE_DEFINITIONS = [
 ]
 
 
-PROFESSOR_GRADE_RULE_AREAS = [
-    ProfessorGradeRuleArea(
+METHOD_AREAS = [
+    CUnitMethodArea(
         area_id="cunit-boundaries",
         label="C-unit boundary decisions",
-        status="supported",
+        status="implemented-unvalidated",
         scientist_language=(
             "Adjudicates independent clause counts, dependent clause attachment, "
             "coordination splits, and subordination review flags with rationale."
         ),
     ),
-    ProfessorGradeRuleArea(
+    CUnitMethodArea(
         area_id="maze-revision",
         label="Maze, revision, and reformulation handling",
-        status="supported",
+        status="implemented-unvalidated",
         scientist_language=(
             "Excludes filled pauses, false starts, partial-word repetitions, "
             "revisions, and unintelligible spans from counted C-units with evidence."
         ),
     ),
-    ProfessorGradeRuleArea(
+    CUnitMethodArea(
         area_id="ellipsis-minimal-response",
         label="Ellipsis and minimal responses",
-        status="supported",
+        status="implemented-unvalidated",
         scientist_language=(
             "Classifies short elliptical responses separately so minimal clinical "
             "answers count only when they carry communicative content."
         ),
     ),
-    ProfessorGradeRuleArea(
+    CUnitMethodArea(
         area_id="unintelligible-partial-material",
         label="Unintelligible and partial material",
-        status="supported",
+        status="implemented-unvalidated",
         scientist_language=(
             "Detects unintelligible spans, bracketed uncertainty, and partial-word "
             "material, then routes those turns for human review."
         ),
     ),
-    ProfessorGradeRuleArea(
+    CUnitMethodArea(
         area_id="evidence-contract",
         label="Rule-level evidence contract",
-        status="partial",
+        status="partial-unvalidated",
         scientist_language=(
-            "Current failures route to specialists; next step is matched evidence lines, "
-            "severity, rationale, and confidence per rule."
+            "Current failures route to specialists with rationale and evidence terms; "
+            "agreement with expert human decisions has not been measured."
         ),
     ),
 ]
 
 
+VALIDATION_PROFILE = SegmentationValidationProfile(
+    status="not_domain_validated",
+    evidence_scope="tracked_and_generated_synthetic_fixtures",
+    claim_boundary=(
+        "Configured deterministic rules are exercised by synthetic fixtures; "
+        "these counts are not accuracy, reliability, or validity estimates."
+    ),
+    limitations=[
+        "No representative psychology-study transcript sample has been evaluated.",
+        "Agreement with expert human C-unit decisions has not been measured.",
+        "Sensitivity, specificity, reliability, and calibrated confidence are unknown.",
+        "Every automated C-unit decision remains a researcher-reviewable proposal.",
+    ],
+)
+
+
 def build_cunit_rulebook_summary() -> CUnitRulebookSummary:
-    return CUnitRulebookSummary(
-        supported_rule_count=len(SUPPORTED_RULE_IDS),
-        demo_case_rule_count=9,
-        corpus_rule_count=10,
-        rule_definitions=RULE_DEFINITIONS,
-        professor_grade_areas=PROFESSOR_GRADE_RULE_AREAS,
+    tracked_fixture_rule_count = _covered_rule_count(list_synthetic_cases())
+    generated_fixture_rule_count = _covered_rule_count(
+        generate_synthetic_corpus(seed=0)
     )
+    return CUnitRulebookSummary(
+        implemented_rule_count=len(SUPPORTED_RULE_IDS),
+        tracked_fixture_rule_count=tracked_fixture_rule_count,
+        generated_fixture_rule_count=generated_fixture_rule_count,
+        validation=VALIDATION_PROFILE,
+        rule_definitions=RULE_DEFINITIONS,
+        method_areas=METHOD_AREAS,
+    )
+
+
+def _covered_rule_count(cases: list[SyntheticSegmentationCase]) -> int:
+    return len({rule_id for case in cases for rule_id in case.rule_ids})

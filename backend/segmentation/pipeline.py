@@ -30,6 +30,7 @@ from backend.segmentation.rulebook import SUPPORTED_RULE_IDS
 from backend.segmentation.synthetic import OFFICIAL_SOURCE_GUARD_TOKENS
 from backend.storage.atomic import atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.source_blob_store import SourceBlobStore
 
 
 RULE_TO_SPECIALIST = {
@@ -224,7 +225,7 @@ class SegmentationRunStore:
             failure_routes=failure_routes,
             source=source,
         )
-        self.persist_run(run)
+        self.persist_run(run, source_bytes=source_bytes)
         return run
 
     def create_corpus_run(self, *, seed: int = 0) -> SegmentationCorpusRun:
@@ -385,8 +386,20 @@ class SegmentationRunStore:
         self.persist_run(updated)
         return updated
 
-    def persist_run(self, run: SegmentationRun) -> None:
+    def persist_run(
+        self,
+        run: SegmentationRun,
+        *,
+        source_bytes: bytes | None = None,
+    ) -> None:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
+        if run.source_blob_sha256:
+            SourceBlobStore(self.root).store(
+                source_bytes
+                if source_bytes is not None
+                else run.descript_text.encode("utf-8"),
+                run.source_blob_sha256,
+            )
         EvidenceCatalog(self.root).record_import(
             EvidenceImportRecord(
                 import_id=run.import_id,

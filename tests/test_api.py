@@ -188,6 +188,15 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
     imports_response = client.get("/api/evidence/imports")
     assert imports_response.status_code == 200
     assert imports_response.json()["imports"][0]["import_id"] == payload["import_id"]
+    blob_response = client.get(
+        f"/api/evidence/blobs/{payload['source_blob_sha256']}/verify"
+    )
+    assert blob_response.status_code == 200
+    assert blob_response.json() == {
+        "source_blob_sha256": payload["source_blob_sha256"],
+        "verified": True,
+        "size_bytes": len(b"vr009_c: Um, hello there.\nvr009_p: Hello."),
+    }
 
 
 def test_download_export_csv_for_run(tmp_path, monkeypatch) -> None:
@@ -629,6 +638,7 @@ def test_study_workspace_file_batch_api_accepts_txt_and_docx(
     doc.add_paragraph("P2_p: It improved a little.")
     doc.save(docx_buffer)
     docx_buffer.seek(0)
+    docx_bytes = docx_buffer.getvalue()
 
     response = client.post(
         f"/api/studies/{study_id}/batches/files",
@@ -662,7 +672,7 @@ def test_study_workspace_file_batch_api_accepts_txt_and_docx(
                 "files",
                 (
                     "P2_lab_week2.docx",
-                    docx_buffer.getvalue(),
+                    docx_bytes,
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 ),
             ),
@@ -682,6 +692,15 @@ def test_study_workspace_file_batch_api_accepts_txt_and_docx(
     assert rows[3]["condition"] == "lab"
     assert rows[3]["week"] == "week_2"
     assert rows[3]["turns"] == 1
+    imports = client.get("/api/evidence/imports").json()["imports"]
+    docx_import = next(
+        item for item in imports if item["source_filename"] == "P2_lab_week2.docx"
+    )
+    assert docx_import["source_blob_sha256"] == sha256(docx_bytes).hexdigest()
+    verify_response = client.get(
+        f"/api/evidence/blobs/{docx_import['source_blob_sha256']}/verify"
+    )
+    assert verify_response.json()["size_bytes"] == len(docx_bytes)
 
 
 def test_study_schema_api_persists_casebook_design(tmp_path, monkeypatch) -> None:
@@ -1106,6 +1125,11 @@ def test_segmentation_run_api_accepts_uploaded_txt_file(tmp_path, monkeypatch) -
     )
     assert run["status"] == "verified"
     assert run["events"][0]["source_filename"] == "descript_export.txt"
+    blob_response = client.get(
+        f"/api/evidence/blobs/{run['source_blob_sha256']}/verify"
+    )
+    assert blob_response.status_code == 200
+    assert blob_response.json()["size_bytes"] == len(source_bytes)
 
 
 def test_segmentation_run_file_api_rejects_non_txt_upload(tmp_path, monkeypatch) -> None:

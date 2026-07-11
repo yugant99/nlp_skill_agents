@@ -16,6 +16,7 @@ from backend.analysis.transcripts import StudyConfig
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.atomic import atomic_text_writer, atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.source_blob_store import SourceBlobStore
 
 
 MAX_STUDY_PARTICIPANTS = 10_000
@@ -264,6 +265,13 @@ class StudyWorkspaceStore:
                 parent_transcript_revision_id=run.parent_transcript_revision_id,
                 workspace_id=run.workspace_id,
                 transcript_revision_id=run.transcript_revision_id,
+            )
+            source_bytes = item.get("source_bytes")
+            SourceBlobStore(self.root).store(
+                source_bytes
+                if source_bytes is not None
+                else run.source_content.encode("utf-8"),
+                run.source_blob_sha256,
             )
             evidence_catalog.record_import(evidence_record)
             atomic_write_text(

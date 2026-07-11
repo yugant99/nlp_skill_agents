@@ -10,6 +10,7 @@ from typing import Any
 from backend.analysis.pipeline import AnalysisRun
 from backend.storage.atomic import atomic_text_writer, atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.source_blob_store import SourceBlobStore
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,12 @@ class LocalRunStore:
         self.exports_dir = self.root / "exports"
         self.db_path = self.root / "runs.sqlite3"
 
-    def persist_run(self, run: AnalysisRun) -> StoredRun:
+    def persist_run(
+        self,
+        run: AnalysisRun,
+        *,
+        source_bytes: bytes | None = None,
+    ) -> StoredRun:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.exports_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
@@ -37,6 +43,10 @@ class LocalRunStore:
             parent_transcript_revision_id=run.parent_transcript_revision_id,
             workspace_id=run.workspace_id,
             transcript_revision_id=run.transcript_revision_id,
+        )
+        SourceBlobStore(self.root).store(
+            source_bytes if source_bytes is not None else run.source_content.encode("utf-8"),
+            run.source_blob_sha256,
         )
         evidence_catalog.record_import(_evidence_import_record(run))
 

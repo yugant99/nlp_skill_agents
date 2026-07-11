@@ -180,6 +180,7 @@ class AnalysisRun:
     transcript_revision_id: str
     source_filename: str
     created_at: str
+    source_content: str
     transcript: Transcript
     results: list[MetricResult]
 
@@ -234,6 +235,7 @@ def execute_analysis(
         transcript_revision_id=identity.transcript_revision_id,
         source_filename=source_filename,
         created_at=datetime.now(UTC).isoformat(),
+        source_content=content,
         transcript=transcript,
         results=results,
     )

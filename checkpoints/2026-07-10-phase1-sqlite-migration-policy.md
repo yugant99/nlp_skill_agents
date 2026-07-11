@@ -46,10 +46,10 @@ database versions are incompatible.
 ## CLI Verification
 
 - Migration engine, evidence catalog, run storage, archive, and API slice passed:
-  55/55.
+  58/58.
 - API suite, including compatible and incompatible status responses, passed:
   42/42.
-- `.venv/bin/pytest -q` passed: 153/153.
+- `.venv/bin/pytest -q` passed: 154/154.
 - `cd frontend && npm run build` passed.
 - All frontend helper suites passed: 30/30.
 - `git diff --check` passed for every implementation slice.
@@ -67,6 +67,7 @@ suite.
 - `775a158 Version analysis run schema`
 - `3861452 Version evidence catalog schema`
 - `6821141 Expose storage schema compatibility`
+- `7ac7362 Guarantee transactional schema rollback`
 
 ## Known Limitations And Rollback
 

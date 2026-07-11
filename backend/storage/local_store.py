@@ -287,6 +287,36 @@ def _analysis_v5_created_index(connection: sqlite3.Connection) -> None:
     )
 
 
+def _analysis_v6_operation_journal(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        create table if not exists analysis_operations (
+          run_id text primary key,
+          import_id text not null,
+          run_payload_sha256 text not null,
+          status text not null check (status in ('running', 'failed', 'completed')),
+          stage text not null check (
+            stage in (
+              'validated', 'source_blob_stored', 'evidence_cataloged',
+              'artifacts_written', 'completed'
+            )
+          ),
+          attempt_count integer not null check (attempt_count > 0),
+          last_error_type text not null default '',
+          started_at text not null,
+          updated_at text not null,
+          completed_at text not null default ''
+        )
+        """
+    )
+    connection.execute(
+        """
+        create index if not exists analysis_operations_status_idx
+        on analysis_operations (status, updated_at desc)
+        """
+    )
+
+
 def _add_analysis_columns(
     connection: sqlite3.Connection,
     *columns: str,
@@ -305,4 +335,5 @@ ANALYSIS_RUN_MIGRATIONS = [
     Migration(3, "add-source-import-identity", _analysis_v3_import_identity),
     Migration(4, "add-project-source-lineage", _analysis_v4_source_lineage),
     Migration(5, "index-analysis-run-history", _analysis_v5_created_index),
+    Migration(6, "create-analysis-operation-journal", _analysis_v6_operation_journal),
 ]

@@ -140,9 +140,16 @@ def test_local_store_migrates_existing_run_metadata_schema(tmp_path: Path) -> No
         3,
         4,
         5,
+        6,
     ]
     with sqlite3.connect(tmp_path / "runs.sqlite3") as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 5
+        assert connection.execute("pragma user_version").fetchone()[0] == 6
+        assert connection.execute(
+            """
+            select name from sqlite_master
+            where type = 'table' and name = 'analysis_operations'
+            """
+        ).fetchone() == ("analysis_operations",)
 
 
 def test_local_store_lists_recent_runs_newest_first(tmp_path: Path) -> None:

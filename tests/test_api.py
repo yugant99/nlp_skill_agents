@@ -29,7 +29,7 @@ def test_storage_schema_status_reports_applied_migrations(tmp_path, monkeypatch)
     assert response.status_code == 200
     payload = response.json()
     assert payload["compatible"] is True
-    assert payload["databases"]["analysis_runs"]["current_version"] == 5
+    assert payload["databases"]["analysis_runs"]["current_version"] == 6
     assert [
         migration["name"]
         for migration in payload["databases"]["analysis_runs"]["migrations"]
@@ -39,6 +39,7 @@ def test_storage_schema_status_reports_applied_migrations(tmp_path, monkeypatch)
         "add-source-import-identity",
         "add-project-source-lineage",
         "index-analysis-run-history",
+        "create-analysis-operation-journal",
     ]
     assert payload["databases"]["evidence_catalog"]["current_version"] == 3
     assert [

@@ -831,6 +831,7 @@ async def restore_study(file: Annotated[UploadFile, File()]) -> dict:
             "study_dir": str(restored.study_dir),
             "import_count": restored.import_count,
             "blob_count": restored.blob_count,
+            "audit_event_count": restored.audit_event_count,
         }
     }
 

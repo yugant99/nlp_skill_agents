@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile, ZipInfo
 
 from backend.storage.atomic import atomic_binary_writer, atomic_write_bytes
+from backend.storage.audit_log import AuditLogStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.source_blob_store import SourceBlobStore
 
@@ -38,6 +39,7 @@ class ProjectRestoreResult:
     study_dir: Path
     import_count: int
     blob_count: int
+    audit_event_count: int
 
 
 class ProjectArchiveError(ValueError):
@@ -51,6 +53,7 @@ class ProjectArchiveStore:
         self.backups_dir = self.root / "backups"
         self.catalog = EvidenceCatalog(self.root)
         self.blobs = SourceBlobStore(self.root)
+        self.audit = AuditLogStore(self.root)
 
     def create_archive(self, study_id: str) -> ProjectArchiveExport:
         _validate_study_id(study_id)
@@ -69,6 +72,11 @@ class ProjectArchiveStore:
         imports = self.catalog.workspace_import_records(study_id)
         members["evidence/imports.json"] = json.dumps(
             [asdict(record) for record in imports],
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        members["evidence/audit.json"] = json.dumps(
+            self.audit.events_for_subject("study", study_id),
             indent=2,
             sort_keys=True,
         ).encode("utf-8")
@@ -129,10 +137,19 @@ class ProjectArchiveStore:
                 members["evidence/imports.json"].decode("utf-8")
             )
             imports = [EvidenceImportRecord(**payload) for payload in import_payloads]
+            audit_events = json.loads(members["evidence/audit.json"].decode("utf-8"))
+            if not isinstance(audit_events, list):
+                raise TypeError("audit events must be a list")
         except (KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise ProjectArchiveError("Archive evidence records are malformed") from exc
         if any(record.workspace_id != study_id for record in imports):
             raise ProjectArchiveError("Evidence import belongs to another workspace")
+        if any(
+            event.get("subject_type") != "study"
+            or event.get("subject_id") != study_id
+            for event in audit_events
+        ):
+            raise ProjectArchiveError("Audit event belongs to another study")
         expected_blob_names = {
             f"blobs/{record.source_blob_sha256}.blob" for record in imports
         }
@@ -155,7 +172,11 @@ class ProjectArchiveStore:
             for blob_name in sorted(actual_blob_names):
                 digest = PurePosixPath(blob_name).stem
                 self.blobs.store(members[blob_name], digest)
-            _restore_imports(self.catalog, imports)
+            try:
+                _restore_imports(self.catalog, imports)
+                imported_audit_count = self.audit.import_events(audit_events)
+            except ValueError as exc:
+                raise ProjectArchiveError("Archive evidence conflicts with destination") from exc
             os.replace(stage_dir, study_dir)
         except BaseException:
             shutil.rmtree(stage_dir, ignore_errors=True)
@@ -165,6 +186,7 @@ class ProjectArchiveStore:
             study_dir=study_dir,
             import_count=len(imports),
             blob_count=len(actual_blob_names),
+            audit_event_count=imported_audit_count,
         )
 
 
@@ -192,7 +214,11 @@ def _verified_archive_members(archive: ZipFile) -> dict[str, bytes]:
     actual_names = set(members) - {"manifest.json"}
     if set(records) != actual_names or len(records) != len(declared):
         raise ProjectArchiveError("Archive members do not match manifest")
-    required_members = {"study/study.json", "evidence/imports.json"}
+    required_members = {
+        "study/study.json",
+        "evidence/imports.json",
+        "evidence/audit.json",
+    }
     if not required_members.issubset(actual_names):
         raise ProjectArchiveError("Archive required members are missing")
     for name, record in records.items():

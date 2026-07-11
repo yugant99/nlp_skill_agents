@@ -61,7 +61,7 @@ class AuditLogStore:
             atomic_write_text(self.events_path, existing_events + event_line)
         return event
 
-    def list_events(self, limit: int = 100) -> list[dict[str, Any]]:
+    def list_events(self, limit: int | None = 100) -> list[dict[str, Any]]:
         if not self.events_path.exists():
             return []
         events = [
@@ -69,4 +69,48 @@ class AuditLogStore:
             for line in self.events_path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
-        return events[-limit:]
+        return events if limit is None else events[-limit:]
+
+    def events_for_subject(
+        self,
+        subject_type: str,
+        subject_id: str,
+    ) -> list[dict[str, Any]]:
+        return [
+            event
+            for event in self.list_events(limit=None)
+            if event.get("subject_type") == subject_type
+            and event.get("subject_id") == subject_id
+        ]
+
+    def import_events(self, events: list[dict[str, Any]]) -> int:
+        with _AUDIT_WRITE_LOCK:
+            existing_text = (
+                self.events_path.read_text(encoding="utf-8")
+                if self.events_path.exists()
+                else ""
+            )
+            if existing_text and not existing_text.endswith("\n"):
+                raise ValueError("Audit log ends with an incomplete record")
+            existing = {
+                event["id"]: event
+                for event in (
+                    json.loads(line)
+                    for line in existing_text.splitlines()
+                    if line.strip()
+                )
+            }
+            additions: list[dict[str, Any]] = []
+            for payload in events:
+                event = asdict(AuditEvent(**payload))
+                current = existing.get(event["id"])
+                if current is not None and current != event:
+                    raise ValueError("Audit event identity conflicts with existing log")
+                if current is None:
+                    existing[event["id"]] = event
+                    additions.append(event)
+            if additions:
+                self.audit_dir.mkdir(parents=True, exist_ok=True)
+                appended = "".join(json.dumps(event) + "\n" for event in additions)
+                atomic_write_text(self.events_path, existing_text + appended)
+            return len(additions)

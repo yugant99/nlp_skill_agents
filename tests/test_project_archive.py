@@ -6,6 +6,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from backend.storage.evidence_catalog import EvidenceCatalog
+from backend.storage.audit_log import AuditLogStore
 from backend.storage.project_archive import ProjectArchiveError, ProjectArchiveStore
 from backend.storage.source_blob_store import SourceBlobStore
 from backend.storage.study_store import StudyWorkspaceStore
@@ -48,6 +49,18 @@ def test_project_archive_round_trips_study_evidence_and_source_blobs(tmp_path) -
     assert restored_study.id == study_id
     assert restored.import_count == 1
     assert restored.blob_count == 1
+    assert restored.audit_event_count == 3
+    assert [
+        event["event_type"]
+        for event in AuditLogStore(restore_root).events_for_subject("study", study_id)
+    ] == ["study.created", "skill_pack.versioned", "batch.completed"]
+    restored_events = AuditLogStore(restore_root).events_for_subject(
+        "study", study_id
+    )
+    assert AuditLogStore(restore_root).import_events(restored_events) == 0
+    conflicting_event = {**restored_events[0], "actor": "different-actor"}
+    with pytest.raises(ValueError, match="identity conflicts"):
+        AuditLogStore(restore_root).import_events([conflicting_event])
     assert restored_imports[0].source_blob_sha256 == blob_hash
     assert SourceBlobStore(restore_root).read_verified(blob_hash) == (
         b"P1_c: One.\nP1_p: Two."

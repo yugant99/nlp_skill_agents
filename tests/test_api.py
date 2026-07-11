@@ -749,6 +749,7 @@ def test_study_backup_and_restore_api_round_trips_project(tmp_path, monkeypatch)
     assert len(backup["archive_sha256"]) == 64
     assert restore_response.status_code == 200
     assert restore_response.json()["restore"]["study_id"] == study_id
+    assert restore_response.json()["restore"]["audit_event_count"] == 3
     assert client.get("/api/studies").json()["studies"][0]["id"] == study_id
     restored_import = client.get("/api/evidence/imports").json()["imports"][0]
     assert client.get(

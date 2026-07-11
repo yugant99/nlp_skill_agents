@@ -4,6 +4,8 @@ import csv
 import json
 import sqlite3
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +42,6 @@ class LocalRunStore:
         *,
         source_bytes: bytes | None = None,
     ) -> StoredRun:
-        self.runs_dir.mkdir(parents=True, exist_ok=True)
-        self.exports_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
         evidence_catalog = EvidenceCatalog(self.root)
         evidence_catalog.validate_lineage(
@@ -50,25 +50,51 @@ class LocalRunStore:
             workspace_id=run.workspace_id,
             transcript_revision_id=run.transcript_revision_id,
         )
-        SourceBlobStore(self.root).store(
-            source_bytes if source_bytes is not None else run.source_content.encode("utf-8"),
-            run.source_blob_sha256,
-        )
-        evidence_catalog.record_import(_evidence_import_record(run))
-
         run_dir = self.runs_dir / run.run_id
         export_dir = self.exports_dir / run.run_id
-        run_dir.mkdir(parents=True, exist_ok=True)
-        export_dir.mkdir(parents=True, exist_ok=True)
-
         results_json = run_dir / "results.json"
-        atomic_write_text(
-            results_json,
-            json.dumps(_run_to_payload(run), indent=2),
-        )
-        for result in run.results:
-            _write_metric_csv(export_dir / f"{result.metric_id}.csv", result.rows)
-        self._record_run(run)
+        run_payload_sha256 = _run_payload_sha256(run)
+        self._begin_operation(run, run_payload_sha256)
+
+        completed_stage = "validated"
+        try:
+            SourceBlobStore(self.root).store(
+                source_bytes
+                if source_bytes is not None
+                else run.source_content.encode("utf-8"),
+                run.source_blob_sha256,
+            )
+            completed_stage = "source_blob_stored"
+            self._advance_operation(run.run_id, completed_stage)
+
+            evidence_catalog.record_import(_evidence_import_record(run))
+            completed_stage = "evidence_cataloged"
+            self._advance_operation(run.run_id, completed_stage)
+
+            run_dir.mkdir(parents=True, exist_ok=True)
+            export_dir.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(
+                results_json,
+                json.dumps(_run_to_payload(run), indent=2),
+            )
+            for result in run.results:
+                _write_metric_csv(export_dir / f"{result.metric_id}.csv", result.rows)
+            completed_stage = "artifacts_written"
+            self._advance_operation(run.run_id, completed_stage)
+
+            self._record_run_and_complete_operation(run, run_payload_sha256)
+        except BaseException as exc:
+            try:
+                self._fail_operation(
+                    run.run_id,
+                    completed_stage=completed_stage,
+                    error_type=type(exc).__name__,
+                )
+            except Exception as journal_exc:
+                raise RuntimeError(
+                    "Analysis persistence failed and its journal could not be updated"
+                ) from journal_exc
+            raise
         return StoredRun(
             run_id=run.run_id,
             run_dir=run_dir,
@@ -119,6 +145,30 @@ class LocalRunStore:
             for row in rows
         ]
 
+    def list_operations(
+        self,
+        *,
+        limit: int = 100,
+        incomplete_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        self._ensure_schema()
+        bounded_limit = max(1, min(limit, 500))
+        with sqlite3.connect(self.db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                select run_id, import_id, run_payload_sha256, status, stage,
+                       attempt_count, last_error_type, started_at, updated_at,
+                       completed_at
+                from analysis_operations
+                where ? = 0 or status != 'completed'
+                order by updated_at desc, run_id
+                limit ?
+                """,
+                (int(incomplete_only), bounded_limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def _ensure_schema(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as connection:
@@ -133,11 +183,98 @@ class LocalRunStore:
         with sqlite3.connect(self.db_path) as connection:
             return schema_status(connection)
 
-    def _record_run(self, run: AnalysisRun) -> None:
+    def _begin_operation(self, run: AnalysisRun, run_payload_sha256: str) -> None:
+        now = _utc_now()
+        with sqlite3.connect(self.db_path) as connection:
+            inserted = connection.execute(
+                """
+                insert or ignore into analysis_operations (
+                  run_id, import_id, run_payload_sha256, status, stage,
+                  attempt_count, last_error_type, started_at, updated_at,
+                  completed_at
+                ) values (?, ?, ?, 'running', 'validated', 1, '', ?, ?, '')
+                """,
+                (run.run_id, run.import_id, run_payload_sha256, now, now),
+            ).rowcount
+            if inserted:
+                return
+            stored = connection.execute(
+                """
+                select import_id, run_payload_sha256
+                from analysis_operations where run_id = ?
+                """,
+                (run.run_id,),
+            ).fetchone()
+            if stored is None:
+                raise RuntimeError("Analysis operation disappeared during retry")
+            if stored != (run.import_id, run_payload_sha256):
+                raise ValueError("Analysis operation identity conflicts with journal")
+            connection.execute(
+                """
+                update analysis_operations
+                set status = 'running', stage = 'validated',
+                    attempt_count = attempt_count + 1, last_error_type = '',
+                    updated_at = ?, completed_at = ''
+                where run_id = ?
+                """,
+                (now, run.run_id),
+            )
+
+    def _advance_operation(self, run_id: str, completed_stage: str) -> None:
+        with sqlite3.connect(self.db_path) as connection:
+            updated = connection.execute(
+                """
+                update analysis_operations set stage = ?, updated_at = ?
+                where run_id = ? and status = 'running'
+                """,
+                (completed_stage, _utc_now(), run_id),
+            ).rowcount
+            if updated != 1:
+                raise RuntimeError("Analysis operation is not running")
+
+    def _fail_operation(
+        self,
+        run_id: str,
+        *,
+        completed_stage: str,
+        error_type: str,
+    ) -> None:
+        with sqlite3.connect(self.db_path) as connection:
+            updated = connection.execute(
+                """
+                update analysis_operations
+                set status = 'failed', stage = ?, last_error_type = ?,
+                    updated_at = ?, completed_at = ''
+                where run_id = ? and status = 'running'
+                """,
+                (completed_stage, error_type, _utc_now(), run_id),
+            ).rowcount
+            if updated != 1:
+                raise RuntimeError("Analysis operation failure could not be recorded")
+
+    def _record_run_and_complete_operation(
+        self,
+        run: AnalysisRun,
+        run_payload_sha256: str,
+    ) -> None:
+        expected_run = (
+            run.import_id,
+            run.project_source_id,
+            run.parent_transcript_revision_id,
+            run.workspace_id,
+            run.source_blob_sha256,
+            run.source_media_type,
+            run.source_id,
+            run.transcript_sha256,
+            run.transcript_revision_id,
+            run.source_filename,
+            run.created_at,
+            len(run.results),
+        )
         with sqlite3.connect(self.db_path) as connection:
             connection.execute(
                 """
-                insert or replace into analysis_runs (
+                insert or ignore into analysis_runs (
                   run_id,
                   import_id,
                   project_source_id,
@@ -169,6 +306,32 @@ class LocalRunStore:
                     len(run.results),
                 ),
             )
+            stored_run = connection.execute(
+                """
+                select import_id, project_source_id,
+                       parent_transcript_revision_id, workspace_id,
+                       source_blob_sha256, source_media_type, source_id,
+                       transcript_sha256, transcript_revision_id,
+                       source_filename, created_at, metric_count
+                from analysis_runs where run_id = ?
+                """,
+                (run.run_id,),
+            ).fetchone()
+            if stored_run != expected_run:
+                raise ValueError("Analysis run identity conflicts with stored run")
+            now = _utc_now()
+            completed = connection.execute(
+                """
+                update analysis_operations
+                set status = 'completed', stage = 'completed',
+                    last_error_type = '', updated_at = ?, completed_at = ?
+                where run_id = ? and import_id = ? and run_payload_sha256 = ?
+                  and status = 'running'
+                """,
+                (now, now, run.run_id, run.import_id, run_payload_sha256),
+            ).rowcount
+            if completed != 1:
+                raise RuntimeError("Analysis operation could not be completed")
 
 
 def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
@@ -190,6 +353,20 @@ def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
         "turn_count": len(run.transcript.turns),
         "results": [asdict(result) for result in run.results],
     }
+
+
+def _run_payload_sha256(run: AnalysisRun) -> str:
+    canonical_payload = json.dumps(
+        _run_to_payload(run),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return sha256(canonical_payload).hexdigest()
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 def _evidence_import_record(run: AnalysisRun) -> EvidenceImportRecord:

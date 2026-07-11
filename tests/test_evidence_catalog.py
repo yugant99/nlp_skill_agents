@@ -97,12 +97,19 @@ def test_evidence_catalog_records_validated_revision_lineage(tmp_path) -> None:
     catalog.record_import(second)
 
     history = catalog.source_history("psrc_interview")
+    workspace_records = catalog.workspace_import_records("study_one")
     assert history["source"]["workspace_id"] == "study_one"
     assert [item["transcript_revision_id"] for item in history["revisions"]] == [
         "trv_v1",
         "trv_v2",
     ]
     assert history["revisions"][1]["parent_transcript_revision_id"] == "trv_v1"
+    assert [record.import_id for record in workspace_records] == [
+        "imp_v1",
+        "imp_v2",
+    ]
+    assert workspace_records[1].transcript_sha256 == "4" * 64
+    assert catalog.workspace_import_records("another-study") == []
 
     with pytest.raises(ValueError, match="Parent revision does not belong"):
         catalog.record_import(

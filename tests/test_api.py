@@ -151,6 +151,9 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
     payload = response.json()
     assert payload["source_filename"] == "vr009.txt"
     assert payload["import_id"].startswith("imp_")
+    assert payload["project_source_id"].startswith("psrc_")
+    assert payload["parent_transcript_revision_id"] == ""
+    assert payload["workspace_id"] == "local-default"
     assert payload["source_blob_sha256"] == sha256(
         b"vr009_c: Um, hello there.\nvr009_p: Hello."
     ).hexdigest()
@@ -352,6 +355,70 @@ def test_create_run_from_text_payload(tmp_path, monkeypatch) -> None:
     assert payload["source_filename"] == "pasted_transcript.txt"
     assert payload["turn_count"] == 2
     assert payload["results"][1]["rows"][-1]["disfluency_count"] == 1
+
+
+def test_text_run_api_records_and_validates_revision_lineage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    config = {"participant_id": "vr051", "selected_metrics": ["base_metrics"]}
+
+    first_response = client.post(
+        "/api/runs/text",
+        json={
+            "source_filename": "session.txt",
+            "content": "vr051_c: First prompt.\nvr051_p: First response.",
+            "config": config,
+        },
+    )
+    first = first_response.json()
+    second_response = client.post(
+        "/api/runs/text",
+        json={
+            "source_filename": "session-revised.txt",
+            "content": "vr051_c: Revised prompt.\nvr051_p: Revised response.",
+            "config": config,
+            "project_source_id": first["project_source_id"],
+            "parent_transcript_revision_id": first["transcript_revision_id"],
+        },
+    )
+    second = second_response.json()
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert second["project_source_id"] == first["project_source_id"]
+    assert (
+        second["parent_transcript_revision_id"]
+        == first["transcript_revision_id"]
+    )
+    assert second["transcript_revision_id"] != first["transcript_revision_id"]
+
+    history_response = client.get(
+        f"/api/evidence/sources/{first['project_source_id']}"
+    )
+    history = history_response.json()
+    assert history_response.status_code == 200
+    assert [item["transcript_revision_id"] for item in history["revisions"]] == [
+        first["transcript_revision_id"],
+        second["transcript_revision_id"],
+    ]
+
+    invalid_response = client.post(
+        "/api/runs/text",
+        json={
+            "source_filename": "invalid-revision.txt",
+            "content": "vr051_c: Invalid.\nvr051_p: Invalid.",
+            "config": config,
+            "project_source_id": first["project_source_id"],
+            "parent_transcript_revision_id": "trv_missing",
+        },
+    )
+    assert invalid_response.status_code == 400
+    assert "Parent revision does not belong" in invalid_response.json()["detail"]
+    assert len(client.get("/api/evidence/imports").json()["imports"]) == 2
+    assert len(list((tmp_path / "runs").glob("*/results.json"))) == 2
 
 
 def test_create_text_run_applies_embedded_dynamic_skill_pack(tmp_path, monkeypatch) -> None:
@@ -955,6 +1022,9 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
     run = response.json()["run"]
     assert run["source"] == "researcher_provided"
     assert run["import_id"].startswith("imp_")
+    assert run["project_source_id"].startswith("psrc_")
+    assert run["parent_transcript_revision_id"] == ""
+    assert run["workspace_id"] == "local-default"
     assert len(run["source_blob_sha256"]) == 64
     assert run["source_media_type"] == "text/plain"
     assert run["source_id"].startswith("src_")

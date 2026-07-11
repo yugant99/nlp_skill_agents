@@ -320,6 +320,9 @@ def test_study_workspace_lists_and_loads_batch_run_drilldown(tmp_path: Path) -> 
     assert run_summaries[0]["metadata"]["participant_id"] == "P1"
     assert run_summaries[0]["turn_count"] == 2
     assert run_summaries[0]["import_id"].startswith("imp_")
+    assert run_summaries[0]["project_source_id"].startswith("psrc_")
+    assert run_summaries[0]["parent_transcript_revision_id"] == ""
+    assert run_summaries[0]["workspace_id"] == study.id
     assert len(run_summaries[0]["source_blob_sha256"]) == 64
     assert run_summaries[0]["source_media_type"] == "text/plain"
     assert run_summaries[0]["source_id"] == loaded_run["source_id"]
@@ -382,16 +385,79 @@ def test_study_workspace_lists_legacy_batch_runs_without_identity_fields(
     )
     run_path = next((batch.aggregate_dir / "runs").glob("*.json"))
     payload = json.loads(run_path.read_text(encoding="utf-8"))
-    payload.pop("source_id")
-    payload.pop("transcript_sha256")
-    payload.pop("transcript_revision_id")
+    for field in (
+        "import_id",
+        "project_source_id",
+        "parent_transcript_revision_id",
+        "workspace_id",
+        "source_blob_sha256",
+        "source_media_type",
+        "source_id",
+        "transcript_sha256",
+        "transcript_revision_id",
+    ):
+        payload.pop(field)
     run_path.write_text(json.dumps(payload), encoding="utf-8")
 
     summary = store.list_batch_runs(study.id, batch.batch_id)[0]
 
+    assert summary["import_id"] == ""
+    assert summary["source_blob_sha256"] == ""
+    assert summary["source_media_type"] == ""
     assert summary["source_id"] == ""
+    assert summary["project_source_id"] == ""
+    assert summary["parent_transcript_revision_id"] == ""
+    assert summary["workspace_id"] == ""
     assert summary["transcript_sha256"] == ""
     assert summary["transcript_revision_id"] == ""
+
+
+def test_study_workspace_keeps_revision_lineage_inside_the_study(
+    tmp_path: Path,
+) -> None:
+    from backend.storage.evidence_catalog import EvidenceCatalog
+
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Revision Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "revision_pack",
+            "name": "Revision Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    first_batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "session.txt", "content": "P1_c: One.\nP1_p: Two."}],
+    )
+    first = store.list_batch_runs(study.id, first_batch.batch_id)[0]
+    second_batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [
+            {
+                "source_filename": "session-revised.txt",
+                "content": "P1_c: Revised one.\nP1_p: Revised two.",
+                "project_source_id": first["project_source_id"],
+                "parent_transcript_revision_id": first[
+                    "transcript_revision_id"
+                ],
+            }
+        ],
+    )
+    second = store.list_batch_runs(study.id, second_batch.batch_id)[0]
+
+    history = EvidenceCatalog(tmp_path).source_history(first["project_source_id"])
+    assert first["workspace_id"] == study.id
+    assert second["workspace_id"] == study.id
+    assert second["project_source_id"] == first["project_source_id"]
+    assert history["source"]["workspace_id"] == study.id
+    assert history["revisions"][1]["parent_transcript_revision_id"] == first[
+        "transcript_revision_id"
+    ]
 
 
 def test_study_workspace_exports_reproducibility_bundle(tmp_path: Path) -> None:

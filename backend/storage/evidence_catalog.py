@@ -164,6 +164,39 @@ class EvidenceCatalog:
             if stored_import != expected_import:
                 raise ValueError("Source import identity conflicts with catalog")
 
+    def validate_lineage(
+        self,
+        *,
+        project_source_id: str,
+        parent_transcript_revision_id: str,
+        workspace_id: str,
+    ) -> None:
+        if not parent_transcript_revision_id:
+            return
+        if not project_source_id:
+            raise ValueError("A parent revision requires project_source_id")
+        self._ensure_schema()
+        with sqlite3.connect(self.db_path) as connection:
+            source = connection.execute(
+                """
+                select workspace_id from project_sources where project_source_id = ?
+                """,
+                (project_source_id,),
+            ).fetchone()
+            if source is None:
+                raise ValueError("Project source does not exist")
+            if source != (workspace_id or "local-default",):
+                raise ValueError("Project source belongs to a different workspace")
+            parent = connection.execute(
+                """
+                select 1 from source_revisions
+                where project_source_id = ? and transcript_revision_id = ?
+                """,
+                (project_source_id, parent_transcript_revision_id),
+            ).fetchone()
+            if parent is None:
+                raise ValueError("Parent revision does not belong to project source")
+
     def list_imports(self, limit: int = 100) -> list[dict[str, Any]]:
         self._ensure_schema()
         with sqlite3.connect(self.db_path) as connection:

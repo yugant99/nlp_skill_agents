@@ -21,6 +21,9 @@ def test_execute_analysis_runs_selected_metric_skills() -> None:
 
     assert run.source_filename == "vr007.txt"
     assert run.import_id.startswith("imp_")
+    assert run.project_source_id.startswith("psrc_")
+    assert run.parent_transcript_revision_id == ""
+    assert run.workspace_id == "local-default"
     assert len(run.source_blob_sha256) == 64
     assert run.source_media_type == "text/plain"
     assert run.source_id.startswith("src_")
@@ -51,6 +54,9 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
     result_payload = json.loads(stored.results_json.read_text(encoding="utf-8"))
     assert result_payload["source_filename"] == "vr008.txt"
     assert result_payload["import_id"] == run.import_id
+    assert result_payload["project_source_id"] == run.project_source_id
+    assert result_payload["parent_transcript_revision_id"] == ""
+    assert result_payload["workspace_id"] == "local-default"
     assert result_payload["source_blob_sha256"] == run.source_blob_sha256
     assert result_payload["source_media_type"] == "text/plain"
     assert result_payload["source_id"] == run.source_id

@@ -31,6 +31,13 @@ class LocalRunStore:
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self.exports_dir.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()
+        evidence_catalog = EvidenceCatalog(self.root)
+        evidence_catalog.validate_lineage(
+            project_source_id=run.project_source_id,
+            parent_transcript_revision_id=run.parent_transcript_revision_id,
+            workspace_id=run.workspace_id,
+        )
+        evidence_catalog.record_import(_evidence_import_record(run))
 
         run_dir = self.runs_dir / run.run_id
         export_dir = self.exports_dir / run.run_id
@@ -45,7 +52,6 @@ class LocalRunStore:
         for result in run.results:
             _write_metric_csv(export_dir / f"{result.metric_id}.csv", result.rows)
         self._record_run(run)
-        EvidenceCatalog(self.root).record_import(_evidence_import_record(run))
         return StoredRun(
             run_id=run.run_id,
             run_dir=run_dir,
@@ -62,7 +68,9 @@ class LocalRunStore:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 """
-                select run_id, import_id, source_blob_sha256, source_media_type,
+                select run_id, import_id, project_source_id,
+                       parent_transcript_revision_id, workspace_id,
+                       source_blob_sha256, source_media_type,
                        source_id, transcript_sha256, transcript_revision_id,
                        source_filename, created_at, metric_count
                 from analysis_runs
@@ -75,6 +83,11 @@ class LocalRunStore:
             {
                 "run_id": row["run_id"],
                 "import_id": row["import_id"],
+                "project_source_id": row["project_source_id"],
+                "parent_transcript_revision_id": row[
+                    "parent_transcript_revision_id"
+                ],
+                "workspace_id": row["workspace_id"],
                 "source_blob_sha256": row["source_blob_sha256"],
                 "source_media_type": row["source_media_type"],
                 "source_id": row["source_id"],
@@ -97,6 +110,9 @@ class LocalRunStore:
                 create table if not exists analysis_runs (
                   run_id text primary key,
                   import_id text not null,
+                  project_source_id text not null,
+                  parent_transcript_revision_id text not null,
+                  workspace_id text not null,
                   source_blob_sha256 text not null,
                   source_media_type text not null,
                   source_id text not null,
@@ -114,6 +130,9 @@ class LocalRunStore:
             }
             for column in (
                 "import_id",
+                "project_source_id",
+                "parent_transcript_revision_id",
+                "workspace_id",
                 "source_blob_sha256",
                 "source_media_type",
                 "source_id",
@@ -132,6 +151,9 @@ class LocalRunStore:
                 insert or replace into analysis_runs (
                   run_id,
                   import_id,
+                  project_source_id,
+                  parent_transcript_revision_id,
+                  workspace_id,
                   source_blob_sha256,
                   source_media_type,
                   source_id,
@@ -140,11 +162,14 @@ class LocalRunStore:
                   source_filename,
                   created_at,
                   metric_count
-                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
                     run.import_id,
+                    run.project_source_id,
+                    run.parent_transcript_revision_id,
+                    run.workspace_id,
                     run.source_blob_sha256,
                     run.source_media_type,
                     run.source_id,
@@ -161,6 +186,9 @@ def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
     return {
         "run_id": run.run_id,
         "import_id": run.import_id,
+        "project_source_id": run.project_source_id,
+        "parent_transcript_revision_id": run.parent_transcript_revision_id,
+        "workspace_id": run.workspace_id,
         "source_blob_sha256": run.source_blob_sha256,
         "source_media_type": run.source_media_type,
         "source_id": run.source_id,
@@ -180,6 +208,9 @@ def _evidence_import_record(run: AnalysisRun) -> EvidenceImportRecord:
         import_id=run.import_id,
         run_id=run.run_id,
         pipeline="analysis",
+        project_source_id=run.project_source_id,
+        parent_transcript_revision_id=run.parent_transcript_revision_id,
+        workspace_id=run.workspace_id,
         source_id=run.source_id,
         source_filename=run.source_filename,
         source_media_type=run.source_media_type,

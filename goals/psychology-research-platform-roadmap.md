@@ -181,7 +181,7 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 - [ ] SQLite schema migrations, referential integrity, and compatibility policy.
 - [ ] Atomic artifact writes and transactional workflow boundaries.
 - [ ] Project archive, deletion, retention, withdrawal, and recovery states.
-- [ ] Real backup archives and restore verification, not manifest-only bundles.
+- [x] Real backup archives and restore verification, not manifest-only bundles.
 - [ ] Windows identity for the loopback pilot and role-based authorization before
       any LAN access.
 - [ ] Researcher, reviewer, and administrator roles.

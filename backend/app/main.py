@@ -452,12 +452,15 @@ async def create_segmentation_file_run(
         )
     try:
         parsed_rule_ids = _segmentation_rule_ids_from_json(rule_ids)
-        content = (await file.read()).decode("utf-8")
+        source_bytes = await file.read()
+        content = source_bytes.decode("utf-8")
         run = SegmentationRunStore(_local_data_root()).create_run(
             source_filename=file.filename or "descript_export.txt",
             descript_text=content,
             rule_ids=parsed_rule_ids,
             source="researcher_provided",
+            source_bytes=source_bytes,
+            source_media_type=file.content_type or "application/octet-stream",
         )
     except UnicodeDecodeError as exc:
         raise HTTPException(

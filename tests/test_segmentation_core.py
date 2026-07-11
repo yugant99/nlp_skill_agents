@@ -315,6 +315,9 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
 
     assert run.status == "verified"
     assert run.source == "researcher_provided"
+    assert run.import_id.startswith("imp_")
+    assert len(run.source_blob_sha256) == 64
+    assert run.source_media_type == "text/plain"
     assert run.source_id.startswith("src_")
     assert len(run.transcript_sha256) == 64
     assert run.transcript_revision_id.startswith("trv_")
@@ -356,6 +359,8 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
         ],
     )
     assert repeated.run_id != run.run_id
+    assert repeated.import_id != run.import_id
+    assert repeated.source_blob_sha256 == run.source_blob_sha256
     assert repeated.source_id == run.source_id
     assert repeated.transcript_sha256 == run.transcript_sha256
     assert repeated.transcript_revision_id == run.transcript_revision_id
@@ -392,6 +397,9 @@ def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) ->
     assert transcript_path.read_text(encoding="utf-8") == run.merged_draft
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["run_id"] == run.run_id
+    assert evidence["import_id"] == run.import_id
+    assert evidence["source_blob_sha256"] == run.source_blob_sha256
+    assert evidence["source_media_type"] == run.source_media_type
     assert evidence["source_id"] == run.source_id
     assert evidence["transcript_sha256"] == run.transcript_sha256
     assert evidence["transcript_revision_id"] == run.transcript_revision_id
@@ -512,6 +520,9 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     run_path = tmp_path / "segmentation_runs" / f"{run.run_id}.json"
     payload = json.loads(run_path.read_text(encoding="utf-8"))
     payload.pop("source")
+    payload.pop("import_id")
+    payload.pop("source_blob_sha256")
+    payload.pop("source_media_type")
     payload.pop("source_id")
     payload.pop("transcript_sha256")
     payload.pop("transcript_revision_id")
@@ -531,6 +542,9 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
 
     loaded = store.load_run(run.run_id)
     assert loaded.source == "synthetic"
+    assert loaded.import_id == f"imp_legacy_{run.run_id}"
+    assert loaded.source_blob_sha256 == ""
+    assert loaded.source_media_type == "unknown"
     assert loaded.source_id.startswith("src_")
     assert len(loaded.transcript_sha256) == 64
     assert loaded.transcript_revision_id.startswith("trv_")
@@ -553,5 +567,7 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     assert "score" not in rewritten["evaluation"]
     assert "confidence" not in rewritten["cunit_adjudication"]["decisions"][0]
     assert rewritten["source_id"] == loaded.source_id
+    assert rewritten["import_id"] == loaded.import_id
+    assert rewritten["source_blob_sha256"] == ""
     assert rewritten["events"][0]["passage_id"]
     assert rewritten["cunit_adjudication"]["decisions"][0]["passage_id"]

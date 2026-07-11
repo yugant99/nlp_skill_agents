@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.extensions.plugin_requests import PluginRequest
+from backend.storage.atomic import atomic_write_text
 
 
 AGENT_JOB_STATUSES = {"queued", "in_progress", "blocked", "verified", "merged"}
@@ -60,9 +61,9 @@ class AgentJobStore:
     def persist(self, job: AgentJob) -> StoredAgentJob:
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = self.jobs_dir / f"{job.id}.json"
-        artifact_path.write_text(
+        atomic_write_text(
+            artifact_path,
             json.dumps(agent_job_to_payload(job), indent=2),
-            encoding="utf-8",
         )
         runbook_path = Path(job.runbook_path)
         runbook_path.parent.mkdir(parents=True, exist_ok=True)
@@ -71,7 +72,7 @@ class AgentJobStore:
             if runbook_path.suffix == ".html"
             else build_agent_job_runbook(job)
         )
-        runbook_path.write_text(runbook, encoding="utf-8")
+        atomic_write_text(runbook_path, runbook)
         return StoredAgentJob(
             job=job,
             artifact_path=artifact_path,
@@ -142,9 +143,9 @@ class AgentJobStore:
             summary=str(payload.get("summary") or ""),
             artifact_path=str(artifact_path),
         )
-        artifact_path.write_text(
+        atomic_write_text(
+            artifact_path,
             json.dumps(asdict(evidence), indent=2),
-            encoding="utf-8",
         )
         return evidence
 
@@ -243,13 +244,13 @@ def create_segmentation_rewrite_job(
     job_dir = store.jobs_dir / job_id
     prompt_path = job_dir / "rewrite_prompt.html"
     job_dir.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(
+    atomic_write_text(
+        prompt_path,
         build_segmentation_rewrite_prompt_html(
             safe_case_id,
             failed_rule_ids=failed_rule_ids or [],
             target_specialist_ids=target_specialist_ids or [],
         ),
-        encoding="utf-8",
     )
     job = AgentJob(
         id=job_id,

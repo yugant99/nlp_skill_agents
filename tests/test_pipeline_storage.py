@@ -245,10 +245,46 @@ def test_local_store_replays_exact_run_and_rejects_changed_payload(
     completed = store.list_operations()[0]
     assert completed["status"] == "completed"
     assert completed["attempt_count"] == 2
-    with pytest.raises(ValueError, match="identity conflicts with journal"):
+    with pytest.raises(ValueError, match="identity conflicts"):
         store.persist_run(replace(run, source_filename="changed.txt"))
     assert store.list_operations()[0]["attempt_count"] == 2
     assert [item["run_id"] for item in store.list_runs()] == [run.run_id]
+
+
+def test_local_store_rejects_pre_journal_run_conflict_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    run = execute_analysis(
+        "vr034_c: Preserve this.\nvr034_p: Yes.",
+        StudyConfig(participant_id="vr034", selected_metrics=["base_metrics"]),
+        source_filename="preserve.txt",
+    )
+    store = LocalRunStore(tmp_path)
+    assert store.list_runs() == []
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            """
+            insert into analysis_runs (
+              run_id, import_id, project_source_id,
+              parent_transcript_revision_id, workspace_id,
+              source_blob_sha256, source_media_type, source_id,
+              transcript_sha256, transcript_revision_id,
+              source_filename, created_at, metric_count
+            ) values (?, 'imp_existing', 'psrc_existing', '', 'local-default',
+                      ?, 'text/plain', 'src_existing', ?, 'trv_existing',
+                      'existing.txt', ?, 1)
+            """,
+            (run.run_id, "a" * 64, "b" * 64, run.created_at),
+        )
+
+    with pytest.raises(ValueError, match="identity conflicts with stored run"):
+        store.persist_run(run)
+
+    assert store.list_operations() == []
+    assert not (tmp_path / "runs" / run.run_id).exists()
+    assert not SourceBlobStore(tmp_path).blob_path(run.source_blob_sha256).exists()
+    assert EvidenceCatalog(tmp_path).list_imports() == []
+    assert store.list_runs()[0]["source_filename"] == "existing.txt"
 
 
 def test_local_store_rejects_newer_analysis_schema(tmp_path: Path) -> None:

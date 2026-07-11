@@ -186,6 +186,9 @@ class LocalRunStore:
     def _begin_operation(self, run: AnalysisRun, run_payload_sha256: str) -> None:
         now = _utc_now()
         with sqlite3.connect(self.db_path) as connection:
+            stored_run = _stored_run_identity(connection, run.run_id)
+            if stored_run is not None and stored_run != _run_index_identity(run):
+                raise ValueError("Analysis run identity conflicts with stored run")
             inserted = connection.execute(
                 """
                 insert or ignore into analysis_operations (
@@ -257,20 +260,6 @@ class LocalRunStore:
         run: AnalysisRun,
         run_payload_sha256: str,
     ) -> None:
-        expected_run = (
-            run.import_id,
-            run.project_source_id,
-            run.parent_transcript_revision_id,
-            run.workspace_id,
-            run.source_blob_sha256,
-            run.source_media_type,
-            run.source_id,
-            run.transcript_sha256,
-            run.transcript_revision_id,
-            run.source_filename,
-            run.created_at,
-            len(run.results),
-        )
         with sqlite3.connect(self.db_path) as connection:
             connection.execute(
                 """
@@ -306,18 +295,8 @@ class LocalRunStore:
                     len(run.results),
                 ),
             )
-            stored_run = connection.execute(
-                """
-                select import_id, project_source_id,
-                       parent_transcript_revision_id, workspace_id,
-                       source_blob_sha256, source_media_type, source_id,
-                       transcript_sha256, transcript_revision_id,
-                       source_filename, created_at, metric_count
-                from analysis_runs where run_id = ?
-                """,
-                (run.run_id,),
-            ).fetchone()
-            if stored_run != expected_run:
+            stored_run = _stored_run_identity(connection, run.run_id)
+            if stored_run != _run_index_identity(run):
                 raise ValueError("Analysis run identity conflicts with stored run")
             now = _utc_now()
             completed = connection.execute(
@@ -353,6 +332,40 @@ def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
         "turn_count": len(run.transcript.turns),
         "results": [asdict(result) for result in run.results],
     }
+
+
+def _run_index_identity(run: AnalysisRun) -> tuple[Any, ...]:
+    return (
+        run.import_id,
+        run.project_source_id,
+        run.parent_transcript_revision_id,
+        run.workspace_id,
+        run.source_blob_sha256,
+        run.source_media_type,
+        run.source_id,
+        run.transcript_sha256,
+        run.transcript_revision_id,
+        run.source_filename,
+        run.created_at,
+        len(run.results),
+    )
+
+
+def _stored_run_identity(
+    connection: sqlite3.Connection,
+    run_id: str,
+) -> tuple[Any, ...] | None:
+    return connection.execute(
+        """
+        select import_id, project_source_id,
+               parent_transcript_revision_id, workspace_id,
+               source_blob_sha256, source_media_type, source_id,
+               transcript_sha256, transcript_revision_id,
+               source_filename, created_at, metric_count
+        from analysis_runs where run_id = ?
+        """,
+        (run_id,),
+    ).fetchone()
 
 
 def _run_payload_sha256(run: AnalysisRun) -> str:

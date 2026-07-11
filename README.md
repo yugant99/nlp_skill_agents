@@ -39,6 +39,11 @@ Study backups are portable ZIP archives with a versioned manifest covering every
 study file, workspace-scoped evidence record, referenced source blob, and
 study-scoped audit event. Restore verifies declared paths, sizes, and hashes before
 atomically exposing the staged study directory.
+The analysis-run and evidence-catalog databases use ordered, forward-only SQLite
+migration ledgers. Each migration is transactional, older supported database
+shapes are upgraded in place, and the application refuses a database created by a
+newer unsupported schema instead of guessing. `GET /api/storage/schema-status`
+reports the applied migration names and current version for both databases.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

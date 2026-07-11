@@ -178,7 +178,7 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 
 - [x] Content-addressed original-source blob retention and read-time integrity
       verification.
-- [ ] SQLite schema migrations, referential integrity, and compatibility policy.
+- [x] SQLite schema migrations, referential integrity, and compatibility policy.
 - [ ] Atomic artifact writes and transactional workflow boundaries.
 - [ ] Project archive, deletion, retention, withdrawal, and recovery states.
 - [x] Real backup archives and restore verification, not manifest-only bundles.

@@ -73,6 +73,7 @@ Each checkpoint should record:
 - [2026-07-10 Phase 1 source revision lineage](2026-07-10-phase1-source-revision-lineage.md)
 - [2026-07-10 Phase 1 source blob retention](2026-07-10-phase1-source-blob-retention.md)
 - [2026-07-10 Phase 1 project backup and restore](2026-07-10-phase1-project-backup-restore.md)
+- [2026-07-10 Phase 1 SQLite migration policy](2026-07-10-phase1-sqlite-migration-policy.md)
 
 ## Completion Bar
 

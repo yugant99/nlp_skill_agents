@@ -263,6 +263,7 @@ class StudyWorkspaceStore:
                 project_source_id=run.project_source_id,
                 parent_transcript_revision_id=run.parent_transcript_revision_id,
                 workspace_id=run.workspace_id,
+                transcript_revision_id=run.transcript_revision_id,
             )
             evidence_catalog.record_import(evidence_record)
             atomic_write_text(

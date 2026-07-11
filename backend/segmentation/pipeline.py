@@ -166,6 +166,7 @@ class SegmentationRunStore:
             project_source_id=import_identity.project_source_id,
             parent_transcript_revision_id=parent_transcript_revision_id,
             workspace_id=workspace_id or "local-default",
+            transcript_revision_id=identity.transcript_revision_id,
         )
         normalized_rule_ids = _normalize_rule_ids(rule_ids)
         events = extract_descript_events(descript_text, source_filename)

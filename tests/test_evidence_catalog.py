@@ -124,6 +124,16 @@ def test_evidence_catalog_records_validated_revision_lineage(tmp_path) -> None:
                 parent_transcript_revision_id="trv_self",
             )
         )
+    with pytest.raises(ValueError, match="existing source requires a parent"):
+        catalog.record_import(
+            replace(
+                second,
+                import_id="imp_rootless_v3",
+                transcript_revision_id="trv_rootless",
+                transcript_sha256="7" * 64,
+                parent_transcript_revision_id="",
+            )
+        )
 
 
 def test_evidence_catalog_migrates_imports_without_inventing_lineage(tmp_path) -> None:

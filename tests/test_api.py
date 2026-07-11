@@ -417,6 +417,18 @@ def test_text_run_api_records_and_validates_revision_lineage(
     )
     assert invalid_response.status_code == 400
     assert "Parent revision does not belong" in invalid_response.json()["detail"]
+
+    rootless_response = client.post(
+        "/api/runs/text",
+        json={
+            "source_filename": "rootless-revision.txt",
+            "content": "vr051_c: Rootless.\nvr051_p: Rootless.",
+            "config": config,
+            "project_source_id": first["project_source_id"],
+        },
+    )
+    assert rootless_response.status_code == 400
+    assert "existing source requires a parent" in rootless_response.json()["detail"]
     assert len(client.get("/api/evidence/imports").json()["imports"]) == 2
     assert len(list((tmp_path / "runs").glob("*/results.json"))) == 2
 

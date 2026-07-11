@@ -40,6 +40,12 @@ class EvidenceCatalog:
 
         with sqlite3.connect(self.db_path) as connection:
             connection.execute("pragma foreign_keys = on")
+            existing_source = connection.execute(
+                """
+                select workspace_id from project_sources where project_source_id = ?
+                """,
+                (project_source_id,),
+            ).fetchone()
             connection.execute(
                 """
                 insert or ignore into project_sources (
@@ -80,6 +86,21 @@ class EvidenceCatalog:
             ).fetchone()
             if stored_revision != (record.source_id, record.transcript_sha256):
                 raise ValueError("Transcript revision identity conflicts with catalog")
+
+            existing_source_revision = connection.execute(
+                """
+                select parent_transcript_revision_id
+                from source_revisions
+                where project_source_id = ? and transcript_revision_id = ?
+                """,
+                (project_source_id, record.transcript_revision_id),
+            ).fetchone()
+            if (
+                existing_source is not None
+                and existing_source_revision is None
+                and not parent_revision_id
+            ):
+                raise ValueError("A new revision for an existing source requires a parent")
 
             if parent_revision_id:
                 parent = connection.execute(
@@ -170,8 +191,9 @@ class EvidenceCatalog:
         project_source_id: str,
         parent_transcript_revision_id: str,
         workspace_id: str,
+        transcript_revision_id: str,
     ) -> None:
-        if not parent_transcript_revision_id:
+        if not project_source_id and not parent_transcript_revision_id:
             return
         if not project_source_id:
             raise ValueError("A parent revision requires project_source_id")
@@ -184,9 +206,25 @@ class EvidenceCatalog:
                 (project_source_id,),
             ).fetchone()
             if source is None:
-                raise ValueError("Project source does not exist")
+                if parent_transcript_revision_id:
+                    raise ValueError("Project source does not exist")
+                return
             if source != (workspace_id or "local-default",):
                 raise ValueError("Project source belongs to a different workspace")
+            current_revision = connection.execute(
+                """
+                select parent_transcript_revision_id
+                from source_revisions
+                where project_source_id = ? and transcript_revision_id = ?
+                """,
+                (project_source_id, transcript_revision_id),
+            ).fetchone()
+            if current_revision is not None:
+                if current_revision != (parent_transcript_revision_id,):
+                    raise ValueError("Source revision lineage conflicts with catalog")
+                return
+            if not parent_transcript_revision_id:
+                raise ValueError("A new revision for an existing source requires a parent")
             parent = connection.execute(
                 """
                 select 1 from source_revisions

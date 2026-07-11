@@ -416,6 +416,7 @@ def test_study_workspace_keeps_revision_lineage_inside_the_study(
     tmp_path: Path,
 ) -> None:
     from backend.storage.evidence_catalog import EvidenceCatalog
+    from backend.storage.source_blob_store import SourceBlobStore
 
     store = StudyWorkspaceStore(tmp_path)
     study = store.create_study({"name": "Revision Study"})
@@ -455,6 +456,9 @@ def test_study_workspace_keeps_revision_lineage_inside_the_study(
     assert second["workspace_id"] == study.id
     assert second["project_source_id"] == first["project_source_id"]
     assert history["source"]["workspace_id"] == study.id
+    assert SourceBlobStore(tmp_path).read_verified(first["source_blob_sha256"]) == (
+        b"P1_c: One.\nP1_p: Two."
+    )
     assert history["revisions"][1]["parent_transcript_revision_id"] == first[
         "transcript_revision_id"
     ]

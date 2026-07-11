@@ -382,6 +382,7 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
 
 def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) -> None:
     from backend.segmentation.pipeline import SegmentationRunStore
+    from backend.storage.source_blob_store import SourceBlobStore
 
     store = SegmentationRunStore(tmp_path)
     run = store.create_run(
@@ -401,6 +402,9 @@ def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) ->
 
     assert [item.run_id for item in runs] == [run.run_id]
     assert transcript_path.read_text(encoding="utf-8") == run.merged_draft
+    assert SourceBlobStore(tmp_path).read_verified(run.source_blob_sha256) == (
+        b"[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes."
+    )
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
     assert evidence["run_id"] == run.run_id
     assert evidence["import_id"] == run.import_id

@@ -58,6 +58,7 @@ from backend.storage.audit_log import AuditLogStore
 from backend.storage.deployment_profiles import check_deployment_profile
 from backend.storage.evidence_catalog import EvidenceCatalog
 from backend.storage.library_store import LibraryStore
+from backend.storage.source_blob_store import SourceBlobIntegrityError, SourceBlobStore
 from backend.storage.study_store import MAX_STUDY_PARTICIPANTS, StudyWorkspaceStore
 
 
@@ -884,7 +885,10 @@ async def create_run(
         parent_transcript_revision_id=parent_transcript_revision_id,
     )
     try:
-        stored = LocalRunStore(_local_data_root()).persist_run(run)
+        stored = LocalRunStore(_local_data_root()).persist_run(
+            run,
+            source_bytes=source_bytes,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _run_response(run, stored)
@@ -926,6 +930,23 @@ def get_evidence_source_history(project_source_id: str) -> dict:
         return EvidenceCatalog(_local_data_root()).source_history(project_source_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Evidence source not found") from exc
+
+
+@app.get("/api/evidence/blobs/{source_blob_sha256}/verify")
+def verify_evidence_source_blob(source_blob_sha256: str) -> dict:
+    try:
+        content = SourceBlobStore(_local_data_root()).read_verified(
+            source_blob_sha256
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Source blob not found") from exc
+    except SourceBlobIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "source_blob_sha256": source_blob_sha256,
+        "verified": True,
+        "size_bytes": len(content),
+    }
 
 
 @app.get("/api/runs/{run_id}/exports/{filename}")

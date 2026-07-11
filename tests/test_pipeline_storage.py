@@ -6,6 +6,7 @@ from pathlib import Path
 from backend.analysis.pipeline import execute_analysis
 from backend.analysis.transcripts import StudyConfig
 from backend.storage.local_store import LocalRunStore
+from backend.storage.source_blob_store import SourceBlobStore
 
 
 def test_execute_analysis_runs_selected_metric_skills() -> None:
@@ -62,6 +63,9 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
     assert result_payload["source_id"] == run.source_id
     assert result_payload["transcript_sha256"] == run.transcript_sha256
     assert result_payload["transcript_revision_id"] == run.transcript_revision_id
+    assert SourceBlobStore(tmp_path).read_verified(run.source_blob_sha256) == (
+        b"vr008_c: This is one sentence.\nvr008_p: Uh, yes."
+    )
     assert [metric["metric_id"] for metric in result_payload["results"]] == [
         "base_metrics",
         "lexical_metrics",

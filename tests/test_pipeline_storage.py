@@ -1,12 +1,14 @@
 import csv
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from backend.analysis.pipeline import execute_analysis
 from backend.analysis.transcripts import StudyConfig
+from backend.storage.evidence_catalog import EvidenceCatalog
 from backend.storage.local_store import LocalRunStore
 from backend.storage.sqlite_migrations import SchemaCompatibilityError
 from backend.storage.source_blob_store import SourceBlobStore
@@ -140,9 +142,16 @@ def test_local_store_migrates_existing_run_metadata_schema(tmp_path: Path) -> No
         3,
         4,
         5,
+        6,
     ]
     with sqlite3.connect(tmp_path / "runs.sqlite3") as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 5
+        assert connection.execute("pragma user_version").fetchone()[0] == 6
+        assert connection.execute(
+            """
+            select name from sqlite_master
+            where type = 'table' and name = 'analysis_operations'
+            """
+        ).fetchone() == ("analysis_operations",)
 
 
 def test_local_store_lists_recent_runs_newest_first(tmp_path: Path) -> None:
@@ -165,6 +174,117 @@ def test_local_store_lists_recent_runs_newest_first(tmp_path: Path) -> None:
     assert [row["source_filename"] for row in rows] == ["second.txt", "first.txt"]
     assert rows[0]["metric_count"] == 1
     assert rows[0]["results_json"].endswith("results.json")
+
+
+def test_local_store_journals_failure_and_exact_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run = execute_analysis(
+        "vr032_c: Retry this.\nvr032_p: Okay.",
+        StudyConfig(participant_id="vr032", selected_metrics=["base_metrics"]),
+        source_filename="retry.txt",
+    )
+    store = LocalRunStore(tmp_path)
+    original_record_import = EvidenceCatalog.record_import
+    calls = 0
+
+    def fail_once(catalog, record) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("private interview text must not enter the journal")
+        original_record_import(catalog, record)
+
+    monkeypatch.setattr(EvidenceCatalog, "record_import", fail_once)
+
+    with pytest.raises(OSError, match="private interview"):
+        store.persist_run(run)
+
+    failed = LocalRunStore(tmp_path).list_operations()
+    assert len(failed) == 1
+    assert failed[0]["run_id"] == run.run_id
+    assert failed[0]["status"] == "failed"
+    assert failed[0]["stage"] == "source_blob_stored"
+    assert failed[0]["attempt_count"] == 1
+    assert failed[0]["last_error_type"] == "OSError"
+    assert "private interview" not in json.dumps(failed[0])
+    assert len(failed[0]["run_payload_sha256"]) == 64
+    assert store.list_runs() == []
+    assert EvidenceCatalog(tmp_path).list_imports() == []
+    assert SourceBlobStore(tmp_path).read_verified(run.source_blob_sha256)
+
+    stored = store.persist_run(run)
+
+    completed = LocalRunStore(tmp_path).list_operations()[0]
+    assert completed["status"] == "completed"
+    assert completed["stage"] == "completed"
+    assert completed["attempt_count"] == 2
+    assert completed["last_error_type"] == ""
+    assert completed["completed_at"]
+    assert stored.results_json.exists()
+    assert [item["run_id"] for item in store.list_runs()] == [run.run_id]
+    assert [item["import_id"] for item in EvidenceCatalog(tmp_path).list_imports()] == [
+        run.import_id
+    ]
+
+
+def test_local_store_replays_exact_run_and_rejects_changed_payload(
+    tmp_path: Path,
+) -> None:
+    run = execute_analysis(
+        "vr033_c: Stable.\nvr033_p: Evidence.",
+        StudyConfig(participant_id="vr033", selected_metrics=["base_metrics"]),
+        source_filename="stable.txt",
+    )
+    store = LocalRunStore(tmp_path)
+
+    store.persist_run(run)
+    store.persist_run(run)
+
+    completed = store.list_operations()[0]
+    assert completed["status"] == "completed"
+    assert completed["attempt_count"] == 2
+    with pytest.raises(ValueError, match="identity conflicts"):
+        store.persist_run(replace(run, source_filename="changed.txt"))
+    assert store.list_operations()[0]["attempt_count"] == 2
+    assert [item["run_id"] for item in store.list_runs()] == [run.run_id]
+
+
+def test_local_store_rejects_pre_journal_run_conflict_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    run = execute_analysis(
+        "vr034_c: Preserve this.\nvr034_p: Yes.",
+        StudyConfig(participant_id="vr034", selected_metrics=["base_metrics"]),
+        source_filename="preserve.txt",
+    )
+    store = LocalRunStore(tmp_path)
+    assert store.list_runs() == []
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            """
+            insert into analysis_runs (
+              run_id, import_id, project_source_id,
+              parent_transcript_revision_id, workspace_id,
+              source_blob_sha256, source_media_type, source_id,
+              transcript_sha256, transcript_revision_id,
+              source_filename, created_at, metric_count
+            ) values (?, 'imp_existing', 'psrc_existing', '', 'local-default',
+                      ?, 'text/plain', 'src_existing', ?, 'trv_existing',
+                      'existing.txt', ?, 1)
+            """,
+            (run.run_id, "a" * 64, "b" * 64, run.created_at),
+        )
+
+    with pytest.raises(ValueError, match="identity conflicts with stored run"):
+        store.persist_run(run)
+
+    assert store.list_operations() == []
+    assert not (tmp_path / "runs" / run.run_id).exists()
+    assert not SourceBlobStore(tmp_path).blob_path(run.source_blob_sha256).exists()
+    assert EvidenceCatalog(tmp_path).list_imports() == []
+    assert store.list_runs()[0]["source_filename"] == "existing.txt"
 
 
 def test_local_store_rejects_newer_analysis_schema(tmp_path: Path) -> None:

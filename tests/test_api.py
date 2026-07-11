@@ -29,7 +29,7 @@ def test_storage_schema_status_reports_applied_migrations(tmp_path, monkeypatch)
     assert response.status_code == 200
     payload = response.json()
     assert payload["compatible"] is True
-    assert payload["databases"]["analysis_runs"]["current_version"] == 5
+    assert payload["databases"]["analysis_runs"]["current_version"] == 6
     assert [
         migration["name"]
         for migration in payload["databases"]["analysis_runs"]["migrations"]
@@ -39,6 +39,7 @@ def test_storage_schema_status_reports_applied_migrations(tmp_path, monkeypatch)
         "add-source-import-identity",
         "add-project-source-lineage",
         "index-analysis-run-history",
+        "create-analysis-operation-journal",
     ]
     assert payload["databases"]["evidence_catalog"]["current_version"] == 3
     assert [
@@ -61,6 +62,43 @@ def test_storage_schema_status_rejects_newer_database(tmp_path, monkeypatch) -> 
 
     assert response.status_code == 409
     assert "newer than supported version 3" in response.json()["detail"]
+
+
+def test_analysis_operations_endpoint_reports_completed_and_incomplete(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    created = client.post(
+        "/api/runs/text",
+        json={
+            "source_filename": "journal.txt",
+            "content": "vr001_c: Journal this.\nvr001_p: Okay.",
+            "config": {
+                "participant_id": "vr001",
+                "selected_metrics": ["base_metrics"],
+            },
+        },
+    )
+
+    response = client.get("/api/storage/analysis-operations")
+    incomplete = client.get(
+        "/api/storage/analysis-operations",
+        params={"incomplete_only": "true"},
+    )
+
+    assert created.status_code == 200
+    assert response.status_code == 200
+    operations = response.json()["operations"]
+    assert len(operations) == 1
+    assert operations[0]["run_id"] == created.json()["run_id"]
+    assert operations[0]["status"] == "completed"
+    assert operations[0]["stage"] == "completed"
+    assert operations[0]["last_error_type"] == ""
+    assert "content" not in operations[0]
+    assert incomplete.status_code == 200
+    assert incomplete.json() == {"operations": []}
 
 
 def test_default_skill_pack_endpoint() -> None:

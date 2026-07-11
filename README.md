@@ -44,6 +44,13 @@ migration ledgers. Each migration is transactional, older supported database
 shapes are upgraded in place, and the application refuses a database created by a
 newer unsupported schema instead of guessing. `GET /api/storage/schema-status`
 reports the applied migration names and current version for both databases.
+Standalone analysis persistence uses a durable operation journal across source
+blob retention, evidence cataloging, result/CSV writes, and final run indexing.
+Failures retain the last completed stage and exception class without storing raw
+transcript content or error messages. Exact retries replay integrity checks and
+idempotent writes; the final run row and completed marker commit together.
+`GET /api/storage/analysis-operations` exposes completed, failed, or interrupted
+operations for local recovery inspection.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

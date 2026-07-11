@@ -221,6 +221,19 @@ def storage_schema_status() -> dict:
     }
 
 
+@app.get("/api/storage/analysis-operations")
+def list_analysis_operations(
+    incomplete_only: bool = False,
+    limit: int = 100,
+) -> dict:
+    return {
+        "operations": LocalRunStore(_local_data_root()).list_operations(
+            incomplete_only=incomplete_only,
+            limit=limit,
+        )
+    }
+
+
 @app.get("/api/skill-packs/default")
 def default_skill_pack() -> dict:
     return load_skill_pack("default_transcript_metrics").raw

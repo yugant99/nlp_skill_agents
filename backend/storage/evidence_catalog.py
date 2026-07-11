@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from backend.storage.sqlite_migrations import (
+    Migration,
+    apply_migrations,
+    schema_status,
+)
+
 
 @dataclass(frozen=True)
 class EvidenceImportRecord:
@@ -311,113 +317,199 @@ class EvidenceCatalog:
         self.root.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as connection:
             connection.execute("pragma foreign_keys = on")
-            connection.execute(
-                """
-                create table if not exists project_sources (
-                  project_source_id text primary key,
-                  workspace_id text not null,
-                  created_at text not null
-                )
-                """
-            )
-            connection.execute(
-                """
-                create table if not exists transcript_revisions (
-                  transcript_revision_id text primary key,
-                  source_id text not null,
-                  transcript_sha256 text not null,
-                  created_at text not null
-                )
-                """
-            )
-            connection.execute(
-                """
-                create table if not exists source_revisions (
-                  project_source_id text not null references project_sources,
-                  transcript_revision_id text not null references transcript_revisions,
-                  parent_transcript_revision_id text not null default '',
-                  created_at text not null,
-                  primary key (project_source_id, transcript_revision_id)
-                )
-                """
-            )
-            connection.execute(
-                """
-                create table if not exists source_imports (
-                  import_id text primary key,
-                  run_id text not null,
-                  pipeline text not null,
-                  project_source_id text not null references project_sources,
-                  source_id text not null,
-                  source_filename text not null,
-                  source_media_type text not null,
-                  source_blob_sha256 text not null,
-                  transcript_revision_id text not null references transcript_revisions,
-                  parent_transcript_revision_id text not null default '',
-                  imported_at text not null
-                )
-                """
-            )
-            existing_columns = {
-                row[1] for row in connection.execute("pragma table_info(source_imports)")
-            }
-            for column in (
-                "project_source_id",
-                "parent_transcript_revision_id",
-            ):
-                if column not in existing_columns:
-                    connection.execute(
-                        f"alter table source_imports add column {column} text not null default ''"
-                    )
-            self._backfill_legacy_sources(connection)
-            connection.execute(
-                """
-                create index if not exists source_imports_revision_idx
-                on source_imports (transcript_revision_id)
-                """
-            )
-            connection.execute(
-                """
-                create index if not exists source_revisions_parent_idx
-                on source_revisions (project_source_id, parent_transcript_revision_id)
-                """
+            apply_migrations(
+                connection,
+                database_name="evidence catalog",
+                migrations=EVIDENCE_CATALOG_MIGRATIONS,
             )
 
-    @staticmethod
-    def _backfill_legacy_sources(connection: sqlite3.Connection) -> None:
-        rows = connection.execute(
-            """
-            select import_id, transcript_revision_id, imported_at, project_source_id
-            from source_imports
-            """
-        ).fetchall()
-        for import_id, revision_id, imported_at, stored_source_id in rows:
-            project_source_id = stored_source_id or _legacy_source_id(import_id)
-            connection.execute(
-                """
-                insert or ignore into project_sources (
-                  project_source_id, workspace_id, created_at
-                ) values (?, 'legacy', ?)
-                """,
-                (project_source_id, imported_at),
-            )
-            connection.execute(
-                """
-                insert or ignore into source_revisions (
-                  project_source_id, transcript_revision_id,
-                  parent_transcript_revision_id, created_at
-                ) values (?, ?, '', ?)
-                """,
-                (project_source_id, revision_id, imported_at),
-            )
-            if not stored_source_id:
-                connection.execute(
-                    """
-                    update source_imports set project_source_id = ? where import_id = ?
-                    """,
-                    (project_source_id, import_id),
-                )
+    def migration_status(self) -> list[dict[str, object]]:
+        self._ensure_schema()
+        with sqlite3.connect(self.db_path) as connection:
+            return schema_status(connection)
 
 
 def _legacy_source_id(import_id: str) -> str:
     return f"psrc_legacy_{import_id}"
+
+
+def _evidence_v1_import_catalog(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        create table if not exists transcript_revisions (
+          transcript_revision_id text primary key,
+          source_id text not null,
+          transcript_sha256 text not null,
+          created_at text not null
+        )
+        """
+    )
+    connection.execute(
+        """
+        create table if not exists source_imports (
+          import_id text primary key,
+          run_id text not null,
+          pipeline text not null,
+          source_id text not null,
+          source_filename text not null,
+          source_media_type text not null,
+          source_blob_sha256 text not null,
+          transcript_revision_id text not null references transcript_revisions,
+          imported_at text not null
+        )
+        """
+    )
+
+
+def _evidence_v2_project_lineage(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        create table if not exists project_sources (
+          project_source_id text primary key,
+          workspace_id text not null,
+          created_at text not null
+        )
+        """
+    )
+    connection.execute(
+        """
+        create table if not exists source_revisions (
+          project_source_id text not null references project_sources,
+          transcript_revision_id text not null references transcript_revisions,
+          parent_transcript_revision_id text not null default '',
+          created_at text not null,
+          primary key (project_source_id, transcript_revision_id)
+        )
+        """
+    )
+    columns = [
+        str(row[1]) for row in connection.execute("pragma table_info(source_imports)")
+    ]
+    optional = [
+        column
+        for column in ("project_source_id", "parent_transcript_revision_id")
+        if column in columns
+    ]
+    selected = [
+        "import_id",
+        "run_id",
+        "pipeline",
+        "source_id",
+        "source_filename",
+        "source_media_type",
+        "source_blob_sha256",
+        "transcript_revision_id",
+        "imported_at",
+        *optional,
+    ]
+    rows = [
+        dict(zip(selected, row, strict=True))
+        for row in connection.execute(f"select {', '.join(selected)} from source_imports")
+    ]
+    for row in rows:
+        project_source_id = str(
+            row.get("project_source_id") or _legacy_source_id(str(row["import_id"]))
+        )
+        existing_workspace = connection.execute(
+            "select workspace_id from project_sources where project_source_id = ?",
+            (project_source_id,),
+        ).fetchone()
+        workspace_id = str(existing_workspace[0]) if existing_workspace else "legacy"
+        parent_revision_id = str(row.get("parent_transcript_revision_id") or "")
+        connection.execute(
+            """
+            insert or ignore into project_sources (
+              project_source_id, workspace_id, created_at
+            ) values (?, ?, ?)
+            """,
+            (project_source_id, workspace_id, row["imported_at"]),
+        )
+        connection.execute(
+            """
+            insert or ignore into source_revisions (
+              project_source_id, transcript_revision_id,
+              parent_transcript_revision_id, created_at
+            ) values (?, ?, ?, ?)
+            """,
+            (
+                project_source_id,
+                row["transcript_revision_id"],
+                parent_revision_id,
+                row["imported_at"],
+            ),
+        )
+        row["project_source_id"] = project_source_id
+        row["parent_transcript_revision_id"] = parent_revision_id
+
+    connection.execute("alter table source_imports rename to source_imports_pre_v2")
+    connection.execute(
+        """
+        create table source_imports (
+          import_id text primary key,
+          run_id text not null,
+          pipeline text not null,
+          project_source_id text not null references project_sources,
+          source_id text not null,
+          source_filename text not null,
+          source_media_type text not null,
+          source_blob_sha256 text not null,
+          transcript_revision_id text not null references transcript_revisions,
+          parent_transcript_revision_id text not null default '',
+          imported_at text not null
+        )
+        """
+    )
+    for row in rows:
+        connection.execute(
+            """
+            insert into source_imports values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["import_id"],
+                row["run_id"],
+                row["pipeline"],
+                row["project_source_id"],
+                row["source_id"],
+                row["source_filename"],
+                row["source_media_type"],
+                row["source_blob_sha256"],
+                row["transcript_revision_id"],
+                row["parent_transcript_revision_id"],
+                row["imported_at"],
+            ),
+        )
+    connection.execute("drop table source_imports_pre_v2")
+    connection.execute(
+        """
+        create index if not exists source_imports_revision_idx
+        on source_imports (transcript_revision_id)
+        """
+    )
+    connection.execute(
+        """
+        create index if not exists source_revisions_parent_idx
+        on source_revisions (project_source_id, parent_transcript_revision_id)
+        """
+    )
+
+
+def _evidence_v3_workspace_indexes(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        create index if not exists project_sources_workspace_idx
+        on project_sources (workspace_id)
+        """
+    )
+    connection.execute(
+        """
+        create index if not exists source_imports_imported_idx
+        on source_imports (imported_at desc)
+        """
+    )
+
+
+EVIDENCE_CATALOG_MIGRATIONS = [
+    Migration(1, "create-import-catalog", _evidence_v1_import_catalog),
+    Migration(2, "add-project-source-lineage", _evidence_v2_project_lineage),
+    Migration(3, "index-workspace-history", _evidence_v3_workspace_indexes),
+]

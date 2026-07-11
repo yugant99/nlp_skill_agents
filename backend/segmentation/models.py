@@ -9,6 +9,7 @@ class RawTranscriptEvent:
     speaker: str
     text: str
     source_filename: str = ""
+    passage_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,8 @@ class CUnitBoundaryDecision:
     needs_human_review: bool
     excluded_maze: str = ""
     evidence_terms: list[str] = field(default_factory=list)
+    passage_id: str = ""
+    cunit_ids: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from backend.evidence.identifiers import (
+    cunit_evidence_id,
+    passage_evidence_id,
+    transcript_evidence_identity,
+)
 from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
 from backend.segmentation.corpus import generate_synthetic_corpus
 from backend.segmentation.descript import extract_descript_events
@@ -72,6 +77,9 @@ class MergeEvidence:
 @dataclass(frozen=True)
 class SegmentationRun:
     run_id: str
+    source_id: str
+    source_sha256: str
+    transcript_revision_id: str
     source_filename: str
     descript_text: str
     events: list[RawTranscriptEvent]
@@ -134,6 +142,7 @@ class SegmentationRunStore:
             raise ValueError("descript_text must be non-empty")
         if source not in SEGMENTATION_SOURCES:
             raise ValueError(f"Unsupported segmentation source: {source}")
+        identity = transcript_evidence_identity(descript_text)
         normalized_rule_ids = _normalize_rule_ids(rule_ids)
         events = extract_descript_events(descript_text, source_filename)
         if not events:
@@ -167,6 +176,9 @@ class SegmentationRunStore:
         status = _status_from_evaluation(evaluation, merge_evidence)
         run = SegmentationRun(
             run_id=run_id,
+            source_id=identity.source_id,
+            source_sha256=identity.source_sha256,
+            transcript_revision_id=identity.transcript_revision_id,
             source_filename=source_filename,
             descript_text=descript_text,
             events=events,
@@ -292,6 +304,9 @@ class SegmentationRunStore:
         cunit_adjudication = adjudicate_cunit_boundaries(run.events)
         updated_run = SegmentationRun(
             run_id=run.run_id,
+            source_id=run.source_id,
+            source_sha256=run.source_sha256,
+            transcript_revision_id=run.transcript_revision_id,
             source_filename=run.source_filename,
             descript_text=run.descript_text,
             events=run.events,
@@ -590,19 +605,23 @@ def segmentation_corpus_run_to_payload(
 
 
 def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
+    descript_text = str(payload["descript_text"])
+    identity = transcript_evidence_identity(descript_text)
+    transcript_revision_id = str(
+        payload.get("transcript_revision_id") or identity.transcript_revision_id
+    )
+    events = _events_from_payload(
+        payload.get("events", []),
+        transcript_revision_id=transcript_revision_id,
+    )
     return SegmentationRun(
         run_id=str(payload["run_id"]),
+        source_id=str(payload.get("source_id") or identity.source_id),
+        source_sha256=str(payload.get("source_sha256") or identity.source_sha256),
+        transcript_revision_id=transcript_revision_id,
         source_filename=str(payload["source_filename"]),
-        descript_text=str(payload["descript_text"]),
-        events=[
-            RawTranscriptEvent(
-                timestamp_seconds=int(event["timestamp_seconds"]),
-                speaker=str(event["speaker"]),
-                text=str(event["text"]),
-                source_filename=str(event.get("source_filename") or ""),
-            )
-            for event in payload.get("events", [])
-        ],
+        descript_text=descript_text,
+        events=events,
         rule_ids=[str(rule_id) for rule_id in payload.get("rule_ids", [])],
         rule_plan=[
             RuleWorkPacket(
@@ -640,15 +659,8 @@ def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
         ),
         cunit_adjudication=_adjudication_from_payload(
             payload.get("cunit_adjudication"),
-            events=[
-                RawTranscriptEvent(
-                    timestamp_seconds=int(event["timestamp_seconds"]),
-                    speaker=str(event["speaker"]),
-                    text=str(event["text"]),
-                    source_filename=str(event.get("source_filename") or ""),
-                )
-                for event in payload.get("events", [])
-            ],
+            events=events,
+            transcript_revision_id=transcript_revision_id,
         ),
         evaluation=_evaluation_from_payload(
             payload.get("evaluation"),
@@ -884,6 +896,7 @@ def _adjudication_from_payload(
     payload: dict[str, Any] | None,
     *,
     events: list[RawTranscriptEvent],
+    transcript_revision_id: str,
 ) -> CUnitAdjudication:
     if not payload:
         return adjudicate_cunit_boundaries(events)
@@ -898,23 +911,10 @@ def _adjudication_from_payload(
             for key, value in payload.get("boundary_type_counts", {}).items()
         },
         decisions=[
-            CUnitBoundaryDecision(
-                event_index=int(decision.get("event_index", 0)),
-                speaker=str(decision.get("speaker") or ""),
-                raw_text=str(decision.get("raw_text") or ""),
-                cleaned_text=str(decision.get("cleaned_text") or ""),
-                boundary_type=str(decision.get("boundary_type") or ""),
-                decision=str(decision.get("decision") or ""),
-                cunit_count=int(decision.get("cunit_count", 0)),
-                rationale=str(decision.get("rationale") or ""),
-                confidence_status=str(
-                    decision.get("confidence_status") or "not_calibrated"
-                ),
-                needs_human_review=bool(decision.get("needs_human_review", False)),
-                excluded_maze=str(decision.get("excluded_maze") or ""),
-                evidence_terms=[
-                    str(term) for term in decision.get("evidence_terms", [])
-                ],
+            _boundary_decision_from_payload(
+                decision,
+                events=events,
+                transcript_revision_id=transcript_revision_id,
             )
             for decision in payload.get("decisions", [])
         ],
@@ -925,6 +925,63 @@ def _adjudication_from_payload(
             payload.get("evidence_scope")
             or "deterministic_heuristics_and_synthetic_fixtures"
         ),
+    )
+
+
+def _events_from_payload(
+    payloads: list[dict[str, Any]],
+    *,
+    transcript_revision_id: str,
+) -> list[RawTranscriptEvent]:
+    return [
+        RawTranscriptEvent(
+            timestamp_seconds=int(event["timestamp_seconds"]),
+            speaker=str(event["speaker"]),
+            text=str(event["text"]),
+            source_filename=str(event.get("source_filename") or ""),
+            passage_id=str(
+                event.get("passage_id")
+                or passage_evidence_id(transcript_revision_id, index)
+            ),
+        )
+        for index, event in enumerate(payloads)
+    ]
+
+
+def _boundary_decision_from_payload(
+    payload: dict[str, Any],
+    *,
+    events: list[RawTranscriptEvent],
+    transcript_revision_id: str,
+) -> CUnitBoundaryDecision:
+    event_index = int(payload.get("event_index", 0))
+    cunit_count = int(payload.get("cunit_count", 0))
+    passage_id = str(payload.get("passage_id") or "")
+    if not passage_id and 0 <= event_index < len(events):
+        passage_id = events[event_index].passage_id
+    if not passage_id:
+        passage_id = passage_evidence_id(transcript_revision_id, event_index)
+    cunit_ids = [str(value) for value in payload.get("cunit_ids", [])]
+    if not cunit_ids:
+        cunit_ids = [
+            cunit_evidence_id(passage_id, ordinal)
+            for ordinal in range(cunit_count)
+        ]
+    return CUnitBoundaryDecision(
+        event_index=event_index,
+        speaker=str(payload.get("speaker") or ""),
+        raw_text=str(payload.get("raw_text") or ""),
+        cleaned_text=str(payload.get("cleaned_text") or ""),
+        boundary_type=str(payload.get("boundary_type") or ""),
+        decision=str(payload.get("decision") or ""),
+        cunit_count=cunit_count,
+        rationale=str(payload.get("rationale") or ""),
+        confidence_status=str(payload.get("confidence_status") or "not_calibrated"),
+        needs_human_review=bool(payload.get("needs_human_review", False)),
+        excluded_maze=str(payload.get("excluded_maze") or ""),
+        evidence_terms=[str(term) for term in payload.get("evidence_terms", [])],
+        passage_id=passage_id,
+        cunit_ids=cunit_ids,
     )
 
 

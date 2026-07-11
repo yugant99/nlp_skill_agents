@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import re
 
+from backend.evidence.identifiers import (
+    passage_evidence_id,
+    transcript_evidence_identity,
+)
 from backend.segmentation.models import RawTranscriptEvent
 
 
@@ -15,6 +19,7 @@ def extract_descript_events(
     content: str,
     source_filename: str = "",
 ) -> list[RawTranscriptEvent]:
+    identity = transcript_evidence_identity(content)
     events: list[RawTranscriptEvent] = []
     for line in content.splitlines():
         match = _DESCRIPT_TURN_PATTERN.match(line)
@@ -31,7 +36,10 @@ def extract_descript_events(
                 speaker=match.group("speaker"),
                 text=re.sub(r"\s+", " ", match.group("text")).strip(),
                 source_filename=source_filename,
+                passage_id=passage_evidence_id(
+                    identity.transcript_revision_id,
+                    len(events),
+                ),
             )
         )
     return events
-

@@ -943,6 +943,11 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
     assert response.status_code == 200
     run = response.json()["run"]
     assert run["source"] == "researcher_provided"
+    assert run["source_id"].startswith("src_")
+    assert len(run["source_sha256"]) == 64
+    assert run["transcript_revision_id"].startswith("trv_")
+    assert run["events"][0]["passage_id"].startswith("psg_")
+    assert run["cunit_adjudication"]["decisions"][0]["cunit_ids"]
     assert run["merged_draft"].startswith(
         "Researcher-provided transcript: session"
     )

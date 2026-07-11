@@ -128,6 +128,8 @@ export type SegmentationEvaluationResponse = {
 
 export type CUnitBoundaryDecision = {
   event_index: number;
+  passage_id: string;
+  cunit_ids: string[];
   speaker: string;
   raw_text: string;
   cleaned_text: string;
@@ -190,6 +192,7 @@ export type SegmentationEvent = {
   speaker: string;
   text: string;
   source_filename: string;
+  passage_id: string;
 };
 
 export type SegmentationRulePacket = {
@@ -217,6 +220,9 @@ export type SegmentationSpecialistOutput = {
 
 export type SegmentationRun = {
   run_id: string;
+  source_id: string;
+  source_sha256: string;
+  transcript_revision_id: string;
   source_filename: string;
   descript_text: string;
   events: SegmentationEvent[];

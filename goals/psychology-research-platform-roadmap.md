@@ -140,7 +140,8 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 ### Research Workflow
 
 - [x] Stable content-addressed transcript-revision, passage, and C-unit identifiers.
-- [ ] Immutable original-source hashes, import-instance IDs, and revision lineage.
+- [x] Immutable original-source hashes and import-instance IDs.
+- [ ] Project-owned source records and transcript-revision lineage.
 - [ ] Manual source-span/C-unit coding and uncoding.
 - [ ] Hierarchical, versioned codebooks with definitions, inclusion criteria,
       exclusion criteria, examples, notes, and colors.

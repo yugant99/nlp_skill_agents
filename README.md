@@ -24,6 +24,10 @@ Analysis and segmentation evidence carries content-addressed source and transcri
 revision IDs backed by the SHA-256 of the exact transcript text supplied to the
 pipeline. Parsed turns and segmentation events have stable passage IDs, and
 counted C-unit candidates have stable C-unit IDs within that immutable revision.
+Each ingestion also receives a distinct import ID and records the SHA-256 of the
+actual uploaded blob, or the exact UTF-8 bytes for pasted text, in
+`evidence.sqlite3`. Re-recording an import or revision may be idempotent but cannot
+change its identity fields.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

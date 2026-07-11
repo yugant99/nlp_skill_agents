@@ -284,6 +284,29 @@ class EvidenceCatalog:
             "revisions": [dict(revision) for revision in revisions],
         }
 
+    def workspace_import_records(self, workspace_id: str) -> list[EvidenceImportRecord]:
+        self._ensure_schema()
+        with sqlite3.connect(self.db_path) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute(
+                """
+                select si.import_id, si.run_id, si.pipeline, si.source_id,
+                       si.source_filename, si.source_media_type,
+                       si.source_blob_sha256, si.transcript_revision_id,
+                       tr.transcript_sha256, si.imported_at,
+                       si.project_source_id,
+                       si.parent_transcript_revision_id,
+                       ps.workspace_id
+                from source_imports si
+                join project_sources ps using (project_source_id)
+                join transcript_revisions tr using (transcript_revision_id)
+                where ps.workspace_id = ?
+                order by si.imported_at, si.import_id
+                """,
+                (workspace_id,),
+            ).fetchall()
+        return [EvidenceImportRecord(**dict(row)) for row in rows]
+
     def _ensure_schema(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as connection:

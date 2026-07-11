@@ -35,6 +35,10 @@ lineage is rejected before run artifacts are created.
 Original source blobs are retained locally at content-addressed SHA-256 paths.
 New writes verify their expected digest, existing blobs are reverified before
 deduplication, and every read used by the verification API rehashes the bytes.
+Study backups are portable ZIP archives with a versioned manifest covering every
+study file, workspace-scoped evidence record, referenced source blob, and
+study-scoped audit event. Restore verifies declared paths, sizes, and hashes before
+atomically exposing the staged study directory.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

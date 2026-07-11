@@ -58,6 +58,11 @@ from backend.storage.audit_log import AuditLogStore
 from backend.storage.deployment_profiles import check_deployment_profile
 from backend.storage.evidence_catalog import EvidenceCatalog
 from backend.storage.library_store import LibraryStore
+from backend.storage.project_archive import (
+    MAX_ARCHIVE_FILE_BYTES,
+    ProjectArchiveError,
+    ProjectArchiveStore,
+)
 from backend.storage.source_blob_store import SourceBlobIntegrityError, SourceBlobStore
 from backend.storage.study_store import MAX_STUDY_PARTICIPANTS, StudyWorkspaceStore
 
@@ -781,6 +786,54 @@ def export_study_bundle(study_id: str) -> dict:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
     return {"bundle": _study_bundle_payload(bundle)}
+
+
+@app.post("/api/studies/{study_id}/backup")
+def backup_study(study_id: str) -> dict:
+    try:
+        backup = ProjectArchiveStore(_local_data_root()).create_archive(study_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    except ProjectArchiveError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "backup": {
+            "study_id": backup.study_id,
+            "archive_path": str(backup.archive_path),
+            "archive_sha256": backup.archive_sha256,
+            "member_count": backup.member_count,
+            "created_at": backup.created_at,
+        }
+    }
+
+
+@app.post("/api/studies/restore")
+async def restore_study(file: Annotated[UploadFile, File()]) -> dict:
+    archive_bytes = await file.read(MAX_ARCHIVE_FILE_BYTES + 1)
+    if len(archive_bytes) > MAX_ARCHIVE_FILE_BYTES:
+        raise HTTPException(status_code=413, detail="Study archive is too large")
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".nlpstudy.zip") as tmp:
+        tmp.write(archive_bytes)
+        archive_path = Path(tmp.name)
+    try:
+        restored = ProjectArchiveStore(_local_data_root()).restore_archive(
+            archive_path
+        )
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="Study already exists") from exc
+    except ProjectArchiveError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        archive_path.unlink(missing_ok=True)
+    return {
+        "restore": {
+            "study_id": restored.study_id,
+            "study_dir": str(restored.study_dir),
+            "import_count": restored.import_count,
+            "blob_count": restored.blob_count,
+            "audit_event_count": restored.audit_event_count,
+        }
+    }
 
 
 @app.post("/api/skill-packs/validate")

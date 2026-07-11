@@ -1,6 +1,7 @@
 import json
 from hashlib import sha256
 from io import BytesIO
+from pathlib import Path
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -701,6 +702,64 @@ def test_study_workspace_file_batch_api_accepts_txt_and_docx(
         f"/api/evidence/blobs/{docx_import['source_blob_sha256']}/verify"
     )
     assert verify_response.json()["size_bytes"] == len(docx_bytes)
+
+
+def test_study_backup_and_restore_api_round_trips_project(tmp_path, monkeypatch) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(source_root))
+    client = TestClient(app)
+    study_response = client.post("/api/studies", json={"name": "Backup API Study"})
+    study_id = study_response.json()["study"]["id"]
+    version_response = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json={
+            "id": "backup_api_pack",
+            "name": "Backup API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    client.post(
+        f"/api/studies/{study_id}/batches/text",
+        json={
+            "skill_pack_version_id": version_response.json()["version"][
+                "version_id"
+            ],
+            "transcripts": [
+                {
+                    "source_filename": "session.txt",
+                    "content": "P1_c: One.\nP1_p: Two.",
+                }
+            ],
+        },
+    )
+
+    backup_response = client.post(f"/api/studies/{study_id}/backup")
+    backup = backup_response.json()["backup"]
+    archive_bytes = Path(backup["archive_path"]).read_bytes()
+
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(restore_root))
+    restore_response = client.post(
+        "/api/studies/restore",
+        files={"file": ("backup.nlpstudy.zip", archive_bytes, "application/zip")},
+    )
+
+    assert backup_response.status_code == 200
+    assert len(backup["archive_sha256"]) == 64
+    assert restore_response.status_code == 200
+    assert restore_response.json()["restore"]["study_id"] == study_id
+    assert restore_response.json()["restore"]["audit_event_count"] == 3
+    assert client.get("/api/studies").json()["studies"][0]["id"] == study_id
+    restored_import = client.get("/api/evidence/imports").json()["imports"][0]
+    assert client.get(
+        f"/api/evidence/blobs/{restored_import['source_blob_sha256']}/verify"
+    ).status_code == 200
+    conflict_response = client.post(
+        "/api/studies/restore",
+        files={"file": ("backup.nlpstudy.zip", archive_bytes, "application/zip")},
+    )
+    assert conflict_response.status_code == 409
 
 
 def test_study_schema_api_persists_casebook_design(tmp_path, monkeypatch) -> None:

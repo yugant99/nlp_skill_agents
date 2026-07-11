@@ -11,6 +11,12 @@ from backend.analysis.pipeline import AnalysisRun
 from backend.storage.atomic import atomic_text_writer, atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.source_blob_store import SourceBlobStore
+from backend.storage.sqlite_migrations import (
+    Migration,
+    add_text_column_if_missing,
+    apply_migrations,
+    schema_status,
+)
 
 
 @dataclass(frozen=True)
@@ -116,44 +122,16 @@ class LocalRunStore:
     def _ensure_schema(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as connection:
-            connection.execute(
-                """
-                create table if not exists analysis_runs (
-                  run_id text primary key,
-                  import_id text not null,
-                  project_source_id text not null,
-                  parent_transcript_revision_id text not null,
-                  workspace_id text not null,
-                  source_blob_sha256 text not null,
-                  source_media_type text not null,
-                  source_id text not null,
-                  transcript_sha256 text not null,
-                  transcript_revision_id text not null,
-                  source_filename text not null,
-                  created_at text not null,
-                  metric_count integer not null
-                )
-                """
+            apply_migrations(
+                connection,
+                database_name="analysis runs",
+                migrations=ANALYSIS_RUN_MIGRATIONS,
             )
-            existing_columns = {
-                row[1]
-                for row in connection.execute("pragma table_info(analysis_runs)")
-            }
-            for column in (
-                "import_id",
-                "project_source_id",
-                "parent_transcript_revision_id",
-                "workspace_id",
-                "source_blob_sha256",
-                "source_media_type",
-                "source_id",
-                "transcript_sha256",
-                "transcript_revision_id",
-            ):
-                if column not in existing_columns:
-                    connection.execute(
-                        f"alter table analysis_runs add column {column} text not null default ''"
-                    )
+
+    def migration_status(self) -> list[dict[str, object]]:
+        self._ensure_schema()
+        with sqlite3.connect(self.db_path) as connection:
+            return schema_status(connection)
 
     def _record_run(self, run: AnalysisRun) -> None:
         with sqlite3.connect(self.db_path) as connection:
@@ -258,3 +236,73 @@ def _ordered_fieldnames(rows: list[dict[str, Any]]) -> list[str]:
             if key not in fieldnames:
                 fieldnames.append(key)
     return fieldnames
+
+
+def _analysis_v1_base_runs(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        create table if not exists analysis_runs (
+          run_id text primary key,
+          source_filename text not null,
+          created_at text not null,
+          metric_count integer not null
+        )
+        """
+    )
+
+
+def _analysis_v2_evidence_identity(connection: sqlite3.Connection) -> None:
+    _add_analysis_columns(
+        connection,
+        "source_id",
+        "transcript_sha256",
+        "transcript_revision_id",
+    )
+
+
+def _analysis_v3_import_identity(connection: sqlite3.Connection) -> None:
+    _add_analysis_columns(
+        connection,
+        "import_id",
+        "source_blob_sha256",
+        "source_media_type",
+    )
+
+
+def _analysis_v4_source_lineage(connection: sqlite3.Connection) -> None:
+    _add_analysis_columns(
+        connection,
+        "project_source_id",
+        "parent_transcript_revision_id",
+        "workspace_id",
+    )
+
+
+def _analysis_v5_created_index(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        create index if not exists analysis_runs_created_idx
+        on analysis_runs (created_at desc)
+        """
+    )
+
+
+def _add_analysis_columns(
+    connection: sqlite3.Connection,
+    *columns: str,
+) -> None:
+    for column in columns:
+        add_text_column_if_missing(
+            connection,
+            table="analysis_runs",
+            column=column,
+        )
+
+
+ANALYSIS_RUN_MIGRATIONS = [
+    Migration(1, "create-base-analysis-runs", _analysis_v1_base_runs),
+    Migration(2, "add-evidence-identity", _analysis_v2_evidence_identity),
+    Migration(3, "add-source-import-identity", _analysis_v3_import_identity),
+    Migration(4, "add-project-source-lineage", _analysis_v4_source_lineage),
+    Migration(5, "index-analysis-run-history", _analysis_v5_created_index),
+]

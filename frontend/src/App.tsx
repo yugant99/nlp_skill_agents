@@ -80,6 +80,12 @@ import {
 import { buildMetricMatrix } from "./matrixView";
 import { privacyModeLabel } from "./privacyMode";
 import { segmentationSourceLabel } from "./segmentationProvenance";
+import {
+  RULE_CHECK_LIMIT_TEXT,
+  ruleCheckSummary,
+  segmentationRunStatusLabel,
+  validationStatusLabel
+} from "./segmentationValidation";
 import type {
   AgentJob,
   AgentJobTransition,
@@ -659,7 +665,7 @@ export function App() {
       setSegmentationStatus(
         response.evaluation.failures.length
           ? `${response.evaluation.failures.length} rule issue detected.`
-          : "Verifier accepted this synthetic draft."
+          : `Synthetic fixture passed ${ruleCheckSummary(response.evaluation)}; this is not a domain-validity result.`
       );
     } catch (err) {
       setSegmentationStatus("");
@@ -709,7 +715,7 @@ export function App() {
       setSegmentationDraft(nextRun.merged_draft);
       setSegmentationEvaluation(nextRun.evaluation);
       setSegmentationStatus(
-        `Specialist pipeline ${nextRun.status}: ${nextRun.rule_plan.length} specialist packet(s), ${nextRun.merge_evidence.applied_patch_count} patch(es).`
+        `Specialist pipeline ${segmentationRunStatusLabel(nextRun.status)}: ${nextRun.rule_plan.length} specialist packet(s), ${nextRun.merge_evidence.applied_patch_count} patch(es).`
       );
     } catch (err) {
       setSegmentationStatus("");
@@ -729,7 +735,9 @@ export function App() {
       setSegmentationAnalysisRun(null);
       setSegmentationRuns(await listSegmentationRuns());
       setSegmentationEvaluation(nextRun.evaluation);
-      setSegmentationStatus(`Verifier status: ${nextRun.status}.`);
+      setSegmentationStatus(
+        `Verifier status: ${segmentationRunStatusLabel(nextRun.status)}.`
+      );
     } catch (err) {
       setSegmentationStatus("");
       setError(err instanceof Error ? err.message : "Could not verify segmentation run");
@@ -803,7 +811,7 @@ export function App() {
       if (nextSegmentationRun.status !== "verified") {
         setSegmentationAnalysisRun(null);
         setSegmentationStatus(
-          `End-to-end paused at verifier: ${nextSegmentationRun.status}.`
+          `End-to-end paused at verifier: ${segmentationRunStatusLabel(nextSegmentationRun.status)}.`
         );
         return;
       }
@@ -816,7 +824,7 @@ export function App() {
       setRun(nextAnalysisRun);
       setRunHistory(await listRuns());
       setSegmentationStatus(
-        `End-to-end complete: gold transcript verified and ${nextAnalysisRun.results.length} table set(s) generated.`
+        `End-to-end complete: candidate transcript passed configured rule checks and ${nextAnalysisRun.results.length} table set(s) generated.`
       );
     } catch (err) {
       setSegmentationStatus("");
@@ -832,7 +840,7 @@ export function App() {
       setSegmentationCorpusRuns(await listSegmentationCorpusRuns());
       setSegmentationRuns(await listSegmentationRuns());
       setSegmentationStatus(
-        `Synthetic corpus ${nextCorpusRun.status}: ${nextCorpusRun.regression_pass_count}/${nextCorpusRun.total_case_count} regression checks passed.`
+        `Synthetic corpus ${nextCorpusRun.status}: ${nextCorpusRun.regression_pass_count}/${nextCorpusRun.total_case_count} fixture outcomes passed; no accuracy estimate is implied.`
       );
     } catch (err) {
       setSegmentationStatus("");
@@ -1085,8 +1093,8 @@ export function App() {
               C-unit transcript workspace
             </h1>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-[#4c4a44]">
-              Turn one Descript-style transcript into a verified gold transcript, then
-              produce the local analysis tables a research team can inspect.
+              Turn one Descript-style transcript into a rule-checked candidate, then
+              produce local analysis tables a research team can inspect.
             </p>
           </div>
           <div className="status-ribbon self-end">
@@ -1582,7 +1590,7 @@ function SegmentationDemoPanel({
     "source" | "specialists" | "gold" | "adjudication" | "verification" | "tables"
   >("source");
   const runLabel = run
-    ? `${run.status} · ${run.merge_evidence.applied_patch_count} patches`
+    ? `${segmentationRunStatusLabel(run.status)} · ${run.merge_evidence.applied_patch_count} patches`
     : "Ready";
 
   useEffect(() => {
@@ -1651,7 +1659,7 @@ function SegmentationDemoPanel({
           </button>
           <button className="run-button mt-0" type="button" onClick={runEndToEndAndShowTables}>
             <Play size={16} />
-            Generate gold transcript
+            Generate candidate transcript
           </button>
         </div>
       </div>
@@ -1660,13 +1668,21 @@ function SegmentationDemoPanel({
         {[
           ["source", "Transcript", runSource ? "Loaded" : "Empty"],
           ["specialists", "Specialists", run ? `${run.rule_plan.length} packets` : "Pending"],
-          ["gold", "Gold Transcript", run ? run.status : "Draft"],
+          [
+            "gold",
+            "Candidate Transcript",
+            run ? segmentationRunStatusLabel(run.status) : "Draft"
+          ],
           [
             "adjudication",
             "C-unit Decisions",
             run ? `${run.cunit_adjudication.counted_cunit_count} C-units` : "Pending"
           ],
-          ["verification", "Verification", evaluation ? `Score ${evaluation.score}` : "Pending"],
+          [
+            "verification",
+            "Verification",
+            evaluation ? ruleCheckSummary(evaluation) : "Pending"
+          ],
           ["tables", "Analysis Tables", analysisRun ? `${analysisRun.results.length} tables` : "Pending"]
         ].map(([id, label, meta]) => (
           <button
@@ -1775,9 +1791,13 @@ function SegmentationDemoPanel({
               <div className="view-heading">
                 <div>
                   <div className="section-kicker">Merge</div>
-                  <h3>Gold transcript</h3>
+                  <h3>Candidate transcript</h3>
                 </div>
-                {run ? <span className="casebook-pill">{run.status}</span> : null}
+                {run ? (
+                  <span className="casebook-pill">
+                    {segmentationRunStatusLabel(run.status)}
+                  </span>
+                ) : null}
               </div>
               <label className="field-label mt-0">
                 Draft to verify
@@ -1790,7 +1810,7 @@ function SegmentationDemoPanel({
               <div className="action-row">
                 <button className="secondary-button mt-0" type="button" onClick={onUseGoldDraft}>
                   <FileCheck2 size={16} />
-                  Use gold
+                  Use synthetic reference
                 </button>
                 <button className="primary-button mt-0" type="button" onClick={evaluateAndShowEvidence}>
                   <Play size={16} />
@@ -1821,13 +1841,15 @@ function SegmentationDemoPanel({
                   <div className="section-kicker">Verification</div>
                   <h3>Rule evidence</h3>
                 </div>
-                {evaluation ? <span className="casebook-pill">score {evaluation.score}</span> : null}
+                {evaluation ? (
+                  <span className="casebook-pill">{ruleCheckSummary(evaluation)}</span>
+                ) : null}
               </div>
               {evaluation ? (
                 <SegmentationEvaluationPanel evaluation={evaluation} />
               ) : (
                 <div className="quiet-empty">
-                  Run the verifier to see score, notation counts, and routed failures.
+                  Run the verifier to see configured rule checks, notation counts, and routed failures.
                 </div>
               )}
             </div>
@@ -1912,24 +1934,27 @@ function SegmentationDemoPanel({
           </div>
           {rulebook ? (
             <div className="inspector-section">
-              <div className="section-kicker">Agent coverage</div>
-              <h3>What it knows now</h3>
+              <div className="section-kicker">Validation status</div>
+              <h3>{validationStatusLabel(rulebook.validation)}</h3>
               <div className="inspector-facts">
                 <OutputFact
-                  label="Supported rules"
-                  value={String(rulebook.supported_rule_count)}
+                  label="Implemented rules"
+                  value={String(rulebook.implemented_rule_count)}
                 />
                 <OutputFact
-                  label="Demo covers"
-                  value={`${rulebook.demo_case_rule_count}/10`}
+                  label="Tracked fixtures"
+                  value={`${rulebook.tracked_fixture_rule_count}/${rulebook.implemented_rule_count}`}
                 />
                 <OutputFact
-                  label="Corpus covers"
-                  value={`${rulebook.corpus_rule_count}/10`}
+                  label="Generated fixtures"
+                  value={`${rulebook.generated_fixture_rule_count}/${rulebook.implemented_rule_count}`}
                 />
               </div>
+              <p className="mt-3 text-xs leading-5 text-[#676157]">
+                {rulebook.validation.claim_boundary}
+              </p>
               <div className="mt-3 grid gap-2">
-                {rulebook.professor_grade_areas.slice(0, 3).map((area) => (
+                {rulebook.method_areas.slice(0, 3).map((area) => (
                   <div key={area.area_id} className="rulebook-gap">
                     <div>
                       <span>{area.label}</span>
@@ -1967,7 +1992,7 @@ function SegmentationDemoPanel({
                         {item.source_filename}
                       </div>
                       <div className="mt-1 font-mono text-xs text-[#756f64]">
-                        {item.run_id.slice(0, 12)} · {item.status}
+                        {item.run_id.slice(0, 12)} · {segmentationRunStatusLabel(item.status)}
                       </div>
                     </div>
                   </button>
@@ -2103,8 +2128,9 @@ function SegmentationCorpusRunPanel({
                 {result.case_id}
               </div>
               <div className="font-mono text-xs text-[#756f64]">
-                {result.outcome} · {result.status}/{result.expected_status} ·{" "}
-                {result.score}
+                {result.outcome} · {segmentationRunStatusLabel(result.status)}/
+                {segmentationRunStatusLabel(result.expected_status)} ·{" "}
+                {ruleCheckSummary(result)}
               </div>
             </div>
             {result.failed_rule_ids.length ? (
@@ -2134,6 +2160,10 @@ function CUnitAdjudicationPanel({
 
   return (
     <div className="space-y-3">
+      <div className="rounded-md border border-[#d7c89f] bg-[#fff8e6] px-3 py-2 text-xs leading-5 text-[#765a24]">
+        Not domain validated. These are deterministic proposals with no calibrated
+        confidence; researcher review remains authoritative.
+      </div>
       <div className="adjudication-summary">
         <OutputFact label="Participant turns" value={String(adjudication.participant_turn_count)} />
         <OutputFact label="Examiner turns" value={String(adjudication.examiner_turn_count)} />
@@ -2197,7 +2227,7 @@ function SpecialistPacketsPanel({ run }: { run: SegmentationRun }) {
   return (
     <div className="space-y-3">
       <div className="adjudication-summary">
-        <OutputFact label="Status" value={run.status} />
+        <OutputFact label="Status" value={segmentationRunStatusLabel(run.status)} />
         <OutputFact label="Packets" value={String(run.rule_plan.length)} />
         <OutputFact label="Patches" value={String(run.merge_evidence.applied_patch_count)} />
         <OutputFact label="Conflicts" value={String(run.merge_evidence.conflicts.length)} />
@@ -2266,7 +2296,7 @@ function SegmentationRunPanel({ run }: { run: SegmentationRun }) {
   return (
     <div className="rounded-md border border-[#d9d4c5] bg-[#faf8f1] p-3">
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <span className="casebook-pill">{run.status}</span>
+        <span className="casebook-pill">{segmentationRunStatusLabel(run.status)}</span>
         <span className="casebook-pill muted">
           {segmentationSourceLabel(run.source)}
         </span>
@@ -2387,11 +2417,14 @@ function SegmentationEvaluationPanel({
   return (
     <div className="rounded-md border border-[#d9d4c5] bg-[#fffdf8] p-3">
       <div className="grid gap-3 sm:grid-cols-4">
-        <OutputFact label="Score" value={String(evaluation.score)} />
+        <OutputFact label="Rule checks" value={ruleCheckSummary(evaluation)} />
         <OutputFact label="Utterances" value={String(metrics.utterance_count)} />
         <OutputFact label="Times" value={String(metrics.time_marker_count)} />
         <OutputFact label="Pauses" value={String(metrics.pause_marker_count)} />
       </div>
+      <p className="mt-3 text-xs leading-5 text-[#676157]">
+        {RULE_CHECK_LIMIT_TEXT}
+      </p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <div>
           <div className="mb-2 text-xs font-semibold uppercase text-[#5f594f]">

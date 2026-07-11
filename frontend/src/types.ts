@@ -114,7 +114,8 @@ export type SegmentationRuleFailure = {
 };
 
 export type SegmentationEvaluation = {
-  score: number;
+  configured_rule_count: number;
+  passed_rule_count: number;
   metrics: SegmentationMetrics;
   failures: SegmentationRuleFailure[];
 };
@@ -134,7 +135,7 @@ export type CUnitBoundaryDecision = {
   decision: string;
   cunit_count: number;
   rationale: string;
-  confidence: number;
+  confidence_status: string;
   needs_human_review: boolean;
   excluded_maze: string;
   evidence_terms: string[];
@@ -148,6 +149,8 @@ export type CUnitAdjudication = {
   needs_review_count: number;
   boundary_type_counts: Record<string, number>;
   decisions: CUnitBoundaryDecision[];
+  validation_status: string;
+  evidence_scope: string;
 };
 
 export type CUnitRuleDefinition = {
@@ -159,19 +162,27 @@ export type CUnitRuleDefinition = {
   scientist_language: string;
 };
 
-export type ProfessorGradeRuleArea = {
+export type CUnitMethodArea = {
   area_id: string;
   label: string;
   status: string;
   scientist_language: string;
 };
 
+export type SegmentationValidationProfile = {
+  status: string;
+  evidence_scope: string;
+  claim_boundary: string;
+  limitations: string[];
+};
+
 export type CUnitRulebookSummary = {
-  supported_rule_count: number;
-  demo_case_rule_count: number;
-  corpus_rule_count: number;
+  implemented_rule_count: number;
+  tracked_fixture_rule_count: number;
+  generated_fixture_rule_count: number;
+  validation: SegmentationValidationProfile;
   rule_definitions: CUnitRuleDefinition[];
-  professor_grade_areas: ProfessorGradeRuleArea[];
+  method_areas: CUnitMethodArea[];
 };
 
 export type SegmentationEvent = {
@@ -240,7 +251,8 @@ export type SegmentationCorpusCaseResult = {
   status: string;
   expected_status: string;
   outcome: string;
-  score: number;
+  configured_rule_count: number;
+  passed_rule_count: number;
   rule_ids: string[];
   failed_rule_ids: string[];
 };

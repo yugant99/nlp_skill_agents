@@ -23,6 +23,9 @@ def evaluate_segmented_draft(
 ) -> SegmentationEvaluation:
     lines = [line.strip() for line in draft_text.splitlines() if line.strip()]
     expected = set(expected_rule_ids or [])
+    configured_rule_ids = set(expected)
+    if any(forbidden_tokens or []):
+        configured_rule_ids.add("official-source-guard")
     failures: list[SegmentationRuleFailure] = []
     metrics = _build_metrics(lines)
 
@@ -99,8 +102,10 @@ def evaluate_segmented_draft(
             )
         )
 
+    failed_rule_ids = {failure.rule_id for failure in failures}
     return SegmentationEvaluation(
-        score=max(0, 100 - (len(failures) * 12)),
+        configured_rule_count=len(configured_rule_ids),
+        passed_rule_count=len(configured_rule_ids - failed_rule_ids),
         metrics=metrics,
         failures=failures,
     )

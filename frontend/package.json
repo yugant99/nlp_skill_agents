@@ -13,7 +13,8 @@
     "test:casebook-csv": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/casebookCsv.ts && node tests/casebookCsv.test.mjs",
     "test:agent-jobs": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/agentJobLifecycle.ts && node tests/agentJobLifecycle.test.mjs",
     "test:privacy": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/privacyMode.ts && node tests/privacyMode.test.mjs",
-    "test:provenance": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/segmentationProvenance.ts && node tests/segmentationProvenance.test.mjs"
+    "test:provenance": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/segmentationProvenance.ts && node tests/segmentationProvenance.test.mjs",
+    "test:validation": "tsc --module ESNext --moduleResolution Bundler --target ES2022 --skipLibCheck --outDir ../local_data/tmp/frontend-tests src/segmentationValidation.ts && node tests/segmentationValidation.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.18",

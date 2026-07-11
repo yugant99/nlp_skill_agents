@@ -15,10 +15,16 @@ must not be used to diagnose or recommend treatment.
 The primary workflow is source-preserving C-unit segmentation:
 
 - import or paste Descript-style transcript text;
-- run deterministic C-unit segmentation and review rule coverage;
+- run deterministic C-unit segmentation and review configured rule checks;
 - inspect specialist packets and proposed patch operations;
 - apply patches, verify the result, and export evidence artifacts;
 - run the tracked synthetic regression corpus.
+
+Segmentation outputs are rule-checked candidates, not validated gold transcripts.
+Rule and fixture counts show deterministic implementation coverage only; they are
+not estimates of accuracy, inter-rater reliability, or psychology-domain validity.
+C-unit boundary decisions remain explicitly uncalibrated and require researcher
+review until representative authorized data and human-coded comparisons exist.
 
 The older study-metrics workspace remains available underneath that workflow:
 
@@ -105,6 +111,7 @@ npm run test:casebook-csv
 npm run test:agent-jobs
 npm run test:privacy
 npm run test:provenance
+npm run test:validation
 ```
 
 Every feature follows the branch, commit, test, pull-request, merge, and cleanup

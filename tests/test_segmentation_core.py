@@ -4,7 +4,7 @@ from pathlib import Path
 from backend.segmentation.descript import extract_descript_events
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.rulebook import (
-    PROFESSOR_GRADE_RULE_AREAS,
+    METHOD_AREAS,
     SUPPORTED_RULE_IDS,
     build_cunit_rulebook_summary,
 )
@@ -31,6 +31,14 @@ def test_semantic_cunit_adjudicator_classifies_boundary_decisions() -> None:
     assert adjudication.examiner_turn_count == 1
     assert adjudication.counted_cunit_count == 3
     assert adjudication.needs_review_count == 2
+    assert adjudication.validation_status == "not_domain_validated"
+    assert adjudication.evidence_scope == (
+        "deterministic_heuristics_and_synthetic_fixtures"
+    )
+    assert all(
+        decision.confidence_status == "not_calibrated"
+        for decision in adjudication.decisions
+    )
     assert adjudication.boundary_type_counts == {
         "coordination-split": 1,
         "dependent-clause-attachment": 1,
@@ -80,7 +88,7 @@ def test_semantic_cunit_adjudicator_counts_nominal_subject_clauses() -> None:
     ]
 
 
-def test_rulebook_declares_supported_rules_and_professor_grade_semantic_coverage() -> None:
+def test_rulebook_limits_claims_to_synthetic_fixture_coverage() -> None:
     summary = build_cunit_rulebook_summary()
 
     assert SUPPORTED_RULE_IDS == [
@@ -95,18 +103,28 @@ def test_rulebook_declares_supported_rules_and_professor_grade_semantic_coverage
         "communicative-nonverbal",
         "official-source-guard",
     ]
-    assert summary.supported_rule_count == 10
-    assert summary.demo_case_rule_count == 9
-    assert summary.corpus_rule_count == 10
-    assert any(area.area_id == "cunit-boundaries" for area in PROFESSOR_GRADE_RULE_AREAS)
+    assert summary.implemented_rule_count == 10
+    assert summary.tracked_fixture_rule_count == 9
+    assert summary.generated_fixture_rule_count == 10
+    assert summary.validation.status == "not_domain_validated"
+    assert summary.validation.evidence_scope == (
+        "tracked_and_generated_synthetic_fixtures"
+    )
+    assert "not accuracy" in summary.validation.claim_boundary
     assert any(
-        area.status == "supported"
+        "Agreement with expert human" in limitation
+        for limitation in summary.validation.limitations
+    )
+    assert any(area.area_id == "cunit-boundaries" for area in METHOD_AREAS)
+    assert any(
+        area.status == "implemented-unvalidated"
         and "independent clause" in area.scientist_language.lower()
-        for area in PROFESSOR_GRADE_RULE_AREAS
+        for area in METHOD_AREAS
     )
     assert any(
-        area.area_id == "ellipsis-minimal-response" and area.status == "supported"
-        for area in PROFESSOR_GRADE_RULE_AREAS
+        area.area_id == "ellipsis-minimal-response"
+        and area.status == "implemented-unvalidated"
+        for area in METHOD_AREAS
     )
 
 
@@ -191,7 +209,7 @@ def test_extract_descript_events_reads_timestamped_speaker_turns() -> None:
     ]
 
 
-def test_evaluator_scores_clean_synthetic_gold_and_exposes_machine_checks() -> None:
+def test_evaluator_counts_configured_synthetic_rule_checks() -> None:
     case = build_synthetic_case("redaction_omission_nonverbal")
 
     evaluation = evaluate_segmented_draft(
@@ -200,7 +218,8 @@ def test_evaluator_scores_clean_synthetic_gold_and_exposes_machine_checks() -> N
         forbidden_tokens=case.official_source_guard_tokens,
     )
 
-    assert evaluation.score == 100
+    assert evaluation.configured_rule_count == len(set(case.rule_ids)) + 1
+    assert evaluation.passed_rule_count == evaluation.configured_rule_count
     assert evaluation.failures == []
     assert evaluation.metrics.utterance_count >= 65
     assert evaluation.metrics.time_marker_count >= 2
@@ -233,7 +252,8 @@ def test_evaluator_flags_rule_failures_and_official_source_leakage() -> None:
     )
 
     failure_ids = {failure.rule_id for failure in evaluation.failures}
-    assert evaluation.score < 100
+    assert evaluation.configured_rule_count == 5
+    assert evaluation.passed_rule_count < evaluation.configured_rule_count
     assert failure_ids >= {
         "timestamp-markers",
         "redaction-comments",
@@ -300,7 +320,7 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     assert run.cunit_adjudication.counted_cunit_count >= 1
     assert run.cunit_adjudication.decisions[0].rationale
     assert run.evaluation is not None
-    assert run.evaluation.score == 100
+    assert run.evaluation.passed_rule_count == run.evaluation.configured_rule_count
     assert all(output.patches for output in run.specialist_outputs)
     for output in run.specialist_outputs:
         artifact_path = Path(str(output.evidence["artifact_path"]))
@@ -341,7 +361,11 @@ def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) ->
     assert evidence["run_id"] == run.run_id
     assert evidence["cunit_adjudication"]["counted_cunit_count"] >= 1
     assert evidence["cunit_adjudication"]["decisions"][0]["boundary_type"]
-    assert evidence["evaluation"]["score"] == 100
+    assert evidence["evaluation"]["passed_rule_count"] == evidence["evaluation"][
+        "configured_rule_count"
+    ]
+    assert "score" not in evidence["evaluation"]
+    assert "confidence" not in evidence["cunit_adjudication"]["decisions"][0]
 
 
 def test_segmentation_corpus_run_store_runs_generated_cases_and_summarizes_coverage(
@@ -450,6 +474,28 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     run_path = tmp_path / "segmentation_runs" / f"{run.run_id}.json"
     payload = json.loads(run_path.read_text(encoding="utf-8"))
     payload.pop("source")
+    payload["evaluation"]["score"] = 100
+    payload["evaluation"].pop("configured_rule_count")
+    payload["evaluation"].pop("passed_rule_count")
+    payload["cunit_adjudication"].pop("validation_status")
+    payload["cunit_adjudication"].pop("evidence_scope")
+    for decision in payload["cunit_adjudication"]["decisions"]:
+        decision["confidence"] = 0.82
+        decision.pop("confidence_status")
     run_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    assert store.load_run(run.run_id).source == "synthetic"
+    loaded = store.load_run(run.run_id)
+    assert loaded.source == "synthetic"
+    assert loaded.evaluation is not None
+    assert loaded.evaluation.configured_rule_count == 1
+    assert loaded.evaluation.passed_rule_count == 1
+    assert loaded.cunit_adjudication.validation_status == "not_domain_validated"
+    assert all(
+        decision.confidence_status == "not_calibrated"
+        for decision in loaded.cunit_adjudication.decisions
+    )
+
+    store.persist_run(loaded)
+    rewritten = json.loads(run_path.read_text(encoding="utf-8"))
+    assert "score" not in rewritten["evaluation"]
+    assert "confidence" not in rewritten["cunit_adjudication"]["decisions"][0]

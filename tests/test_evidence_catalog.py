@@ -1,3 +1,7 @@
+from dataclasses import replace
+
+import pytest
+
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 
 
@@ -29,6 +33,7 @@ def test_evidence_catalog_records_imports_and_deduplicates_revisions(tmp_path) -
     )
 
     catalog.record_import(first)
+    catalog.record_import(first)
     catalog.record_import(second)
 
     imports = catalog.list_imports()
@@ -37,3 +42,15 @@ def test_evidence_catalog_records_imports_and_deduplicates_revisions(tmp_path) -
 
     with catalog.db_path.open("rb") as database_file:
         assert database_file.read(16) == b"SQLite format 3\x00"
+
+    with pytest.raises(ValueError, match="Source import identity conflicts"):
+        catalog.record_import(replace(first, source_blob_sha256="c" * 64))
+
+    with pytest.raises(ValueError, match="Transcript revision identity conflicts"):
+        catalog.record_import(
+            replace(
+                second,
+                import_id="imp_conflicting_revision",
+                transcript_sha256="d" * 64,
+            )
+        )

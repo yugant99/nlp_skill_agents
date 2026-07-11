@@ -41,9 +41,19 @@ class EvidenceCatalog:
                     record.imported_at,
                 ),
             )
+            stored_revision = connection.execute(
+                """
+                select source_id, transcript_sha256
+                from transcript_revisions
+                where transcript_revision_id = ?
+                """,
+                (record.transcript_revision_id,),
+            ).fetchone()
+            if stored_revision != (record.source_id, record.transcript_sha256):
+                raise ValueError("Transcript revision identity conflicts with catalog")
             connection.execute(
                 """
-                insert or replace into source_imports (
+                insert or ignore into source_imports (
                   import_id, run_id, pipeline, source_id, source_filename,
                   source_media_type, source_blob_sha256,
                   transcript_revision_id, imported_at
@@ -61,6 +71,28 @@ class EvidenceCatalog:
                     record.imported_at,
                 ),
             )
+            stored_import = connection.execute(
+                """
+                select run_id, pipeline, source_id, source_filename,
+                       source_media_type, source_blob_sha256,
+                       transcript_revision_id, imported_at
+                from source_imports
+                where import_id = ?
+                """,
+                (record.import_id,),
+            ).fetchone()
+            expected_import = (
+                record.run_id,
+                record.pipeline,
+                record.source_id,
+                record.source_filename,
+                record.source_media_type,
+                record.source_blob_sha256,
+                record.transcript_revision_id,
+                record.imported_at,
+            )
+            if stored_import != expected_import:
+                raise ValueError("Source import identity conflicts with catalog")
 
     def list_imports(self, limit: int = 100) -> list[dict[str, Any]]:
         self._ensure_schema()

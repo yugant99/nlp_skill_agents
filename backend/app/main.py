@@ -1002,6 +1002,9 @@ def _segmentation_analysis_config(payload: dict) -> StudyConfig:
 def _run_response(run, stored: StoredRun) -> dict:
     return {
         "run_id": run.run_id,
+        "source_id": run.source_id,
+        "source_sha256": run.source_sha256,
+        "transcript_revision_id": run.transcript_revision_id,
         "source_filename": run.source_filename,
         "created_at": run.created_at,
         "turn_count": len(run.transcript.turns),

@@ -7,6 +7,11 @@ from typing import TypeAlias
 
 from docx import Document
 
+from backend.evidence.identifiers import (
+    passage_evidence_id,
+    transcript_evidence_identity,
+)
+
 
 SpeakerPrefixes: TypeAlias = dict[str, str | list[str]]
 
@@ -14,6 +19,7 @@ SpeakerPrefixes: TypeAlias = dict[str, str | list[str]]
 @dataclass(frozen=True)
 class Turn:
     turn_index: int
+    passage_id: str
     role: str
     speaker_label: str
     raw_prefix: str
@@ -67,6 +73,7 @@ def parse_transcript(
     config: StudyConfig,
     source_filename: str,
 ) -> Transcript:
+    identity = transcript_evidence_identity(content)
     resolved = _resolve_config(content, config)
     prefix_to_role = {}
     prefixes = []
@@ -93,6 +100,10 @@ def parse_transcript(
         turns.append(
             Turn(
                 turn_index=len(turns),
+                passage_id=passage_evidence_id(
+                    identity.transcript_revision_id,
+                    len(turns),
+                ),
                 role=role,
                 speaker_label=resolved.speaker_labels.get(role, role.title()),
                 raw_prefix=raw_prefix,

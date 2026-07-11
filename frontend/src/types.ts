@@ -333,6 +333,9 @@ export type StudyBatchSummary = StudyBatchResponse["batch"];
 
 export type StudyBatchRunSummary = {
   run_id: string;
+  source_id: string;
+  source_sha256: string;
+  transcript_revision_id: string;
   source_filename: string;
   metadata: Record<string, string>;
   created_at: string;
@@ -343,6 +346,7 @@ export type StudyBatchRunSummary = {
 export type StudyBatchRunDetail = StudyBatchRunSummary & {
   turns: {
     turn_index: number;
+    passage_id: string;
     role: string;
     speaker_label: string;
     raw_prefix: string;
@@ -353,6 +357,9 @@ export type StudyBatchRunDetail = StudyBatchRunSummary & {
 
 export type RunResponse = {
   run_id: string;
+  source_id: string;
+  source_sha256: string;
+  transcript_revision_id: string;
   source_filename: string;
   created_at: string;
   turn_count: number;
@@ -420,6 +427,9 @@ export type ExportLink = {
 
 export type RunHistoryItem = {
   run_id: string;
+  source_id: string;
+  source_sha256: string;
+  transcript_revision_id: string;
   source_filename: string;
   created_at: string;
   metric_count: number;

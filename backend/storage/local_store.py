@@ -60,7 +60,8 @@ class LocalRunStore:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 """
-                select run_id, source_filename, created_at, metric_count
+                select run_id, source_id, source_sha256, transcript_revision_id,
+                       source_filename, created_at, metric_count
                 from analysis_runs
                 order by created_at desc
                 limit ?
@@ -70,6 +71,9 @@ class LocalRunStore:
         return [
             {
                 "run_id": row["run_id"],
+                "source_id": row["source_id"],
+                "source_sha256": row["source_sha256"],
+                "transcript_revision_id": row["transcript_revision_id"],
                 "source_filename": row["source_filename"],
                 "created_at": row["created_at"],
                 "metric_count": row["metric_count"],
@@ -86,12 +90,28 @@ class LocalRunStore:
                 """
                 create table if not exists analysis_runs (
                   run_id text primary key,
+                  source_id text not null,
+                  source_sha256 text not null,
+                  transcript_revision_id text not null,
                   source_filename text not null,
                   created_at text not null,
                   metric_count integer not null
                 )
                 """
             )
+            existing_columns = {
+                row[1]
+                for row in connection.execute("pragma table_info(analysis_runs)")
+            }
+            for column in (
+                "source_id",
+                "source_sha256",
+                "transcript_revision_id",
+            ):
+                if column not in existing_columns:
+                    connection.execute(
+                        f"alter table analysis_runs add column {column} text not null default ''"
+                    )
 
     def _record_run(self, run: AnalysisRun) -> None:
         with sqlite3.connect(self.db_path) as connection:
@@ -99,13 +119,19 @@ class LocalRunStore:
                 """
                 insert or replace into analysis_runs (
                   run_id,
+                  source_id,
+                  source_sha256,
+                  transcript_revision_id,
                   source_filename,
                   created_at,
                   metric_count
-                ) values (?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
+                    run.source_id,
+                    run.source_sha256,
+                    run.transcript_revision_id,
                     run.source_filename,
                     run.created_at,
                     len(run.results),
@@ -116,6 +142,9 @@ class LocalRunStore:
 def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
     return {
         "run_id": run.run_id,
+        "source_id": run.source_id,
+        "source_sha256": run.source_sha256,
+        "transcript_revision_id": run.transcript_revision_id,
         "source_filename": run.source_filename,
         "created_at": run.created_at,
         "participant_id": run.transcript.config.participant_id,

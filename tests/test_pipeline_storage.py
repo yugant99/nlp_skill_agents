@@ -20,6 +20,10 @@ def test_execute_analysis_runs_selected_metric_skills() -> None:
     )
 
     assert run.source_filename == "vr007.txt"
+    assert run.source_id.startswith("src_")
+    assert len(run.source_sha256) == 64
+    assert run.transcript_revision_id.startswith("trv_")
+    assert all(turn.passage_id.startswith("psg_") for turn in run.transcript.turns)
     assert [result.metric_id for result in run.results] == [
         "base_metrics",
         "disfluency_metrics",
@@ -43,6 +47,9 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
     assert stored.run_dir.exists()
     result_payload = json.loads(stored.results_json.read_text(encoding="utf-8"))
     assert result_payload["source_filename"] == "vr008.txt"
+    assert result_payload["source_id"] == run.source_id
+    assert result_payload["source_sha256"] == run.source_sha256
+    assert result_payload["transcript_revision_id"] == run.transcript_revision_id
     assert [metric["metric_id"] for metric in result_payload["results"]] == [
         "base_metrics",
         "lexical_metrics",
@@ -57,9 +64,50 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
 
     with sqlite3.connect(tmp_path / "runs.sqlite3") as connection:
         db_rows = connection.execute(
-            "select run_id, source_filename, metric_count from analysis_runs"
+            """
+            select run_id, source_id, source_sha256, transcript_revision_id,
+                   source_filename, metric_count
+            from analysis_runs
+            """
         ).fetchall()
-    assert db_rows == [(stored.run_id, "vr008.txt", 3)]
+    assert db_rows == [
+        (
+            stored.run_id,
+            run.source_id,
+            run.source_sha256,
+            run.transcript_revision_id,
+            "vr008.txt",
+            3,
+        )
+    ]
+
+
+def test_local_store_migrates_existing_run_metadata_schema(tmp_path: Path) -> None:
+    with sqlite3.connect(tmp_path / "runs.sqlite3") as connection:
+        connection.execute(
+            """
+            create table analysis_runs (
+              run_id text primary key,
+              source_filename text not null,
+              created_at text not null,
+              metric_count integer not null
+            )
+            """
+        )
+
+    run = execute_analysis(
+        "vr009_c: Hello.\nvr009_p: Hi.",
+        StudyConfig(participant_id="vr009", selected_metrics=["base_metrics"]),
+        source_filename="vr009.txt",
+    )
+    store = LocalRunStore(tmp_path)
+
+    store.persist_run(run)
+
+    listed = store.list_runs()
+    assert listed[0]["source_id"] == run.source_id
+    assert listed[0]["source_sha256"] == run.source_sha256
+    assert listed[0]["transcript_revision_id"] == run.transcript_revision_id
 
 
 def test_local_store_lists_recent_runs_newest_first(tmp_path: Path) -> None:

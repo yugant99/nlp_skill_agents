@@ -204,7 +204,7 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 - [x] Replace unconditional `No cloud I/O` messaging with the active privacy mode.
 - [x] Replace manually editable job statuses with enforced transition and evidence
       gates.
-- [ ] Replace direct final-path writes with recoverable writes.
+- [x] Replace direct final-path writes with recoverable writes.
 - [ ] Replace synthetic-only confidence claims with validated and calibrated limits.
 - [x] Reconcile the README, old plans, checkpoint catalog, and current branch.
 

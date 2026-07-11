@@ -36,7 +36,9 @@ autonomous worker system and cannot be treated as production agent execution.
 
 Generated runs, uploads, SQLite metadata, and exports default to `local_data/` or
 the path set by `NLP_SKILL_AGENTS_DATA_DIR`. These paths are intentionally ignored
-by Git.
+by Git. Backend JSON, CSV, TXT, Markdown, HTML, and audit artifacts are written to
+a same-directory temporary file, synced, and atomically replaced so an interrupted
+single-file write does not truncate the last complete artifact.
 
 Deterministic analysis and segmentation run locally. OpenRouter is optional and is
 called only when a user explicitly selects OpenRouter for skill-pack authoring or

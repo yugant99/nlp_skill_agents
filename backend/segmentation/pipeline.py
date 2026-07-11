@@ -11,6 +11,7 @@ from uuid import uuid4
 from backend.evidence.identifiers import (
     cunit_evidence_id,
     passage_evidence_id,
+    source_import_identity,
     transcript_evidence_identity,
 )
 from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
@@ -28,6 +29,7 @@ from backend.segmentation.models import (
 from backend.segmentation.rulebook import SUPPORTED_RULE_IDS
 from backend.segmentation.synthetic import OFFICIAL_SOURCE_GUARD_TOKENS
 from backend.storage.atomic import atomic_write_text
+from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 
 
 RULE_TO_SPECIALIST = {
@@ -77,6 +79,9 @@ class MergeEvidence:
 @dataclass(frozen=True)
 class SegmentationRun:
     run_id: str
+    import_id: str
+    source_blob_sha256: str
+    source_media_type: str
     source_id: str
     transcript_sha256: str
     transcript_revision_id: str
@@ -137,12 +142,19 @@ class SegmentationRunStore:
         descript_text: str,
         rule_ids: list[str],
         source: str = "researcher_provided",
+        source_bytes: bytes | None = None,
+        source_media_type: str = "text/plain",
     ) -> SegmentationRun:
         if not descript_text.strip():
             raise ValueError("descript_text must be non-empty")
         if source not in SEGMENTATION_SOURCES:
             raise ValueError(f"Unsupported segmentation source: {source}")
         identity = transcript_evidence_identity(descript_text)
+        import_identity = source_import_identity(
+            descript_text,
+            source_bytes=source_bytes,
+            source_media_type=source_media_type,
+        )
         normalized_rule_ids = _normalize_rule_ids(rule_ids)
         events = extract_descript_events(descript_text, source_filename)
         if not events:
@@ -176,6 +188,9 @@ class SegmentationRunStore:
         status = _status_from_evaluation(evaluation, merge_evidence)
         run = SegmentationRun(
             run_id=run_id,
+            import_id=import_identity.import_id,
+            source_blob_sha256=import_identity.source_blob_sha256,
+            source_media_type=import_identity.source_media_type,
             source_id=identity.source_id,
             transcript_sha256=identity.transcript_sha256,
             transcript_revision_id=identity.transcript_revision_id,
@@ -304,6 +319,9 @@ class SegmentationRunStore:
         cunit_adjudication = adjudicate_cunit_boundaries(run.events)
         updated_run = SegmentationRun(
             run_id=run.run_id,
+            import_id=run.import_id,
+            source_blob_sha256=run.source_blob_sha256,
+            source_media_type=run.source_media_type,
             source_id=run.source_id,
             transcript_sha256=run.transcript_sha256,
             transcript_revision_id=run.transcript_revision_id,
@@ -353,6 +371,20 @@ class SegmentationRunStore:
         atomic_write_text(
             self.runs_dir / f"{run.run_id}.json",
             json.dumps(segmentation_run_to_payload(run), indent=2),
+        )
+        EvidenceCatalog(self.root).record_import(
+            EvidenceImportRecord(
+                import_id=run.import_id,
+                run_id=run.run_id,
+                pipeline="segmentation",
+                source_id=run.source_id,
+                source_filename=run.source_filename,
+                source_media_type=run.source_media_type,
+                source_blob_sha256=run.source_blob_sha256,
+                transcript_revision_id=run.transcript_revision_id,
+                transcript_sha256=run.transcript_sha256,
+                imported_at=run.created_at,
+            )
         )
 
     def persist_corpus_run(self, corpus_run: SegmentationCorpusRun) -> None:
@@ -616,6 +648,9 @@ def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
     )
     return SegmentationRun(
         run_id=str(payload["run_id"]),
+        import_id=str(payload.get("import_id") or f"imp_legacy_{payload['run_id']}"),
+        source_blob_sha256=str(payload.get("source_blob_sha256") or ""),
+        source_media_type=str(payload.get("source_media_type") or "unknown"),
         source_id=str(payload.get("source_id") or identity.source_id),
         transcript_sha256=str(
             payload.get("transcript_sha256")

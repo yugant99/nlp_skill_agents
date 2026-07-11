@@ -20,6 +20,9 @@ def test_execute_analysis_runs_selected_metric_skills() -> None:
     )
 
     assert run.source_filename == "vr007.txt"
+    assert run.import_id.startswith("imp_")
+    assert len(run.source_blob_sha256) == 64
+    assert run.source_media_type == "text/plain"
     assert run.source_id.startswith("src_")
     assert len(run.transcript_sha256) == 64
     assert run.transcript_revision_id.startswith("trv_")
@@ -47,6 +50,9 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
     assert stored.run_dir.exists()
     result_payload = json.loads(stored.results_json.read_text(encoding="utf-8"))
     assert result_payload["source_filename"] == "vr008.txt"
+    assert result_payload["import_id"] == run.import_id
+    assert result_payload["source_blob_sha256"] == run.source_blob_sha256
+    assert result_payload["source_media_type"] == "text/plain"
     assert result_payload["source_id"] == run.source_id
     assert result_payload["transcript_sha256"] == run.transcript_sha256
     assert result_payload["transcript_revision_id"] == run.transcript_revision_id
@@ -65,7 +71,8 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
     with sqlite3.connect(tmp_path / "runs.sqlite3") as connection:
         db_rows = connection.execute(
             """
-            select run_id, source_id, transcript_sha256, transcript_revision_id,
+            select run_id, import_id, source_blob_sha256, source_media_type,
+                   source_id, transcript_sha256, transcript_revision_id,
                    source_filename, metric_count
             from analysis_runs
             """
@@ -73,6 +80,9 @@ def test_local_store_persists_json_csv_and_sqlite_metadata(tmp_path: Path) -> No
     assert db_rows == [
         (
             stored.run_id,
+            run.import_id,
+            run.source_blob_sha256,
+            run.source_media_type,
             run.source_id,
             run.transcript_sha256,
             run.transcript_revision_id,
@@ -106,6 +116,9 @@ def test_local_store_migrates_existing_run_metadata_schema(tmp_path: Path) -> No
 
     listed = store.list_runs()
     assert listed[0]["source_id"] == run.source_id
+    assert listed[0]["import_id"] == run.import_id
+    assert listed[0]["source_blob_sha256"] == run.source_blob_sha256
+    assert listed[0]["source_media_type"] == run.source_media_type
     assert listed[0]["transcript_sha256"] == run.transcript_sha256
     assert listed[0]["transcript_revision_id"] == run.transcript_revision_id
 

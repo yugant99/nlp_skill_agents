@@ -15,6 +15,7 @@ from backend.analysis.skill_packs import parse_skill_pack
 from backend.analysis.transcripts import StudyConfig
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.atomic import atomic_text_writer, atomic_write_text
+from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 
 
 MAX_STUDY_PARTICIPANTS = 10_000
@@ -203,6 +204,10 @@ class StudyWorkspaceStore:
                     _required_string(item, "content"),
                     _study_config_for_batch_item(skill_pack_payload, metadata),
                     source_filename=source_filename,
+                    source_bytes=item.get("source_bytes"),
+                    source_media_type=str(
+                        item.get("source_media_type") or "text/plain"
+                    ),
                 )
             except (ValueError, KeyError) as exc:
                 failures.append(
@@ -215,6 +220,9 @@ class StudyWorkspaceStore:
 
             run_payload = {
                 "run_id": run.run_id,
+                "import_id": run.import_id,
+                "source_blob_sha256": run.source_blob_sha256,
+                "source_media_type": run.source_media_type,
                 "source_id": run.source_id,
                 "transcript_sha256": run.transcript_sha256,
                 "transcript_revision_id": run.transcript_revision_id,
@@ -228,6 +236,20 @@ class StudyWorkspaceStore:
             atomic_write_text(
                 runs_dir / f"{run.run_id}.json",
                 json.dumps(run_payload, indent=2),
+            )
+            EvidenceCatalog(self.root).record_import(
+                EvidenceImportRecord(
+                    import_id=run.import_id,
+                    run_id=run.run_id,
+                    pipeline="study_batch",
+                    source_id=run.source_id,
+                    source_filename=run.source_filename,
+                    source_media_type=run.source_media_type,
+                    source_blob_sha256=run.source_blob_sha256,
+                    transcript_revision_id=run.transcript_revision_id,
+                    transcript_sha256=run.transcript_sha256,
+                    imported_at=run.created_at,
+                )
             )
             successes.append(run_payload)
 
@@ -429,6 +451,9 @@ def _batch_run_from_payload(payload: dict[str, Any]) -> StudyBatchRun:
 def _batch_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "run_id": payload["run_id"],
+        "import_id": str(payload.get("import_id") or ""),
+        "source_blob_sha256": str(payload.get("source_blob_sha256") or ""),
+        "source_media_type": str(payload.get("source_media_type") or ""),
         "source_id": str(payload.get("source_id") or ""),
         "transcript_sha256": str(
             payload.get("transcript_sha256") or payload.get("source_sha256") or ""

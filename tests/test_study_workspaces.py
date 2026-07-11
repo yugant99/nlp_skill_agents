@@ -319,6 +319,9 @@ def test_study_workspace_lists_and_loads_batch_run_drilldown(tmp_path: Path) -> 
     ]
     assert run_summaries[0]["metadata"]["participant_id"] == "P1"
     assert run_summaries[0]["turn_count"] == 2
+    assert run_summaries[0]["import_id"].startswith("imp_")
+    assert len(run_summaries[0]["source_blob_sha256"]) == 64
+    assert run_summaries[0]["source_media_type"] == "text/plain"
     assert run_summaries[0]["source_id"] == loaded_run["source_id"]
     assert (
         run_summaries[0]["transcript_sha256"]

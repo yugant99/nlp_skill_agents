@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from io import BytesIO
 
 from docx import Document
@@ -149,6 +150,11 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["source_filename"] == "vr009.txt"
+    assert payload["import_id"].startswith("imp_")
+    assert payload["source_blob_sha256"] == sha256(
+        b"vr009_c: Um, hello there.\nvr009_p: Hello."
+    ).hexdigest()
+    assert payload["source_media_type"] == "text/plain"
     assert payload["source_id"].startswith("src_")
     assert len(payload["transcript_sha256"]) == 64
     assert payload["transcript_revision_id"].startswith("trv_")
@@ -174,6 +180,11 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
         },
     ]
     assert (tmp_path / "runs.sqlite3").exists()
+    assert (tmp_path / "evidence.sqlite3").exists()
+
+    imports_response = client.get("/api/evidence/imports")
+    assert imports_response.status_code == 200
+    assert imports_response.json()["imports"][0]["import_id"] == payload["import_id"]
 
 
 def test_download_export_csv_for_run(tmp_path, monkeypatch) -> None:
@@ -943,6 +954,9 @@ def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(
     assert response.status_code == 200
     run = response.json()["run"]
     assert run["source"] == "researcher_provided"
+    assert run["import_id"].startswith("imp_")
+    assert len(run["source_blob_sha256"]) == 64
+    assert run["source_media_type"] == "text/plain"
     assert run["source_id"].startswith("src_")
     assert len(run["transcript_sha256"]) == 64
     assert run["transcript_revision_id"].startswith("trv_")
@@ -977,6 +991,7 @@ def test_segmentation_run_api_accepts_uploaded_txt_file(tmp_path, monkeypatch) -
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)
 
+    source_bytes = b"[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.\n"
     response = client.post(
         "/api/segmentation/runs/files",
         data={
@@ -992,7 +1007,7 @@ def test_segmentation_run_api_accepts_uploaded_txt_file(tmp_path, monkeypatch) -
         files={
             "file": (
                 "descript_export.txt",
-                b"[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+                source_bytes,
                 "text/plain",
             )
         },
@@ -1002,6 +1017,8 @@ def test_segmentation_run_api_accepts_uploaded_txt_file(tmp_path, monkeypatch) -
     run = response.json()["run"]
     assert run["source_filename"] == "descript_export.txt"
     assert run["source"] == "researcher_provided"
+    assert run["source_blob_sha256"] == sha256(source_bytes).hexdigest()
+    assert run["source_media_type"] == "text/plain"
     assert run["merged_draft"].startswith(
         "Researcher-provided transcript: descript_export"
     )

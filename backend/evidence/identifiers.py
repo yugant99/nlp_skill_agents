@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+from uuid import uuid4
 
 
 @dataclass(frozen=True)
@@ -11,12 +12,33 @@ class TranscriptEvidenceIdentity:
     transcript_revision_id: str
 
 
+@dataclass(frozen=True)
+class SourceImportIdentity:
+    import_id: str
+    source_blob_sha256: str
+    source_media_type: str
+
+
 def transcript_evidence_identity(content: str) -> TranscriptEvidenceIdentity:
     transcript_sha256 = sha256(content.encode("utf-8")).hexdigest()
     return TranscriptEvidenceIdentity(
         source_id=f"src_{transcript_sha256[:32]}",
         transcript_sha256=transcript_sha256,
         transcript_revision_id=f"trv_{transcript_sha256[:32]}",
+    )
+
+
+def source_import_identity(
+    content: str,
+    *,
+    source_bytes: bytes | None = None,
+    source_media_type: str = "text/plain",
+) -> SourceImportIdentity:
+    blob = source_bytes if source_bytes is not None else content.encode("utf-8")
+    return SourceImportIdentity(
+        import_id=f"imp_{uuid4().hex}",
+        source_blob_sha256=sha256(blob).hexdigest(),
+        source_media_type=source_media_type or "application/octet-stream",
     )
 
 

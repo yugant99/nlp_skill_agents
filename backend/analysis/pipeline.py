@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from backend.evidence.identifiers import transcript_evidence_identity
+from backend.evidence.identifiers import (
+    source_import_identity,
+    transcript_evidence_identity,
+)
 
 from backend.analysis.metrics import (
     calculate_base_metrics,
@@ -166,6 +169,9 @@ METRIC_REGISTRY = metric_calculators()
 @dataclass(frozen=True)
 class AnalysisRun:
     run_id: str
+    import_id: str
+    source_blob_sha256: str
+    source_media_type: str
     source_id: str
     transcript_sha256: str
     transcript_revision_id: str
@@ -179,8 +185,16 @@ def execute_analysis(
     content: str,
     config: StudyConfig,
     source_filename: str,
+    *,
+    source_bytes: bytes | None = None,
+    source_media_type: str = "text/plain",
 ) -> AnalysisRun:
     identity = transcript_evidence_identity(content)
+    import_identity = source_import_identity(
+        content,
+        source_bytes=source_bytes,
+        source_media_type=source_media_type,
+    )
     selected_metrics = config.selected_metrics or DEFAULT_SELECTED_METRICS
     resolved_config = StudyConfig(
         participant_id=config.participant_id,
@@ -202,6 +216,9 @@ def execute_analysis(
         results.append(get_metric_plugin(metric_id).calculate(transcript))
     return AnalysisRun(
         run_id=uuid4().hex,
+        import_id=import_identity.import_id,
+        source_blob_sha256=import_identity.source_blob_sha256,
+        source_media_type=import_identity.source_media_type,
         source_id=identity.source_id,
         transcript_sha256=identity.transcript_sha256,
         transcript_revision_id=identity.transcript_revision_id,

@@ -9,6 +9,7 @@ from typing import Any
 
 from backend.analysis.pipeline import AnalysisRun
 from backend.storage.atomic import atomic_text_writer, atomic_write_text
+from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class LocalRunStore:
         for result in run.results:
             _write_metric_csv(export_dir / f"{result.metric_id}.csv", result.rows)
         self._record_run(run)
+        EvidenceCatalog(self.root).record_import(_evidence_import_record(run))
         return StoredRun(
             run_id=run.run_id,
             run_dir=run_dir,
@@ -60,7 +62,8 @@ class LocalRunStore:
             connection.row_factory = sqlite3.Row
             rows = connection.execute(
                 """
-                select run_id, source_id, transcript_sha256, transcript_revision_id,
+                select run_id, import_id, source_blob_sha256, source_media_type,
+                       source_id, transcript_sha256, transcript_revision_id,
                        source_filename, created_at, metric_count
                 from analysis_runs
                 order by created_at desc
@@ -71,6 +74,9 @@ class LocalRunStore:
         return [
             {
                 "run_id": row["run_id"],
+                "import_id": row["import_id"],
+                "source_blob_sha256": row["source_blob_sha256"],
+                "source_media_type": row["source_media_type"],
                 "source_id": row["source_id"],
                 "transcript_sha256": row["transcript_sha256"],
                 "transcript_revision_id": row["transcript_revision_id"],
@@ -90,6 +96,9 @@ class LocalRunStore:
                 """
                 create table if not exists analysis_runs (
                   run_id text primary key,
+                  import_id text not null,
+                  source_blob_sha256 text not null,
+                  source_media_type text not null,
                   source_id text not null,
                   transcript_sha256 text not null,
                   transcript_revision_id text not null,
@@ -104,6 +113,9 @@ class LocalRunStore:
                 for row in connection.execute("pragma table_info(analysis_runs)")
             }
             for column in (
+                "import_id",
+                "source_blob_sha256",
+                "source_media_type",
                 "source_id",
                 "transcript_sha256",
                 "transcript_revision_id",
@@ -119,16 +131,22 @@ class LocalRunStore:
                 """
                 insert or replace into analysis_runs (
                   run_id,
+                  import_id,
+                  source_blob_sha256,
+                  source_media_type,
                   source_id,
                   transcript_sha256,
                   transcript_revision_id,
                   source_filename,
                   created_at,
                   metric_count
-                ) values (?, ?, ?, ?, ?, ?, ?)
+                ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
+                    run.import_id,
+                    run.source_blob_sha256,
+                    run.source_media_type,
                     run.source_id,
                     run.transcript_sha256,
                     run.transcript_revision_id,
@@ -142,6 +160,9 @@ class LocalRunStore:
 def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
     return {
         "run_id": run.run_id,
+        "import_id": run.import_id,
+        "source_blob_sha256": run.source_blob_sha256,
+        "source_media_type": run.source_media_type,
         "source_id": run.source_id,
         "transcript_sha256": run.transcript_sha256,
         "transcript_revision_id": run.transcript_revision_id,
@@ -152,6 +173,21 @@ def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
         "turn_count": len(run.transcript.turns),
         "results": [asdict(result) for result in run.results],
     }
+
+
+def _evidence_import_record(run: AnalysisRun) -> EvidenceImportRecord:
+    return EvidenceImportRecord(
+        import_id=run.import_id,
+        run_id=run.run_id,
+        pipeline="analysis",
+        source_id=run.source_id,
+        source_filename=run.source_filename,
+        source_media_type=run.source_media_type,
+        source_blob_sha256=run.source_blob_sha256,
+        transcript_revision_id=run.transcript_revision_id,
+        transcript_sha256=run.transcript_sha256,
+        imported_at=run.created_at,
+    )
 
 
 def _skill_pack_payload(run: AnalysisRun) -> dict[str, str] | None:

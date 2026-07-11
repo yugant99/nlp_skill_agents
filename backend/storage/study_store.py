@@ -14,6 +14,7 @@ from backend.analysis.pipeline import execute_analysis
 from backend.analysis.skill_packs import parse_skill_pack
 from backend.analysis.transcripts import StudyConfig
 from backend.storage.audit_log import AuditLogStore
+from backend.storage.atomic import atomic_text_writer, atomic_write_text
 
 
 MAX_STUDY_PARTICIPANTS = 10_000
@@ -83,9 +84,9 @@ class StudyWorkspaceStore:
         )
         study_dir = self._study_dir(study.id)
         study_dir.mkdir(parents=True, exist_ok=True)
-        (study_dir / "study.json").write_text(
+        atomic_write_text(
+            study_dir / "study.json",
             json.dumps(asdict(study), indent=2),
-            encoding="utf-8",
         )
         self.audit_log.record(
             "study.created",
@@ -107,9 +108,9 @@ class StudyWorkspaceStore:
     def save_study_schema(self, study_id: str, payload: dict[str, Any]) -> StudySchema:
         self._require_study(study_id)
         schema = _study_schema_from_payload(study_id, payload)
-        (self._study_dir(study_id) / "study_schema.json").write_text(
+        atomic_write_text(
+            self._study_dir(study_id) / "study_schema.json",
             json.dumps(asdict(schema), indent=2),
-            encoding="utf-8",
         )
         self.audit_log.record(
             "study.schema.updated",
@@ -145,14 +146,15 @@ class StudyWorkspaceStore:
         version_dir = self._study_dir(study_id) / "skill_packs"
         version_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = version_dir / f"{version_id}.json"
-        artifact_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        atomic_write_text(artifact_path, json.dumps(payload, indent=2))
         metadata = StudySkillPackVersion(
             study_id=study_id,
             version_id=version_id,
             payload=payload,
             artifact_path=artifact_path,
         )
-        (version_dir / f"{version_id}.metadata.json").write_text(
+        atomic_write_text(
+            version_dir / f"{version_id}.metadata.json",
             json.dumps(
                 {
                     "study_id": metadata.study_id,
@@ -162,7 +164,6 @@ class StudyWorkspaceStore:
                 },
                 indent=2,
             ),
-            encoding="utf-8",
         )
         self.audit_log.record(
             "skill_pack.versioned",
@@ -221,9 +222,9 @@ class StudyWorkspaceStore:
                 "turns": [asdict(turn) for turn in run.transcript.turns],
                 "results": [asdict(result) for result in run.results],
             }
-            (runs_dir / f"{run.run_id}.json").write_text(
+            atomic_write_text(
+                runs_dir / f"{run.run_id}.json",
                 json.dumps(run_payload, indent=2),
-                encoding="utf-8",
             )
             successes.append(run_payload)
 
@@ -235,9 +236,9 @@ class StudyWorkspaceStore:
             successes,
             failures,
         )
-        (aggregate_dir / "aggregate_results.json").write_text(
+        atomic_write_text(
+            aggregate_dir / "aggregate_results.json",
             json.dumps(aggregate_payload, indent=2),
-            encoding="utf-8",
         )
         for result in aggregate_payload["results"]:
             _write_csv(aggregate_dir / f"{result['metric_id']}.csv", result["rows"])
@@ -250,7 +251,8 @@ class StudyWorkspaceStore:
             failure_count=len(failures),
             aggregate_dir=aggregate_dir,
         )
-        (aggregate_dir / "batch.json").write_text(
+        atomic_write_text(
+            aggregate_dir / "batch.json",
             json.dumps(
                 {
                     **asdict(batch),
@@ -258,7 +260,6 @@ class StudyWorkspaceStore:
                 },
                 indent=2,
             ),
-            encoding="utf-8",
         )
         self.audit_log.record(
             "batch.completed",
@@ -327,7 +328,7 @@ class StudyWorkspaceStore:
             ],
         }
         manifest_path = bundle_dir / "manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        atomic_write_text(manifest_path, json.dumps(manifest, indent=2))
         bundle = StudyBundleExport(
             study_id=study_id,
             bundle_id=bundle_id,
@@ -549,7 +550,7 @@ def _ordered_metadata(metadata: dict[str, Any]) -> dict[str, str]:
 
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     fieldnames = _ordered_fieldnames(rows)
-    with path.open("w", newline="", encoding="utf-8") as csv_file:
+    with atomic_text_writer(path, newline="") as csv_file:
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)

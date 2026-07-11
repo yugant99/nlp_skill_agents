@@ -56,6 +56,7 @@ from backend.segmentation.synthetic import build_synthetic_case, list_synthetic_
 from backend.storage.local_store import LocalRunStore, StoredRun
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.deployment_profiles import check_deployment_profile
+from backend.storage.evidence_catalog import EvidenceCatalog
 from backend.storage.library_store import LibraryStore
 from backend.storage.study_store import MAX_STUDY_PARTICIPANTS, StudyWorkspaceStore
 
@@ -730,14 +731,18 @@ async def create_study_file_batch(
 ) -> dict:
     try:
         parsed_metadata = _batch_metadata_from_json(metadata)
-        transcripts = [
-            {
-                "source_filename": file.filename or f"transcript_{index + 1}",
-                "content": await _extract_upload_text(file),
-                "metadata": parsed_metadata.get(file.filename or "", {}),
-            }
-            for index, file in enumerate(files)
-        ]
+        transcripts = []
+        for index, file in enumerate(files):
+            content, source_bytes, source_media_type = await _extract_upload(file)
+            transcripts.append(
+                {
+                    "source_filename": file.filename or f"transcript_{index + 1}",
+                    "content": content,
+                    "source_bytes": source_bytes,
+                    "source_media_type": source_media_type,
+                    "metadata": parsed_metadata.get(file.filename or "", {}),
+                }
+            )
         batch = StudyWorkspaceStore(_local_data_root()).run_text_batch(
             study_id,
             skill_pack_version_id,
@@ -847,18 +852,14 @@ async def create_run(
     if suffix not in {".txt", ".docx"}:
         raise HTTPException(status_code=400, detail="Only DOCX and TXT uploads are supported")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
-        tmp_path = Path(tmp.name)
-    try:
-        content = extract_transcript_text(tmp_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
+    content, source_bytes, source_media_type = await _extract_upload(file)
 
     run = _execute_or_400(
         content,
         parsed_config,
         source_filename=file.filename or "transcript",
+        source_bytes=source_bytes,
+        source_media_type=source_media_type,
     )
     stored = LocalRunStore(_local_data_root()).persist_run(run)
     return _run_response(run, stored)
@@ -884,6 +885,11 @@ def list_runs() -> dict:
     return {"runs": LocalRunStore(_local_data_root()).list_runs()}
 
 
+@app.get("/api/evidence/imports")
+def list_evidence_imports() -> dict:
+    return {"imports": EvidenceCatalog(_local_data_root()).list_imports()}
+
+
 @app.get("/api/runs/{run_id}/exports/{filename}")
 def download_export(run_id: str, filename: str) -> FileResponse:
     if "/" in filename or "\\" in filename or filename.startswith("."):
@@ -902,9 +908,22 @@ def _study_config_from_json(config_json: str) -> StudyConfig:
     return _study_config_from_payload(json.loads(config_json))
 
 
-def _execute_or_400(content: str, config: StudyConfig, source_filename: str):
+def _execute_or_400(
+    content: str,
+    config: StudyConfig,
+    source_filename: str,
+    *,
+    source_bytes: bytes | None = None,
+    source_media_type: str = "text/plain",
+):
     try:
-        return execute_analysis(content, config, source_filename)
+        return execute_analysis(
+            content,
+            config,
+            source_filename,
+            source_bytes=source_bytes,
+            source_media_type=source_media_type,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -932,15 +951,20 @@ def _segmentation_rule_ids_from_json(raw_rule_ids: str) -> list[str]:
     return [str(rule_id) for rule_id in payload if str(rule_id).strip()]
 
 
-async def _extract_upload_text(file: UploadFile) -> str:
+async def _extract_upload(file: UploadFile) -> tuple[str, bytes, str]:
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in {".txt", ".docx"}:
         raise ValueError("Only DOCX and TXT uploads are supported")
+    source_bytes = await file.read()
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        tmp.write(await file.read())
+        tmp.write(source_bytes)
         tmp_path = Path(tmp.name)
     try:
-        return extract_transcript_text(tmp_path)
+        return (
+            extract_transcript_text(tmp_path),
+            source_bytes,
+            file.content_type or "application/octet-stream",
+        )
     finally:
         tmp_path.unlink(missing_ok=True)
 
@@ -1002,6 +1026,9 @@ def _segmentation_analysis_config(payload: dict) -> StudyConfig:
 def _run_response(run, stored: StoredRun) -> dict:
     return {
         "run_id": run.run_id,
+        "import_id": run.import_id,
+        "source_blob_sha256": run.source_blob_sha256,
+        "source_media_type": run.source_media_type,
         "source_id": run.source_id,
         "transcript_sha256": run.transcript_sha256,
         "transcript_revision_id": run.transcript_revision_id,

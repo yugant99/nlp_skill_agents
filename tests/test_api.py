@@ -149,6 +149,9 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["source_filename"] == "vr009.txt"
+    assert payload["import_id"].startswith("imp_")
+    assert len(payload["source_blob_sha256"]) == 64
+    assert payload["source_media_type"] == "text/plain"
     assert payload["source_id"].startswith("src_")
     assert len(payload["transcript_sha256"]) == 64
     assert payload["transcript_revision_id"].startswith("trv_")
@@ -174,6 +177,11 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
         },
     ]
     assert (tmp_path / "runs.sqlite3").exists()
+    assert (tmp_path / "evidence.sqlite3").exists()
+
+    imports_response = client.get("/api/evidence/imports")
+    assert imports_response.status_code == 200
+    assert imports_response.json()["imports"][0]["import_id"] == payload["import_id"]
 
 
 def test_download_export_csv_for_run(tmp_path, monkeypatch) -> None:

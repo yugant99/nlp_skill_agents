@@ -1,6 +1,7 @@
 from backend.evidence.identifiers import (
     cunit_evidence_id,
     passage_evidence_id,
+    source_import_identity,
     transcript_evidence_identity,
 )
 
@@ -34,3 +35,27 @@ def test_passage_and_cunit_ids_are_stable_within_a_revision() -> None:
         first_passage,
         1,
     )
+
+
+def test_source_import_identity_hashes_original_blob_bytes() -> None:
+    content = "P1: extracted transcript"
+    source_bytes = b"P1: extracted transcript\n"
+
+    first = source_import_identity(
+        content,
+        source_bytes=source_bytes,
+        source_media_type="text/plain",
+    )
+    repeated = source_import_identity(
+        content,
+        source_bytes=source_bytes,
+        source_media_type="text/plain",
+    )
+
+    assert first.import_id.startswith("imp_")
+    assert first.import_id != repeated.import_id
+    assert first.source_blob_sha256 == repeated.source_blob_sha256
+    assert first.source_blob_sha256 != transcript_evidence_identity(
+        content
+    ).transcript_sha256
+    assert first.source_media_type == "text/plain"

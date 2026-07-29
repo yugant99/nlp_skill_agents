@@ -129,11 +129,17 @@ prototype. It already has:
 - C-unit segmentation, specialist patch contracts, deterministic merge/evaluation,
   human-review flags, run history, and evidence exports;
 - local JSON/CSV/SQLite artifacts;
+- a per-study qualitative SQLite contract for researcher identity, versioned
+  codebooks, cases, typed attributes, source links, and transactional audit events;
 - basic audit events, approved-library artifacts, and bundle hashes;
 - agent-job prompts, statuses, runbooks, and evidence contracts.
 
 It is not yet a qualitative research platform because it lacks the central manual
 coding, memoing, retrieval, coder-comparison, and adjudication workflow.
+
+The qualitative schema is an accepted Phase 1 foundation only. Its codebook and
+case services are assigned implementation slices; their APIs, researcher-facing
+controls, manual coding integration, and domain validation are not complete.
 
 ## Gap Register
 

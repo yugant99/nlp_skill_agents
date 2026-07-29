@@ -52,6 +52,14 @@ idempotent writes; the final run row and completed marker commit together.
 `GET /api/storage/analysis-operations` exposes completed, failed, or interrupted
 operations for local recovery inspection.
 
+Each study can now initialize a versioned `qualitative.sqlite3` contract inside
+its study directory. The contract reserves one transactional boundary for named
+researchers, versioned hierarchical codebooks, cases, typed attributes,
+source-to-case links, and append-only qualitative audit events. Frozen codebook
+versions are immutable at the database boundary. This is architecture for the
+next contributor slices, not yet a codebook or case-management workflow.
+`GET /api/studies/{study_id}/qualitative/schema-status` reports compatibility.
+
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are
 not estimates of accuracy, inter-rater reliability, or psychology-domain validity.
@@ -92,6 +100,7 @@ disabled. A configured `OPENROUTER_API_KEY` causes that profile check to fail.
 backend/app/           FastAPI entry point and HTTP API
 backend/analysis/      Transcript parsing, deterministic metrics, and skill packs
 backend/evidence/      Shared source, revision, passage, and C-unit identifiers
+backend/qualitative/   Per-study qualitative database and domain services
 backend/segmentation/  C-unit parsing, adjudication, patching, evaluation, and runs
 backend/extensions/    Agent-job and plugin-request artifacts
 backend/storage/       Local JSON, CSV, SQLite, study, audit, and library stores
@@ -101,6 +110,7 @@ demo_assets/           Tracked synthetic demonstration data
 tests/                 Backend unit and API regression tests
 checkpoints/           Historical feature and verification records
 goals/                 Current roadmap plus historical planning documents
+assignments/           Reviewed implementation packets for project contributors
 local_data/            Ignored local runs, uploads, databases, and exports
 ```
 

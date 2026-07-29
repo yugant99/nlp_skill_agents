@@ -64,6 +64,56 @@ def test_storage_schema_status_rejects_newer_database(tmp_path, monkeypatch) -> 
     assert "newer than supported version 3" in response.json()["detail"]
 
 
+def test_qualitative_schema_status_reports_per_study_contract(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study = client.post("/api/studies", json={"name": "Qualitative Contract"})
+    study_id = study.json()["study"]["id"]
+
+    response = client.get(f"/api/studies/{study_id}/qualitative/schema-status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "compatible": True,
+        "project_id": study_id,
+        "current_version": 1,
+        "migrations": [
+            {
+                "version": 1,
+                "name": "create-qualitative-core-contract",
+                "applied_at": response.json()["migrations"][0]["applied_at"],
+            }
+        ],
+    }
+    assert (
+        tmp_path / "studies" / study_id / "qualitative.sqlite3"
+    ).is_file()
+
+
+def test_qualitative_schema_status_rejects_missing_or_newer_project(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+
+    missing = client.get("/api/studies/missing/qualitative/schema-status")
+    study = client.post("/api/studies", json={"name": "Future Qualitative"})
+    study_id = study.json()["study"]["id"]
+    database_path = tmp_path / "studies" / study_id / "qualitative.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("pragma user_version = 99")
+
+    newer = client.get(f"/api/studies/{study_id}/qualitative/schema-status")
+
+    assert missing.status_code == 404
+    assert newer.status_code == 409
+    assert "newer than supported version 1" in newer.json()["detail"]
+
+
 def test_analysis_operations_endpoint_reports_completed_and_incomplete(
     tmp_path,
     monkeypatch,

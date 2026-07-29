@@ -161,6 +161,41 @@ def test_qualitative_transaction_rolls_back_domain_and_audit_writes(
         ).fetchone()[0] == 0
 
 
+def test_qualitative_schema_rejects_cross_project_or_unknown_actor_writes(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+    now = datetime.now(UTC).isoformat()
+
+    with pytest.raises(sqlite3.IntegrityError, match="belongs to one project"):
+        with database.transaction() as connection:
+            connection.execute(
+                """
+                insert into qualitative_projects (project_id, created_at)
+                values ('another-project', ?)
+                """,
+                (now,),
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
+        with database.transaction() as connection:
+            connection.execute(
+                """
+                insert into cases (
+                  case_id, project_id, case_kind, label, description,
+                  created_by, updated_by, created_at, updated_at
+                ) values ('cas_unknown_actor', ?, 'participant', 'P1', '',
+                          'res_missing', 'res_missing', ?, ?)
+                """,
+                (project_id, now, now),
+            )
+
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute(
+            "select project_id from qualitative_projects"
+        ).fetchall() == [(project_id,)]
+        assert connection.execute("select count(*) from cases").fetchone()[0] == 0
+
+
 def test_qualitative_schema_enforces_version_and_audit_immutability(
     tmp_path: Path,
 ) -> None:
@@ -213,11 +248,36 @@ def test_qualitative_schema_enforces_version_and_audit_immutability(
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         with database.transaction() as connection:
             connection.execute(
+                "delete from codes where code_id = 'cod_access'"
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        with database.transaction() as connection:
+            connection.execute(
+                """
+                insert into codes (
+                  code_id, project_id, codebook_version_id, stable_code_key,
+                  parent_code_id, label, created_by, created_at, updated_at
+                ) values ('cod_new', ?, 'cbv_interview_1', 'new',
+                          null, 'New', ?, ?, ?)
+                """,
+                (project_id, RESEARCHER_ID, now, now),
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        with database.transaction() as connection:
+            connection.execute(
                 """
                 update codebook_versions set frozen_at = ?
                 where codebook_version_id = 'cbv_interview_1'
                 """,
                 (datetime.now(UTC).isoformat(),),
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        with database.transaction() as connection:
+            connection.execute(
+                """
+                delete from codebook_versions
+                where codebook_version_id = 'cbv_interview_1'
+                """
             )
 
     with database.transaction() as connection:
@@ -236,6 +296,14 @@ def test_qualitative_schema_enforces_version_and_audit_immutability(
             connection.execute(
                 """
                 update qualitative_audit_events set event_type = 'changed'
+                where event_id = 'qae_codebook_frozen'
+                """
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        with database.transaction() as connection:
+            connection.execute(
+                """
+                delete from qualitative_audit_events
                 where event_id = 'qae_codebook_frozen'
                 """
             )

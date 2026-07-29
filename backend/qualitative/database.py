@@ -345,6 +345,16 @@ def _create_qualitative_core(connection: sqlite3.Connection) -> None:
             project_id, subject_type, subject_id, created_at
           );
 
+        create trigger prevent_second_qualitative_project
+        before insert on qualitative_projects
+        when exists (
+          select 1 from qualitative_projects
+          where project_id != new.project_id
+        )
+        begin
+          select raise(abort, 'qualitative database belongs to one project');
+        end;
+
         create trigger prevent_frozen_code_insert
         before insert on codes
         when exists (

@@ -43,6 +43,7 @@ from backend.extensions.plugin_requests import (
     plugin_request_to_payload,
 )
 from backend.llm.openrouter import OpenRouterError
+from backend.qualitative import QualitativeProjectDatabase
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import SyntheticSegmentationCase
 from backend.segmentation.pipeline import (
@@ -677,6 +678,25 @@ def download_segmentation_specialist_packet(run_id: str, filename: str) -> FileR
 def create_study(request: StudyCreateRequest) -> dict:
     study = StudyWorkspaceStore(_local_data_root()).create_study(request.model_dump())
     return {"study": _study_payload(study)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/schema-status")
+def qualitative_schema_status(study_id: str) -> dict:
+    try:
+        migrations = QualitativeProjectDatabase(
+            _local_data_root(),
+            study_id,
+        ).migration_status()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (SchemaCompatibilityError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {
+        "compatible": True,
+        "project_id": study_id,
+        "current_version": migrations[-1]["version"],
+        "migrations": migrations,
+    }
 
 
 @app.get("/api/studies")

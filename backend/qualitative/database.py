@@ -100,6 +100,23 @@ class QualitativeProjectDatabase:
                     now,
                 ),
             )
+            stored_event = connection.execute(
+                """
+                select project_id, actor_id, event_type, subject_type,
+                       subject_id, metadata_json
+                from qualitative_audit_events where event_id = ?
+                """,
+                (bootstrap_event_id,),
+            ).fetchone()
+            if stored_event != (
+                self.project_id,
+                researcher_id,
+                "qualitative.project.initialized",
+                "project",
+                self.project_id,
+                "{}",
+            ):
+                raise ValueError("Initialization audit identity conflicts")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -369,12 +386,19 @@ def _create_qualitative_core(connection: sqlite3.Connection) -> None:
 
         create trigger prevent_frozen_code_update
         before update on codes
-        when exists (
-          select 1 from codebook_versions
-          where project_id = old.project_id
-            and codebook_version_id = old.codebook_version_id
-            and status = 'frozen'
-        )
+        when
+          exists (
+            select 1 from codebook_versions
+            where project_id = old.project_id
+              and codebook_version_id = old.codebook_version_id
+              and status = 'frozen'
+          )
+          or exists (
+            select 1 from codebook_versions
+            where project_id = new.project_id
+              and codebook_version_id = new.codebook_version_id
+              and status = 'frozen'
+          )
         begin
           select raise(abort, 'frozen codebook version is immutable');
         end;

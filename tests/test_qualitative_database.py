@@ -91,6 +91,45 @@ def test_qualitative_database_refuses_missing_projects_and_identity_conflicts(
             researcher_name="Project Owner",
         )
 
+    audit_study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Audit Conflict"}
+    )
+    audit_database = QualitativeProjectDatabase(tmp_path, audit_study.id)
+    audit_database.migration_status()
+    now = datetime.now(UTC).isoformat()
+    event_id = qualitative_database._bootstrap_event_id(
+        audit_study.id,
+        RESEARCHER_ID,
+    )
+    with audit_database.transaction() as connection:
+        connection.execute(
+            "insert into qualitative_projects values (?, ?)",
+            (audit_study.id, now),
+        )
+        connection.execute(
+            """
+            insert into researchers (
+              researcher_id, project_id, display_name, role,
+              active, created_at, updated_at
+            ) values (?, ?, 'Project Owner', 'researcher', 1, ?, ?)
+            """,
+            (RESEARCHER_ID, audit_study.id, now, now),
+        )
+        connection.execute(
+            """
+            insert into qualitative_audit_events (
+              event_id, project_id, actor_id, event_type,
+              subject_type, subject_id, metadata_json, created_at
+            ) values (?, ?, ?, 'different.event', 'project', ?, '{}', ?)
+            """,
+            (event_id, audit_study.id, RESEARCHER_ID, audit_study.id, now),
+        )
+    with pytest.raises(ValueError, match="audit identity conflicts"):
+        audit_database.initialize(
+            researcher_id=RESEARCHER_ID,
+            researcher_name="Project Owner",
+        )
+
 
 def test_qualitative_schema_failure_rolls_back_partial_migration(
     tmp_path: Path,
@@ -239,11 +278,39 @@ def test_qualitative_schema_enforces_version_and_audit_immutability(
             """,
             (now,),
         )
+        connection.execute(
+            """
+            insert into codebook_versions (
+              codebook_version_id, project_id, codebook_id, version_number,
+              status, based_on_version_id, created_by, created_at, frozen_at
+            ) values ('cbv_interview_2', ?, 'cbk_interview', 2,
+                      'draft', 'cbv_interview_1', ?, ?, null)
+            """,
+            (project_id, RESEARCHER_ID, now),
+        )
+        connection.execute(
+            """
+            insert into codes (
+              code_id, project_id, codebook_version_id, stable_code_key,
+              parent_code_id, label, created_by, created_at, updated_at
+            ) values ('cod_draft', ?, 'cbv_interview_2', 'draft',
+                      null, 'Draft', ?, ?, ?)
+            """,
+            (project_id, RESEARCHER_ID, now, now),
+        )
 
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         with database.transaction() as connection:
             connection.execute(
                 "update codes set label = 'Changed' where code_id = 'cod_access'"
+            )
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        with database.transaction() as connection:
+            connection.execute(
+                """
+                update codes set codebook_version_id = 'cbv_interview_1'
+                where code_id = 'cod_draft'
+                """
             )
     with pytest.raises(sqlite3.IntegrityError, match="immutable"):
         with database.transaction() as connection:

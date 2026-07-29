@@ -33,7 +33,11 @@ separate contributors implement the codebook and case/attribute subsystems.
 - Added transaction handling with foreign-key enforcement, immediate writer
   locking, commit, and rollback.
 - Added database triggers that prevent changes to frozen codebook versions and
-  prevent updates or deletion of append-only audit events.
+  prevent updates or deletion of append-only audit events. The schema also
+  rejects attempts to bind one per-study database to a second project identity.
+- Closed an update path that could otherwise move a draft code into a frozen
+  version, and now rejects a reused initialization-event ID with conflicting
+  content.
 - Avoided `sqlite3.executescript` so migration DDL stays inside the migration
   engine's explicit transaction.
 - Added a per-study schema compatibility endpoint with missing-study and
@@ -45,16 +49,23 @@ separate contributors implement the codebook and case/attribute subsystems.
 
 ## Verification
 
-- Qualitative database focused tests passed: 7/7.
+- Qualitative database focused tests passed: 8/8.
 - Qualitative schema-status API tests passed: 2/2.
-- Full backend, frontend build, and frontend helper regression results will be
-  recorded before the pull request is merged.
-- `git diff --check` passed for the implementation slices completed so far.
+- `.venv/bin/pytest` passed: 168/168.
+- `cd frontend && npm run build` passed.
+- All frontend helper suites passed: 30/30.
+- `git diff --check` passed for the complete branch diff.
+- `npm audit` reported three pre-existing frontend toolchain advisories: one low
+  and two high across esbuild, PostCSS, and Vite. This branch does not change the
+  dependency manifests or lockfile; upgrades remain a separate reviewed slice.
 
 ## Git Commits
 
 - `fd8d65b Add qualitative project schema contract`
 - `70d4c6a Expose qualitative schema compatibility`
+- `78edf9a Document qualitative architecture assignments`
+- `d878ae0 Enforce qualitative schema boundaries`
+- `8bcd256 Close qualitative immutability bypasses`
 
 ## Known Limitations And Rollback
 
@@ -67,6 +78,8 @@ separate contributors implement the codebook and case/attribute subsystems.
   identity or role authorization.
 - Qualitative audit events are append-only but not authenticated or
   cryptographically chained.
+- The existing frontend dependency audit is not clean. Toolchain upgrades and
+  their Windows regression checks remain separate production-readiness work.
 - The current JSON `StudySchema` remains active. Mark's assigned design must define
   compatibility before any replacement or migration.
 - Codebook hierarchy-cycle and typed-value validation are service responsibilities

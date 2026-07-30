@@ -758,7 +758,12 @@ def download_segmentation_specialist_packet(run_id: str, filename: str) -> FileR
 
 @app.post("/api/studies")
 def create_study(request: StudyCreateRequest) -> dict:
-    study = StudyWorkspaceStore(_local_data_root()).create_study(request.model_dump())
+    try:
+        study = StudyWorkspaceStore(_local_data_root()).create_study(
+            request.model_dump()
+        )
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="Study already exists") from exc
     return {"study": _study_payload(study)}
 
 

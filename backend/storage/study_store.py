@@ -103,7 +103,7 @@ class StudyWorkspaceStore:
             description=str(payload.get("description") or ""),
         )
         study_dir = self._study_dir(study.id)
-        study_dir.mkdir(parents=True, exist_ok=True)
+        study_dir.mkdir(parents=True)
         atomic_write_text(
             study_dir / "study.json",
             json.dumps(asdict(study), indent=2),

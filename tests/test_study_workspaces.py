@@ -18,6 +18,34 @@ from backend.storage.study_store import (
 )
 
 
+def test_study_workspace_refuses_duplicate_identity_without_overwrite(
+    tmp_path: Path,
+) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    original = store.create_study(
+        {"id": "same-study", "name": "Original", "description": "keep me"}
+    )
+
+    with pytest.raises(FileExistsError):
+        store.create_study(
+            {"id": "same-study", "name": "Replacement", "description": "lose me"}
+        )
+
+    persisted = json.loads(
+        (tmp_path / "studies" / original.id / "study.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    created_events = [
+        event
+        for event in store.audit_log.list_events(limit=None)
+        if event["event_type"] == "study.created"
+    ]
+    assert persisted["name"] == "Original"
+    assert persisted["description"] == "keep me"
+    assert len(created_events) == 1
+
+
 def test_study_workspace_runs_text_batch_with_aggregate_exports(tmp_path: Path) -> None:
     store = StudyWorkspaceStore(tmp_path)
     study = store.create_study(

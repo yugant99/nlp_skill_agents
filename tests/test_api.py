@@ -938,6 +938,29 @@ def test_study_workspace_batch_api_creates_aggregate_outputs(tmp_path, monkeypat
     ]
 
 
+def test_study_api_rejects_duplicate_identity_without_overwrite(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    original = client.post(
+        "/api/studies",
+        json={"name": "Same Study", "description": "keep me"},
+    )
+    duplicate = client.post(
+        "/api/studies",
+        json={"name": "Same Study", "description": "replace me"},
+    )
+
+    assert original.status_code == 200
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "Study already exists"
+    studies = client.get("/api/studies").json()["studies"]
+    assert len(studies) == 1
+    assert studies[0]["description"] == "keep me"
+
+
 def test_study_batch_api_retries_exact_request_and_reports_conflicts(
     tmp_path,
     monkeypatch,

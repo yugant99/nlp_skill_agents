@@ -241,8 +241,14 @@ class StudyWorkspaceStore:
             item_count=len(transcripts),
             created_at=created_at,
         )
-        if journal.get_operation(resolved_batch_id)["status"] == "completed":
-            return self.load_batch(study_id, resolved_batch_id)
+        operation = journal.get_operation(resolved_batch_id)
+        if operation["status"] == "completed":
+            return self._load_completed_batch(
+                study_id,
+                resolved_batch_id,
+                journal,
+                operation,
+            )
 
         aggregate_dir = self._study_dir(study_id) / "batches" / resolved_batch_id
         runs_dir = aggregate_dir / "runs"
@@ -486,6 +492,199 @@ class StudyWorkspaceStore:
                     "Study batch failed and its journal could not record the failure"
                 ) from journal_exc
             raise
+
+    def _load_completed_batch(
+        self,
+        study_id: str,
+        batch_id: str,
+        journal: StudyBatchOperationStore,
+        operation: dict[str, Any],
+    ) -> StudyBatchRun:
+        try:
+            batch = self.load_batch(study_id, batch_id)
+            aggregate_payload = json.loads(
+                (batch.aggregate_dir / "aggregate_results.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            items = journal.list_items(batch_id)
+            import_records = {
+                record.import_id: record
+                for record in EvidenceCatalog(self.root).workspace_import_records(
+                    study_id
+                )
+            }
+        except FileNotFoundError as exc:
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch is missing a persisted artifact"
+            ) from exc
+        except (json.JSONDecodeError, KeyError, TypeError, UnicodeDecodeError) as exc:
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch contains an invalid persisted artifact"
+            ) from exc
+
+        completed_items = [item for item in items if item["stage"] == "completed"]
+        rejected_items = [item for item in items if item["stage"] == "rejected"]
+        if len(items) != int(operation["item_count"]) or len(items) != (
+            len(completed_items) + len(rejected_items)
+        ):
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch journal contains non-terminal items"
+            )
+        if (
+            batch.study_id != study_id
+            or batch.batch_id != batch_id
+            or batch.skill_pack_version_id != operation["skill_pack_version_id"]
+            or batch.created_at != operation["created_at"]
+            or batch.run_count != len(completed_items)
+            or batch.failure_count != len(rejected_items)
+        ):
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch manifest conflicts with its journal"
+            )
+
+        successes: list[dict[str, Any]] = []
+        expected_run_paths: set[Path] = set()
+        source_blob_store = SourceBlobStore(self.root)
+        for item in completed_items:
+            run_path = batch.aggregate_dir / "runs" / f"{item['run_id']}.json"
+            expected_run_paths.add(run_path)
+            try:
+                run_payload = json.loads(run_path.read_text(encoding="utf-8"))
+            except FileNotFoundError as exc:
+                raise StudyBatchSnapshotConflict(
+                    "Completed study batch is missing a run snapshot"
+                ) from exc
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise StudyBatchSnapshotConflict(
+                    "Completed study batch contains an invalid run snapshot"
+                ) from exc
+            if _canonical_json_sha256(run_payload) != item["run_payload_sha256"]:
+                raise StudyBatchSnapshotConflict(
+                    "Completed study batch run snapshot conflicts with its journal"
+                )
+            for field_name in (
+                "run_id",
+                "import_id",
+                "project_source_id",
+                "source_blob_sha256",
+                "transcript_sha256",
+                "transcript_revision_id",
+                "created_at",
+            ):
+                if str(run_payload.get(field_name) or "") != str(
+                    item[field_name]
+                ):
+                    raise StudyBatchSnapshotConflict(
+                        "Completed study batch run identity conflicts with its journal"
+                    )
+            try:
+                source_blob_store.read_verified(str(item["source_blob_sha256"]))
+            except FileNotFoundError as exc:
+                raise StudyBatchSnapshotConflict(
+                    "Completed study batch is missing a source blob"
+                ) from exc
+            import_record = import_records.get(str(item["import_id"]))
+            expected_import = {
+                "import_id": run_payload["import_id"],
+                "run_id": run_payload["run_id"],
+                "pipeline": "study_batch",
+                "project_source_id": run_payload["project_source_id"],
+                "parent_transcript_revision_id": run_payload[
+                    "parent_transcript_revision_id"
+                ],
+                "workspace_id": run_payload["workspace_id"],
+                "source_id": run_payload["source_id"],
+                "source_filename": run_payload["source_filename"],
+                "source_media_type": run_payload["source_media_type"],
+                "source_blob_sha256": run_payload["source_blob_sha256"],
+                "transcript_revision_id": run_payload["transcript_revision_id"],
+                "transcript_sha256": run_payload["transcript_sha256"],
+                "imported_at": run_payload["created_at"],
+            }
+            if import_record is None or asdict(import_record) != expected_import:
+                raise StudyBatchSnapshotConflict(
+                    "Completed study batch evidence conflicts with its journal"
+                )
+            successes.append(run_payload)
+
+        actual_run_paths = set((batch.aggregate_dir / "runs").glob("*.json"))
+        if actual_run_paths != expected_run_paths:
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch run snapshots conflict with its journal"
+            )
+        failures = aggregate_payload.get("failures")
+        if not isinstance(failures, list) or len(failures) != len(rejected_items):
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch failures conflict with its journal"
+            )
+        schema_payload = aggregate_payload.get("study_schema")
+        try:
+            archived_schema = (
+                StudySchema(**schema_payload)
+                if isinstance(schema_payload, dict)
+                else None
+            )
+            expected_aggregate = _aggregate_batch_payload(
+                study_id,
+                batch_id,
+                str(operation["skill_pack_version_id"]),
+                archived_schema,
+                successes,
+                failures,
+                created_at=str(operation["created_at"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch aggregate is invalid"
+            ) from exc
+        if _canonical_json_sha256(aggregate_payload) != _canonical_json_sha256(
+            expected_aggregate
+        ):
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch aggregate conflicts with its run snapshots"
+            )
+        expected_csv_paths = {
+            batch.aggregate_dir / f"{result['metric_id']}.csv"
+            for result in expected_aggregate["results"]
+        }
+        if set(batch.aggregate_dir.glob("*.csv")) != expected_csv_paths:
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch CSV exports conflict with its aggregate"
+            )
+        for result in expected_aggregate["results"]:
+            csv_path = batch.aggregate_dir / f"{result['metric_id']}.csv"
+            if csv_path.read_bytes() != _csv_text(result["rows"]).encode("utf-8"):
+                raise StudyBatchSnapshotConflict(
+                    "Completed study batch CSV export conflicts with its aggregate"
+                )
+
+        expected_audit_event = {
+            "id": str(operation["audit_event_id"]),
+            "event_type": "batch.completed",
+            "subject_type": "study",
+            "subject_id": study_id,
+            "actor": "local-system",
+            "metadata": {
+                "batch_id": batch_id,
+                "skill_pack_version_id": str(
+                    operation["skill_pack_version_id"]
+                ),
+                "run_count": batch.run_count,
+                "failure_count": batch.failure_count,
+            },
+            "created_at": str(operation["created_at"]),
+        }
+        matching_audit_events = [
+            event
+            for event in self.audit_log.list_events(limit=None)
+            if event.get("id") == operation["audit_event_id"]
+        ]
+        if matching_audit_events != [expected_audit_event]:
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch audit event conflicts with its journal"
+            )
+        return batch
 
     def list_batches(self, study_id: str) -> list[StudyBatchRun]:
         self._require_study(study_id)
@@ -816,12 +1015,16 @@ def _write_exact_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _write_exact_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    _write_exact_text(path, _csv_text(rows))
+
+
+def _csv_text(rows: list[dict[str, Any]]) -> str:
     fieldnames = _ordered_fieldnames(rows)
     csv_file = io.StringIO(newline="")
     writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rows)
-    _write_exact_text(path, csv_file.getvalue())
+    return csv_file.getvalue()
 
 
 def _write_exact_text(path: Path, content: str) -> None:

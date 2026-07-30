@@ -9,7 +9,10 @@ from backend.storage.study_batch_operation_store import (
     StudyBatchOperationConflict,
     StudyBatchOperationStore,
 )
-from backend.storage.study_store import StudyWorkspaceStore
+from backend.storage.study_store import (
+    StudyBatchSnapshotConflict,
+    StudyWorkspaceStore,
+)
 
 
 def test_study_workspace_runs_text_batch_with_aggregate_exports(tmp_path: Path) -> None:
@@ -727,12 +730,38 @@ def test_study_batch_completed_retry_is_a_noop_and_changed_request_conflicts(
     assert len(batch_events) == 1
 
 
+def test_study_batch_completed_retry_verifies_persisted_outputs(
+    tmp_path: Path,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260729035303_abcd1234"
+    batch = store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+    aggregate_path = batch.aggregate_dir / "aggregate_results.json"
+    aggregate_payload = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    aggregate_payload["run_count"] = 99
+    aggregate_path.write_text(json.dumps(aggregate_payload), encoding="utf-8")
+
+    with pytest.raises(
+        StudyBatchSnapshotConflict,
+        match="aggregate conflicts",
+    ):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+
+
 def test_study_batch_retry_rejects_conflicting_existing_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from backend.storage.study_store import StudyBatchSnapshotConflict
-
     store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
     batch_id = "batch_20260729040404_1234abcd"
     original_advance = StudyBatchOperationStore.advance

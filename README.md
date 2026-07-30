@@ -38,13 +38,16 @@ deduplication, and every read used by the verification API rehashes the bytes.
 Study backups are portable ZIP archives with a versioned manifest covering every
 study file, workspace-scoped evidence record, referenced source blob, and
 study-scoped audit event. Restore verifies declared paths, sizes, and hashes before
-atomically exposing the staged study directory.
-The analysis-run, evidence-catalog, and segmentation-operation databases use
-ordered, forward-only SQLite migration ledgers. Each migration is transactional,
-older supported database shapes are upgraded in place, and the application refuses
-a database created by a newer unsupported schema instead of guessing.
-`GET /api/storage/schema-status` reports the applied migration names and current
-version for all three databases.
+atomically exposing the staged study directory. Backup capture now holds the
+per-study mutation boundary, refuses a running batch, and validates the restored
+batch journal before importing evidence or audit records.
+The analysis-run, evidence-catalog, segmentation-operation, per-study batch, and
+per-study qualitative databases use ordered, forward-only SQLite migration
+ledgers. Each migration is transactional, older supported database shapes are
+upgraded in place, and the application refuses a database created by a newer
+unsupported schema instead of guessing. `GET /api/storage/schema-status` reports
+the three root database contracts; study-scoped contracts have adjacent
+`schema-status` endpoints.
 Standalone analysis persistence uses a durable operation journal across source
 blob retention, evidence cataloging, result/CSV writes, and final run indexing.
 Failures retain the last completed stage and exception class without storing raw
@@ -63,16 +66,25 @@ exposes identifiers, hashes, stages, attempt counts, timestamps, and exception
 class without transcript content, filenames, specialist packets, or exception
 messages.
 
-These conflict guards cover the current same-root, shared-filesystem, single-host
-design only. The root-global journal and list endpoint are not study-scoped or
-access-controlled.
+Study batch persistence has its own per-study operation journal. A caller can keep
+and resubmit an explicit batch ID to retry the exact ordered inputs and skill-pack
+artifact. Reserved run, import, and project-source identities survive caught
+failures; replay verifies existing blobs, evidence rows, run snapshots, aggregate
+JSON, CSV exports, the batch manifest, and the stable completion audit event rather
+than duplicating them. `GET /api/studies/{study_id}/batch-operations` exposes
+content-safe operation status, and the adjacent `schema-status` endpoint reports
+the journal migration contract.
 
-This journal provides recovery diagnostics, not automatic recovery. There is no
-replay endpoint or startup reconciler, and the journal does not retain the run
-payload. A hard stop leaves a `running` row that currently blocks exact replay.
-The multi-store write sequence does not roll back earlier side effects. Root-level
-segmentation runs, specialist artifacts, and `segmentation.sqlite3` are also not
-included in per-study project archives.
+The segmentation conflict guards cover the current same-root,
+shared-filesystem, single-host design only. Its root-global journal and list
+endpoint are not study-scoped or access-controlled.
+
+The segmentation journal provides recovery diagnostics, not automatic recovery.
+There is no replay endpoint or startup reconciler, and the journal does not retain
+the run payload. A hard stop leaves a `running` row that currently blocks exact
+replay. The multi-store write sequence does not roll back earlier side effects.
+Root-level segmentation runs, specialist artifacts, and `segmentation.sqlite3`
+are also not included in per-study project archives.
 
 Each study can now initialize a versioned `qualitative.sqlite3` contract inside
 its study directory. The contract reserves one transactional boundary for named

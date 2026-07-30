@@ -8,6 +8,11 @@ from docx import Document
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.storage.segmentation_operation_store import SegmentationOperationStore
+from backend.storage.source_blob_store import (
+    SourceBlobIntegrityError,
+    SourceBlobStore,
+)
 from backend.storage.study_store import StudyWorkspaceStore
 
 
@@ -50,6 +55,13 @@ def test_storage_schema_status_reports_applied_migrations(tmp_path, monkeypatch)
         "add-project-source-lineage",
         "index-workspace-history",
     ]
+    assert payload["databases"]["segmentation_operations"]["current_version"] == 1
+    assert [
+        migration["name"]
+        for migration in payload["databases"]["segmentation_operations"][
+            "migrations"
+        ]
+    ] == ["create-segmentation-operations"]
 
 
 def test_storage_schema_status_rejects_newer_database(tmp_path, monkeypatch) -> None:
@@ -62,6 +74,21 @@ def test_storage_schema_status_rejects_newer_database(tmp_path, monkeypatch) -> 
 
     assert response.status_code == 409
     assert "newer than supported version 3" in response.json()["detail"]
+
+
+def test_storage_schema_status_rejects_newer_segmentation_database(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    with sqlite3.connect(tmp_path / "segmentation.sqlite3") as connection:
+        connection.execute("pragma user_version = 99")
+    client = TestClient(app)
+
+    response = client.get("/api/storage/schema-status")
+
+    assert response.status_code == 409
+    assert "segmentation operations schema version 99" in response.json()["detail"]
 
 
 def test_qualitative_schema_status_reports_per_study_contract(
@@ -149,6 +176,174 @@ def test_analysis_operations_endpoint_reports_completed_and_incomplete(
     assert "content" not in operations[0]
     assert incomplete.status_code == 200
     assert incomplete.json() == {"operations": []}
+
+
+def test_segmentation_operations_endpoint_reports_completed_and_incomplete(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    created = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "PRIVATE-FILENAME-NEVER-JOURNAL.txt",
+            "descript_text": "[00:00:00] P: PRIVATE-CONTENT-NEVER-JOURNAL.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    pending_id = SegmentationOperationStore(tmp_path).begin(
+        run_id="pending_run",
+        import_id="pending_import",
+        operation_kind="create",
+        previous_payload_sha256="",
+        payload_sha256="a" * 64,
+    )
+
+    response = client.get("/api/storage/segmentation-operations")
+    incomplete = client.get(
+        "/api/storage/segmentation-operations",
+        params={"incomplete_only": "true"},
+    )
+    limited = client.get(
+        "/api/storage/segmentation-operations",
+        params={"limit": 0},
+    )
+    oversized = client.get(
+        "/api/storage/segmentation-operations",
+        params={"limit": 999},
+    )
+
+    assert created.status_code == 200
+    assert response.status_code == 200
+    operations = response.json()["operations"]
+    completed = next(
+        operation
+        for operation in operations
+        if operation["run_id"] == created.json()["run"]["run_id"]
+    )
+    assert completed["operation_kind"] == "create"
+    assert completed["status"] == "completed"
+    assert completed["stage"] == "completed"
+    assert completed["last_error_type"] == ""
+    assert "descript_text" not in completed
+    assert "source_filename" not in completed
+    assert incomplete.status_code == 200
+    assert [
+        operation["operation_id"]
+        for operation in incomplete.json()["operations"]
+    ] == [pending_id]
+    assert len(limited.json()["operations"]) == 1
+    assert len(oversized.json()["operations"]) == 2
+    assert "PRIVATE-FILENAME-NEVER-JOURNAL" not in response.text
+    assert "PRIVATE-CONTENT-NEVER-JOURNAL" not in response.text
+    with sqlite3.connect(tmp_path / "segmentation.sqlite3") as connection:
+        journal_values = str(
+            connection.execute("select * from segmentation_operations").fetchall()
+        )
+    assert "PRIVATE-FILENAME-NEVER-JOURNAL" not in journal_values
+    assert "PRIVATE-CONTENT-NEVER-JOURNAL" not in journal_values
+
+
+def test_segmentation_mutations_report_active_operation_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    created = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "conflict.txt",
+            "descript_text": "[00:00:00] P: Keep this version.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    run_id = created.json()["run"]["run_id"]
+    operation_store = SegmentationOperationStore(tmp_path)
+    create_operation = operation_store.list_operations()[0]
+    operation_store.begin(
+        run_id=run_id,
+        import_id=created.json()["run"]["import_id"],
+        operation_kind="patch",
+        previous_payload_sha256=create_operation["payload_sha256"],
+        payload_sha256="b" * 64,
+    )
+
+    verified = client.post(f"/api/segmentation/runs/{run_id}/verify")
+    patched = client.post(
+        f"/api/segmentation/runs/{run_id}/specialists/speaker_turn/patches",
+        json={"patches": []},
+    )
+
+    assert created.status_code == 200
+    assert verified.status_code == 409
+    assert patched.status_code == 409
+    assert "already running" in verified.json()["detail"]
+    assert "already running" in patched.json()["detail"]
+
+
+def test_segmentation_create_routes_report_source_integrity_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+
+    def reject_blob(self, content, expected_sha256):
+        raise SourceBlobIntegrityError("Stored source blob failed verification")
+
+    monkeypatch.setattr(SourceBlobStore, "store", reject_blob)
+    client = TestClient(app)
+
+    created = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "conflict.txt",
+            "descript_text": "[00:00:00] P: Preserve integrity.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    uploaded = client.post(
+        "/api/segmentation/runs/files",
+        data={"rule_ids": '["speaker-markers"]'},
+        files={
+            "file": (
+                "conflict.txt",
+                b"[00:00:00] P: Preserve integrity.",
+                "text/plain",
+            )
+        },
+    )
+    corpus = client.post("/api/segmentation/corpus-runs", json={"seed": 0})
+
+    for response in (created, uploaded, corpus):
+        assert response.status_code == 409
+        assert "failed verification" in response.json()["detail"]
+
+
+def test_segmentation_operations_endpoint_rejects_newer_schema(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    with sqlite3.connect(tmp_path / "segmentation.sqlite3") as connection:
+        connection.execute("pragma user_version = 99")
+    client = TestClient(app)
+
+    response = client.get("/api/storage/segmentation-operations")
+    mutation = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "future.txt",
+            "descript_text": "[00:00:00] P: Future schema.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert "newer than supported version 1" in response.json()["detail"]
+    assert mutation.status_code == 409
+    assert "newer than supported version 1" in mutation.json()["detail"]
 
 
 def test_default_skill_pack_endpoint() -> None:

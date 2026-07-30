@@ -129,6 +129,9 @@ prototype. It already has:
 - C-unit segmentation, specialist patch contracts, deterministic merge/evaluation,
   human-review flags, run history, and evidence exports;
 - local JSON/CSV/SQLite artifacts;
+- metadata-only operation journals for standalone analysis and segmentation
+  persistence attempts, including segmentation payload-hash lineage and conflict
+  reporting;
 - a per-study qualitative SQLite contract for researcher identity, versioned
   codebooks, cases, typed attributes, source links, and transactional audit events;
 - basic audit events, approved-library artifacts, and bundle hashes;
@@ -140,6 +143,12 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 The qualitative schema is an accepted Phase 1 foundation only. Its codebook and
 case services are assigned implementation slices; their APIs, researcher-facing
 controls, manual coding integration, and domain validation are not complete.
+
+The segmentation journal is a root-level persistence-attempt ledger, not a resume
+worker. It does not retain run payloads, take over hard-stopped operations, roll
+back earlier cross-store side effects, or include root-level segmentation data in
+per-study archives. The ledger and its list endpoint are not study-scoped or
+access-controlled.
 
 ## Gap Register
 
@@ -185,6 +194,10 @@ controls, manual coding integration, and domain validation are not complete.
 - [x] Content-addressed original-source blob retention and read-time integrity
       verification.
 - [x] SQLite schema migrations, referential integrity, and compatibility policy.
+- [x] Metadata-only operation journals for standalone analysis and segmentation
+      persistence attempts.
+- [ ] Reconciliation or explicit operator takeover for hard-stopped persistence
+      operations.
 - [ ] Atomic artifact writes and transactional workflow boundaries.
 - [ ] Project archive, deletion, retention, withdrawal, and recovery states.
 - [x] Real backup archives and restore verification, not manifest-only bundles.

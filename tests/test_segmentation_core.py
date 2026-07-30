@@ -558,7 +558,8 @@ def test_segmentation_run_store_remerges_submitted_specialist_patches(
 def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     tmp_path: Path,
 ) -> None:
-    from backend.segmentation.pipeline import SegmentationRunStore
+    from backend.segmentation.pipeline import SegmentationRunStore, _payload_sha256
+    from backend.storage.segmentation_operation_store import SegmentationOperationStore
 
     store = SegmentationRunStore(tmp_path)
     run = store.create_run(
@@ -590,7 +591,9 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
         decision.pop("confidence_status")
         decision.pop("passage_id")
         decision.pop("cunit_ids")
+    legacy_payload_sha256 = _payload_sha256(payload)
     run_path.write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "segmentation.sqlite3").unlink()
 
     loaded = store.load_run(run.run_id)
     assert loaded.source == "synthetic"
@@ -617,8 +620,19 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
         for decision in loaded.cunit_adjudication.decisions
     )
 
-    store.persist_run(loaded)
+    store.persist_run(
+        loaded,
+        operation_kind="rewrite",
+        expected_previous_payload_sha256=legacy_payload_sha256,
+    )
     rewritten = json.loads(run_path.read_text(encoding="utf-8"))
+    operations = SegmentationOperationStore(tmp_path).list_operations()
+    assert len(operations) == 1
+    assert operations[0]["operation_kind"] == "rewrite"
+    assert operations[0]["status"] == "completed"
+    assert operations[0]["previous_payload_sha256"] != operations[0][
+        "payload_sha256"
+    ]
     assert "score" not in rewritten["evaluation"]
     assert "confidence" not in rewritten["cunit_adjudication"]["decisions"][0]
     assert rewritten["source_id"] == loaded.source_id

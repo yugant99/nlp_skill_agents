@@ -49,6 +49,7 @@ from backend.segmentation.models import SyntheticSegmentationCase
 from backend.segmentation.pipeline import (
     PatchOperation,
     SegmentationRunStore,
+    SegmentationSnapshotConflict,
     segmentation_corpus_run_to_payload,
     segmentation_run_to_payload,
 )
@@ -63,6 +64,10 @@ from backend.storage.project_archive import (
     MAX_ARCHIVE_FILE_BYTES,
     ProjectArchiveError,
     ProjectArchiveStore,
+)
+from backend.storage.segmentation_operation_store import (
+    SegmentationOperationConflict,
+    SegmentationOperationStore,
 )
 from backend.storage.source_blob_store import SourceBlobIntegrityError, SourceBlobStore
 from backend.storage.sqlite_migrations import SchemaCompatibilityError
@@ -205,6 +210,9 @@ def storage_schema_status() -> dict:
     try:
         analysis_migrations = LocalRunStore(_local_data_root()).migration_status()
         evidence_migrations = EvidenceCatalog(_local_data_root()).migration_status()
+        segmentation_migrations = SegmentationOperationStore(
+            _local_data_root()
+        ).migration_status()
     except SchemaCompatibilityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
@@ -217,6 +225,10 @@ def storage_schema_status() -> dict:
             "evidence_catalog": {
                 "current_version": evidence_migrations[-1]["version"],
                 "migrations": evidence_migrations,
+            },
+            "segmentation_operations": {
+                "current_version": segmentation_migrations[-1]["version"],
+                "migrations": segmentation_migrations,
             },
         },
     }
@@ -233,6 +245,23 @@ def list_analysis_operations(
             limit=limit,
         )
     }
+
+
+@app.get("/api/storage/segmentation-operations")
+def list_segmentation_operations(
+    incomplete_only: bool = False,
+    limit: int = 100,
+) -> dict:
+    try:
+        operations = SegmentationOperationStore(
+            _local_data_root()
+        ).list_operations(
+            incomplete_only=incomplete_only,
+            limit=limit,
+        )
+    except SchemaCompatibilityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"operations": operations}
 
 
 @app.get("/api/skill-packs/default")
@@ -455,6 +484,13 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
             project_source_id=request.project_source_id,
             parent_transcript_revision_id=request.parent_transcript_revision_id,
         )
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"run": segmentation_run_to_payload(run)}
@@ -464,9 +500,19 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
 def create_segmentation_corpus_run(
     request: SegmentationCorpusRunCreateRequest,
 ) -> dict:
-    corpus_run = SegmentationRunStore(_local_data_root()).create_corpus_run(
-        seed=request.seed,
-    )
+    try:
+        corpus_run = SegmentationRunStore(_local_data_root()).create_corpus_run(
+            seed=request.seed,
+        )
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"corpus_run": segmentation_corpus_run_to_payload(corpus_run)}
 
 
@@ -522,6 +568,13 @@ async def create_segmentation_file_run(
             status_code=400,
             detail="Segmentation upload must be UTF-8 text",
         ) from exc
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"run": segmentation_run_to_payload(run)}
@@ -542,6 +595,13 @@ def verify_segmentation_run(run_id: str) -> dict:
         run = SegmentationRunStore(_local_data_root()).verify_run(run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"run": segmentation_run_to_payload(run)}
 
 
@@ -598,6 +658,13 @@ def submit_segmentation_specialist_patches(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"run": segmentation_run_to_payload(run)}

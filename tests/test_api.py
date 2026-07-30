@@ -1023,6 +1023,43 @@ def test_study_batch_api_retries_exact_request_and_reports_conflicts(
     assert "Completed study batch" in tampered.json()["detail"]
 
 
+def test_study_skill_pack_version_api_is_idempotent_and_rejects_mutation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id = client.post(
+        "/api/studies",
+        json={"name": "Immutable Pack API Study"},
+    ).json()["study"]["id"]
+    payload = {
+        "id": "immutable_api_pack",
+        "name": "Immutable API Pack",
+        "version": "1.0.0",
+        "metrics": ["base_metrics"],
+    }
+
+    created = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json=payload,
+    )
+    repeated = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json=dict(payload),
+    )
+    conflicting = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json={**payload, "name": "Mutated API Pack"},
+    )
+
+    assert created.status_code == 200
+    assert repeated.status_code == 200
+    assert repeated.json() == created.json()
+    assert conflicting.status_code == 409
+    assert "already exists with different content" in conflicting.json()["detail"]
+
+
 def test_study_batch_operation_api_is_bounded_and_content_safe(
     tmp_path,
     monkeypatch,

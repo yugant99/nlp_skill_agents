@@ -36,6 +36,10 @@ class StudyBatchSnapshotConflict(RuntimeError):
     pass
 
 
+class StudySkillPackVersionConflict(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class StudyWorkspace:
     id: str
@@ -128,10 +132,16 @@ class StudyWorkspaceStore:
             self.root,
             study_id,
         ).study_mutation_guard():
-            atomic_write_text(
-                self._study_dir(study_id) / "study_schema.json",
-                json.dumps(asdict(schema), indent=2),
-            )
+            schema_path = self._study_dir(study_id) / "study_schema.json"
+            if schema_path.exists():
+                existing_schema = StudySchema(
+                    **json.loads(schema_path.read_text(encoding="utf-8"))
+                )
+                if _study_schema_semantic_payload(
+                    existing_schema
+                ) == _study_schema_semantic_payload(schema):
+                    return existing_schema
+            atomic_write_text(schema_path, json.dumps(asdict(schema), indent=2))
             self.audit_log.record(
                 "study.schema.updated",
                 "study",
@@ -170,6 +180,51 @@ class StudyWorkspaceStore:
             version_dir = self._study_dir(study_id) / "skill_packs"
             version_dir.mkdir(parents=True, exist_ok=True)
             artifact_path = version_dir / f"{version_id}.json"
+            metadata_path = version_dir / f"{version_id}.metadata.json"
+            if artifact_path.exists() or metadata_path.exists():
+                if not artifact_path.is_file() or not metadata_path.is_file():
+                    raise StudySkillPackVersionConflict(
+                        "Study skill-pack version artifacts are incomplete"
+                    )
+                try:
+                    existing_payload = json.loads(
+                        artifact_path.read_text(encoding="utf-8")
+                    )
+                    existing_metadata = json.loads(
+                        metadata_path.read_text(encoding="utf-8")
+                    )
+                    existing_created_at = str(existing_metadata["created_at"])
+                except (
+                    json.JSONDecodeError,
+                    KeyError,
+                    TypeError,
+                    UnicodeDecodeError,
+                ) as exc:
+                    raise StudySkillPackVersionConflict(
+                        "Study skill-pack version artifacts are invalid"
+                    ) from exc
+                if (
+                    _canonical_json_sha256(existing_payload)
+                    != _canonical_json_sha256(payload)
+                ):
+                    raise StudySkillPackVersionConflict(
+                        "Study skill-pack version already exists with different content"
+                    )
+                if (
+                    str(existing_metadata.get("study_id") or "") != study_id
+                    or str(existing_metadata.get("version_id") or "") != version_id
+                    or not existing_created_at.strip()
+                ):
+                    raise StudySkillPackVersionConflict(
+                        "Study skill-pack version metadata conflicts with its identity"
+                    )
+                return StudySkillPackVersion(
+                    study_id=study_id,
+                    version_id=version_id,
+                    payload=existing_payload,
+                    artifact_path=artifact_path,
+                    created_at=existing_created_at,
+                )
             atomic_write_text(artifact_path, json.dumps(payload, indent=2))
             metadata = StudySkillPackVersion(
                 study_id=study_id,
@@ -178,7 +233,7 @@ class StudyWorkspaceStore:
                 artifact_path=artifact_path,
             )
             atomic_write_text(
-                version_dir / f"{version_id}.metadata.json",
+                metadata_path,
                 json.dumps(
                     {
                         "study_id": metadata.study_id,
@@ -1010,6 +1065,18 @@ def _study_schema_from_payload(study_id: str, payload: dict[str, Any]) -> StudyS
         weeks=[f"week_{index + 1}" for index in range(week_count)],
         custom_fields=custom_fields,
     )
+
+
+def _study_schema_semantic_payload(schema: StudySchema) -> dict[str, Any]:
+    return {
+        "study_id": schema.study_id,
+        "participant_count": schema.participant_count,
+        "participants": schema.participants,
+        "conditions": schema.conditions,
+        "week_count": schema.week_count,
+        "weeks": schema.weeks,
+        "custom_fields": schema.custom_fields,
+    }
 
 
 def _bounded_positive_int(value: Any, default: int, maximum: int) -> int:

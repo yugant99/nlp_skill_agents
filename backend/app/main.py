@@ -80,6 +80,7 @@ from backend.storage.study_batch_operation_store import (
 from backend.storage.study_store import (
     MAX_STUDY_PARTICIPANTS,
     StudyBatchSnapshotConflict,
+    StudySkillPackVersionConflict,
     StudyWorkspaceStore,
 )
 
@@ -913,7 +914,11 @@ def create_study_skill_pack_version(study_id: str, payload: dict) -> dict:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
-    except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudySkillPackVersionConflict,
+    ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (SkillPackValidationError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

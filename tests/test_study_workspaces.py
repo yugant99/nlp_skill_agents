@@ -13,6 +13,7 @@ from backend.storage.study_batch_operation_store import (
 )
 from backend.storage.study_store import (
     StudyBatchSnapshotConflict,
+    StudySkillPackVersionConflict,
     StudyWorkspaceStore,
 )
 
@@ -731,6 +732,101 @@ def test_study_batch_completed_retry_is_a_noop_and_changed_request_conflicts(
         original_operation["attempt_count"]
     )
     assert len(batch_events) == 1
+
+
+def test_study_batch_replay_survives_identical_schema_save(
+    tmp_path: Path,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    schema_payload = {
+        "participant_count": 2,
+        "conditions": ["home", "lab"],
+        "week_count": 2,
+        "custom_fields": ["site"],
+    }
+    original_schema = store.save_study_schema(study_id, schema_payload)
+    batch_id = "batch_20260729034343_abcddcba"
+    original_batch = store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+
+    unchanged_schema = store.save_study_schema(study_id, schema_payload)
+    replayed_batch = store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+
+    schema_events = [
+        event
+        for event in store.audit_log.list_events(limit=None)
+        if event["event_type"] == "study.schema.updated"
+    ]
+    assert unchanged_schema == original_schema
+    assert replayed_batch == original_batch
+    assert len(schema_events) == 1
+    store.save_study_schema(
+        study_id,
+        {**schema_payload, "participant_count": 3},
+    )
+    with pytest.raises(StudyBatchOperationConflict, match="identity conflicts"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+
+
+def test_study_skill_pack_versions_are_immutable_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Immutable Pack Study"})
+    payload = {
+        "id": "immutable_pack",
+        "name": "Immutable Pack",
+        "version": "1.0.0",
+        "metrics": ["base_metrics"],
+    }
+    original = store.add_skill_pack_version(study.id, payload)
+    batch_id = "batch_20260729035353_1122aabb"
+    transcripts = [{"source_filename": "session.txt", "content": "CG: Hello."}]
+    original_batch = store.run_text_batch(
+        study.id,
+        original.version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+
+    identical = store.add_skill_pack_version(study.id, dict(payload))
+    with pytest.raises(
+        StudySkillPackVersionConflict,
+        match="already exists with different content",
+    ):
+        store.add_skill_pack_version(
+            study.id,
+            {**payload, "name": "Mutated Pack"},
+        )
+    replayed_batch = store.run_text_batch(
+        study.id,
+        original.version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+
+    version_events = [
+        event
+        for event in store.audit_log.list_events(limit=None)
+        if event["event_type"] == "skill_pack.versioned"
+    ]
+    assert identical == original
+    assert replayed_batch == original_batch
+    assert len(version_events) == 1
 
 
 def test_study_batch_completed_retry_verifies_persisted_outputs(

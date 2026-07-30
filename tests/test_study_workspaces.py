@@ -1,5 +1,7 @@
 import csv
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -840,6 +842,78 @@ def test_study_batch_journal_does_not_store_source_or_error_content(
     assert "secret transcript sentence" not in database_text
     assert "secret metadata value" not in database_text
     assert "secret_error_detail_metric" not in database_text
+
+
+def test_study_batch_hard_interruption_remains_visible_and_blocked(
+    tmp_path: Path,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260729101010_bbbbcccc"
+    script = """
+import os
+import sys
+from backend.storage.source_blob_store import SourceBlobStore
+from backend.storage.study_store import StudyWorkspaceStore
+
+original_store = SourceBlobStore.store
+
+def stop_after_blob(self, content, expected_sha256):
+    original_store(self, content, expected_sha256)
+    os._exit(29)
+
+SourceBlobStore.store = stop_after_blob
+StudyWorkspaceStore(sys.argv[1]).run_text_batch(
+    sys.argv[2],
+    sys.argv[3],
+    [{
+        "source_filename": "session.txt",
+        "content": "P1_c: Hello.\\nP1_p: Hi.",
+        "metadata": {"participant_id": "P1"},
+    }],
+    batch_id=sys.argv[4],
+)
+"""
+
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path),
+            study_id,
+            version_id,
+            batch_id,
+        ],
+        cwd=Path(__file__).parents[1],
+        check=False,
+    )
+
+    journal = StudyBatchOperationStore(tmp_path, study_id)
+    operation = journal.get_operation(batch_id)
+    item = journal.list_items(batch_id)[0]
+    assert process.returncode == 29
+    assert operation["status"] == "running"
+    assert operation["stage"] == "prepared"
+    assert item["stage"] == "analysis_completed"
+    assert (
+        tmp_path
+        / "source_blobs"
+        / "sha256"
+        / item["source_blob_sha256"][:2]
+        / f"{item['source_blob_sha256']}.blob"
+    ).is_file()
+    assert not list(
+        (
+            tmp_path / "studies" / study_id / "batches" / batch_id / "runs"
+        ).glob("*.json")
+    )
+    with pytest.raises(StudyBatchOperationConflict, match="already running"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
 
 
 def _journal_batch_fixture(

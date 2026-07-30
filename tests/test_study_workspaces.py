@@ -558,6 +558,7 @@ def test_study_batch_journal_completes_with_reserved_item_identity(
     assert operation["stage"] == "completed"
     assert operation["attempt_count"] == 1
     assert operation["item_count"] == 1
+    assert len(operation["aggregate_payload_sha256"]) == 64
     assert operation["completed_at"]
     assert item["stage"] == "completed"
     assert item["run_id"] == run["run_id"]
@@ -760,6 +761,58 @@ def test_study_batch_completed_retry_verifies_persisted_outputs(
         )
 
 
+@pytest.mark.parametrize("tampered_field", ["failures", "study_schema"])
+def test_study_batch_completed_retry_rejects_self_referential_aggregate_tampering(
+    tmp_path: Path,
+    tampered_field: str,
+) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Aggregate Integrity Study"})
+    store.save_study_schema(
+        study.id,
+        {"participant_count": 2, "conditions": ["home"], "week_count": 1},
+    )
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "aggregate_integrity_pack",
+            "name": "Aggregate Integrity Pack",
+            "version": "1.0.0",
+            "metrics": ["missing_metric_for_integrity_test"],
+        },
+        validate=False,
+    )
+    transcripts = [{"source_filename": "rejected.txt", "content": "CG: Hello."}]
+    batch_id = "batch_20260729035803_aaaacccc"
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+    aggregate_path = batch.aggregate_dir / "aggregate_results.json"
+    aggregate_payload = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    if tampered_field == "failures":
+        aggregate_payload["failures"][0] = {
+            "source_filename": "forged.txt",
+            "error": "forged analytical failure",
+        }
+    else:
+        aggregate_payload["study_schema"]["conditions"] = ["forged-condition"]
+    aggregate_path.write_text(json.dumps(aggregate_payload), encoding="utf-8")
+
+    with pytest.raises(
+        StudyBatchSnapshotConflict,
+        match="aggregate conflicts with its journal",
+    ):
+        store.run_text_batch(
+            study.id,
+            version.version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+
+
 @pytest.mark.parametrize("corrupt_audit", ["{not-json\n", "42\n"])
 def test_study_batch_completed_retry_rejects_malformed_audit_log(
     tmp_path: Path,
@@ -790,14 +843,21 @@ def test_study_batch_retry_rejects_conflicting_existing_snapshot(
 ) -> None:
     store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
     batch_id = "batch_20260729040404_1234abcd"
-    original_advance = StudyBatchOperationStore.advance
+    original_record_aggregate = StudyBatchOperationStore.record_aggregate_written
 
-    def fail_after_aggregate(self, current_batch_id, stage):
-        if stage == "aggregate_json_written":
-            raise OSError("injected post-aggregate failure")
-        return original_advance(self, current_batch_id, stage)
+    def fail_after_aggregate(
+        self,
+        current_batch_id,
+        *,
+        aggregate_payload_sha256,
+    ):
+        raise OSError("injected post-aggregate failure")
 
-    monkeypatch.setattr(StudyBatchOperationStore, "advance", fail_after_aggregate)
+    monkeypatch.setattr(
+        StudyBatchOperationStore,
+        "record_aggregate_written",
+        fail_after_aggregate,
+    )
     with pytest.raises(OSError, match="injected post-aggregate failure"):
         store.run_text_batch(
             study_id,
@@ -805,7 +865,11 @@ def test_study_batch_retry_rejects_conflicting_existing_snapshot(
             transcripts,
             batch_id=batch_id,
         )
-    monkeypatch.setattr(StudyBatchOperationStore, "advance", original_advance)
+    monkeypatch.setattr(
+        StudyBatchOperationStore,
+        "record_aggregate_written",
+        original_record_aggregate,
+    )
     aggregate_path = (
         tmp_path
         / "studies"

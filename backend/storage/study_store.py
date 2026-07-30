@@ -448,7 +448,12 @@ class StudyWorkspaceStore:
                 aggregate_dir / "aggregate_results.json",
                 aggregate_payload,
             )
-            journal.advance(resolved_batch_id, "aggregate_json_written")
+            journal.record_aggregate_written(
+                resolved_batch_id,
+                aggregate_payload_sha256=_canonical_json_sha256(
+                    aggregate_payload
+                ),
+            )
             for result in aggregate_payload["results"]:
                 _write_exact_csv(
                     aggregate_dir / f"{result['metric_id']}.csv",
@@ -557,6 +562,12 @@ class StudyWorkspaceStore:
         ):
             raise StudyBatchSnapshotConflict(
                 "Completed study batch manifest conflicts with its journal"
+            )
+        if _canonical_json_sha256(aggregate_payload) != str(
+            operation["aggregate_payload_sha256"]
+        ):
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch aggregate conflicts with its journal"
             )
 
         successes: list[dict[str, Any]] = []

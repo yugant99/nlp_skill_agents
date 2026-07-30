@@ -73,13 +73,12 @@ def _advance_item(store: StudyBatchOperationStore) -> None:
 
 
 def _advance_operation(store: StudyBatchOperationStore) -> None:
-    for stage in (
-        "items_processed",
-        "aggregate_json_written",
-        "csv_exports_written",
-        "batch_manifest_written",
-        "audit_recorded",
-    ):
+    store.advance(BATCH_ID, "items_processed")
+    store.record_aggregate_written(
+        BATCH_ID,
+        aggregate_payload_sha256="e" * 64,
+    )
+    for stage in ("csv_exports_written", "batch_manifest_written", "audit_recorded"):
         store.advance(BATCH_ID, stage)
 
 
@@ -99,12 +98,12 @@ def test_study_batch_operations_version_and_track_exact_retries(tmp_path) -> Non
     assert operation["request_sha256"] == "a" * 64
     assert operation["skill_pack_sha256"] == "f" * 64
     assert len(operation["audit_event_id"]) == 64
-    assert [item["version"] for item in store.migration_status()] == [1]
+    assert [item["version"] for item in store.migration_status()] == [1, 2]
     assert store.db_path == (
         tmp_path / "studies" / "study-one" / "batch_operations.sqlite3"
     )
     with sqlite3.connect(store.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 1
+        assert connection.execute("pragma user_version").fetchone()[0] == 2
 
 
 def test_study_batch_archive_guard_serializes_new_operations(tmp_path) -> None:
@@ -337,12 +336,11 @@ def test_study_batch_operations_record_rejected_items_without_content(
     assert "content" not in first
     assert "metadata" not in first
     store.advance(BATCH_ID, "items_processed")
-    for stage in (
-        "aggregate_json_written",
-        "csv_exports_written",
-        "batch_manifest_written",
-        "audit_recorded",
-    ):
+    store.record_aggregate_written(
+        BATCH_ID,
+        aggregate_payload_sha256="e" * 64,
+    )
+    for stage in ("csv_exports_written", "batch_manifest_written", "audit_recorded"):
         store.advance(BATCH_ID, stage)
     store.complete(BATCH_ID)
 
@@ -514,9 +512,12 @@ def test_study_batch_operations_bound_results_and_refuse_newer_schema(
             item_count=0,
             created_at=CREATED_AT,
         )
+        store.advance(batch_id, "items_processed")
+        store.record_aggregate_written(
+            batch_id,
+            aggregate_payload_sha256="e" * 64,
+        )
         for stage in (
-            "items_processed",
-            "aggregate_json_written",
             "csv_exports_written",
             "batch_manifest_written",
             "audit_recorded",

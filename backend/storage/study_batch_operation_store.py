@@ -411,6 +411,10 @@ class StudyBatchOperationStore:
     def advance(self, batch_id: str, stage: str) -> None:
         if stage not in STUDY_BATCH_OPERATION_STAGES[1:]:
             raise ValueError(f"Unsupported study batch operation stage: {stage}")
+        if stage == "aggregate_json_written":
+            raise ValueError(
+                "Use record_aggregate_written to bind the aggregate payload"
+            )
         self._ensure_schema()
         with self._connect() as connection:
             connection.execute("begin immediate")
@@ -446,6 +450,55 @@ class StudyBatchOperationStore:
                 (stage, _utc_now(), batch_id, current_stage),
             )
 
+    def record_aggregate_written(
+        self,
+        batch_id: str,
+        *,
+        aggregate_payload_sha256: str,
+    ) -> None:
+        _validate_sha256(
+            aggregate_payload_sha256,
+            "aggregate_payload_sha256",
+        )
+        self._ensure_schema()
+        with self._connect() as connection:
+            connection.execute("begin immediate")
+            status, current_stage, _ = self._operation_state(connection, batch_id)
+            if status != "running":
+                raise RuntimeError("Study batch operation is not running")
+            stored_sha256 = str(
+                connection.execute(
+                    """
+                    select aggregate_payload_sha256
+                    from study_batch_operations where batch_id = ?
+                    """,
+                    (batch_id,),
+                ).fetchone()[0]
+            )
+            if stored_sha256 and stored_sha256 != aggregate_payload_sha256:
+                raise StudyBatchOperationConflict(
+                    "Study batch aggregate payload conflicts with journal"
+                )
+            if current_stage != "items_processed":
+                raise ValueError(
+                    "Study batch operation cannot record aggregate from "
+                    f"{current_stage}"
+                )
+            connection.execute(
+                """
+                update study_batch_operations
+                set aggregate_payload_sha256 = ?,
+                    stage = 'aggregate_json_written', updated_at = ?
+                where batch_id = ? and status = 'running'
+                  and stage = 'items_processed'
+                """,
+                (
+                    aggregate_payload_sha256,
+                    _utc_now(),
+                    batch_id,
+                ),
+            )
+
     def fail(self, batch_id: str, *, error_type: str) -> None:
         if not _ERROR_TYPE.fullmatch(error_type):
             raise ValueError("error_type must be an exception class name")
@@ -477,6 +530,19 @@ class StudyBatchOperationStore:
                 raise ValueError(
                     "Study batch operation cannot complete before audit_recorded"
                 )
+            aggregate_payload_sha256 = str(
+                connection.execute(
+                    """
+                    select aggregate_payload_sha256
+                    from study_batch_operations where batch_id = ?
+                    """,
+                    (batch_id,),
+                ).fetchone()[0]
+            )
+            if not _SHA256.fullmatch(aggregate_payload_sha256):
+                raise ValueError(
+                    "Study batch operation cannot complete without aggregate hash"
+                )
             connection.execute(
                 """
                 update study_batch_operations
@@ -496,7 +562,7 @@ class StudyBatchOperationStore:
                 """
                 select batch_id, study_id, skill_pack_version_id,
                        skill_pack_sha256, request_sha256, item_count,
-                       audit_event_id, status, stage,
+                       aggregate_payload_sha256, audit_event_id, status, stage,
                        attempt_count, last_error_type,
                        created_at, updated_at, completed_at
                 from study_batch_operations where batch_id = ?
@@ -521,7 +587,7 @@ class StudyBatchOperationStore:
                 """
                 select batch_id, study_id, skill_pack_version_id,
                        skill_pack_sha256, request_sha256, item_count,
-                       audit_event_id, status, stage,
+                       aggregate_payload_sha256, audit_event_id, status, stage,
                        attempt_count, last_error_type,
                        created_at, updated_at, completed_at
                 from study_batch_operations
@@ -764,11 +830,29 @@ def _create_study_batch_operations(connection: sqlite3.Connection) -> None:
     )
 
 
+def _add_study_batch_aggregate_hash(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        alter table study_batch_operations
+        add column aggregate_payload_sha256 text not null default ''
+          check (
+            aggregate_payload_sha256 = ''
+            or length(aggregate_payload_sha256) = 64
+          )
+        """
+    )
+
+
 STUDY_BATCH_OPERATION_MIGRATIONS = (
     Migration(
         1,
         "create-study-batch-operations",
         _create_study_batch_operations,
+    ),
+    Migration(
+        2,
+        "add-study-batch-aggregate-hash",
+        _add_study_batch_aggregate_hash,
     ),
 )
 

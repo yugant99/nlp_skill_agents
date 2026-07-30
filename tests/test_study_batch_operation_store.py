@@ -1,23 +1,131 @@
+import json
 import sqlite3
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FutureTimeoutError,
 )
+from hashlib import sha256
 from pathlib import Path
 from threading import Barrier, Event
 
 import pytest
 
-from backend.storage.sqlite_migrations import SchemaCompatibilityError
+from backend.storage.sqlite_migrations import (
+    SchemaCompatibilityError,
+    apply_migrations,
+)
 from backend.storage.study_batch_operation_store import (
+    STUDY_BATCH_OPERATION_MIGRATIONS,
     StudyBatchOperationConflict,
     StudyBatchOperationStore,
+    validate_study_batch_operation_database,
 )
 from backend.storage.study_store import StudyWorkspaceStore
 
 
 BATCH_ID = "batch_20260729000000_a1b2c3d4"
 CREATED_AT = "2026-07-29T00:00:00+00:00"
+
+
+def _canonical_json_sha256(payload: object) -> str:
+    return sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _v1_aggregate_payload(*, batch_id: str = BATCH_ID) -> dict:
+    return {
+        "study_id": "study-one",
+        "batch_id": batch_id,
+        "skill_pack_version_id": "pack-1_0_0",
+        "study_schema": None,
+        "created_at": CREATED_AT,
+        "run_count": 0,
+        "failure_count": 0,
+        "failures": [],
+        "results": [],
+    }
+
+
+def _create_populated_v1_journal(
+    tmp_path: Path,
+    *,
+    status: str = "completed",
+    aggregate_payload: dict | None = None,
+    malformed_aggregate: bool = False,
+) -> Path:
+    db_path = tmp_path / "batch_operations.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        apply_migrations(
+            connection,
+            database_name="study batch operations v1 fixture",
+            migrations=STUDY_BATCH_OPERATION_MIGRATIONS[:1],
+        )
+        connection.execute(
+            """
+            insert into study_batch_operations (
+              batch_id, study_id, skill_pack_version_id, skill_pack_sha256,
+              request_sha256, item_count, audit_event_id, status, stage,
+              attempt_count, last_error_type, created_at, updated_at,
+              completed_at
+            ) values (?, 'study-one', 'pack-1_0_0', ?, ?, 0, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                BATCH_ID,
+                "f" * 64,
+                "a" * 64,
+                sha256(
+                    f"batch.completed\0study-one\0{BATCH_ID}".encode("utf-8")
+                ).hexdigest(),
+                status,
+                "completed" if status == "completed" else "prepared",
+                "" if status == "completed" else "InterruptedError",
+                CREATED_AT,
+                CREATED_AT,
+                CREATED_AT if status == "completed" else "",
+            ),
+        )
+    if malformed_aggregate or aggregate_payload is not None:
+        aggregate_path = (
+            tmp_path / "batches" / BATCH_ID / "aggregate_results.json"
+        )
+        aggregate_path.parent.mkdir(parents=True)
+        aggregate_path.write_text(
+            "not-json"
+            if malformed_aggregate
+            else json.dumps(aggregate_payload),
+            encoding="utf-8",
+        )
+    return db_path
+
+
+def _promote_to_original_v2(db_path: Path) -> None:
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("begin immediate")
+        connection.execute(
+            """
+            alter table study_batch_operations
+            add column aggregate_payload_sha256 text not null default ''
+              check (
+                aggregate_payload_sha256 = ''
+                or length(aggregate_payload_sha256) = 64
+              )
+            """
+        )
+        connection.execute(
+            """
+            insert into schema_migrations (version, name, applied_at)
+            values (2, 'add-study-batch-aggregate-hash', ?)
+            """,
+            (CREATED_AT,),
+        )
+        connection.execute("pragma user_version = 2")
+        connection.commit()
 
 
 def _store(tmp_path: Path) -> StudyBatchOperationStore:
@@ -98,12 +206,12 @@ def test_study_batch_operations_version_and_track_exact_retries(tmp_path) -> Non
     assert operation["request_sha256"] == "a" * 64
     assert operation["skill_pack_sha256"] == "f" * 64
     assert len(operation["audit_event_id"]) == 64
-    assert [item["version"] for item in store.migration_status()] == [1, 2]
+    assert [item["version"] for item in store.migration_status()] == [1, 2, 3]
     assert store.db_path == (
         tmp_path / "studies" / "study-one" / "batch_operations.sqlite3"
     )
     with sqlite3.connect(store.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 2
+        assert connection.execute("pragma user_version").fetchone()[0] == 3
 
 
 def test_study_batch_archive_guard_serializes_new_operations(tmp_path) -> None:
@@ -533,3 +641,209 @@ def test_study_batch_operations_bound_results_and_refuse_newer_schema(
         connection.execute("pragma user_version = 99")
     with pytest.raises(SchemaCompatibilityError, match="newer"):
         future_store.list_operations()
+
+
+def test_study_batch_archive_validation_upgrades_canonical_v1_schema(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "canonical-v1.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        apply_migrations(
+            connection,
+            database_name="study batch operations v1 fixture",
+            migrations=STUDY_BATCH_OPERATION_MIGRATIONS[:1],
+        )
+
+    validate_study_batch_operation_database(db_path, "study-one")
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 3
+
+
+def test_study_batch_v1_schema_signature_is_frozen() -> None:
+    with sqlite3.connect(":memory:") as connection:
+        apply_migrations(
+            connection,
+            database_name="study batch operations v1 fixture",
+            migrations=STUDY_BATCH_OPERATION_MIGRATIONS[:1],
+        )
+        signature = [
+            (
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                " ".join(str(row[3] or "").split()),
+            )
+            for row in connection.execute(
+                """
+                select type, name, tbl_name, sql from sqlite_master
+                where name not like 'sqlite_%'
+                order by type, name
+                """
+            )
+        ]
+
+    assert _canonical_json_sha256(signature) == (
+        "49957732d9853fa0b0b34921b8dca6f4992c25c7bf9072766f506e06a16d77e5"
+    )
+
+
+def test_study_batch_archive_validation_backfills_completed_v1_journal(
+    tmp_path,
+) -> None:
+    aggregate_payload = _v1_aggregate_payload()
+    db_path = _create_populated_v1_journal(
+        tmp_path,
+        aggregate_payload=aggregate_payload,
+    )
+
+    validate_study_batch_operation_database(db_path, "study-one")
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 3
+        assert connection.execute(
+            """
+            select aggregate_payload_sha256 from study_batch_operations
+            where batch_id = ?
+            """,
+            (BATCH_ID,),
+        ).fetchone()[0] == _canonical_json_sha256(aggregate_payload)
+
+
+@pytest.mark.parametrize(
+    ("aggregate_payload", "malformed_aggregate"),
+    [
+        (None, False),
+        (None, True),
+        (_v1_aggregate_payload(batch_id="batch_20260729000001_a1b2c3d4"), False),
+        (
+            {
+                **_v1_aggregate_payload(),
+                "skill_pack_version_id": "other-9_9_9",
+            },
+            False,
+        ),
+        (
+            {
+                **_v1_aggregate_payload(),
+                "created_at": "2040-01-01T00:00:00+00:00",
+            },
+            False,
+        ),
+        ({**_v1_aggregate_payload(), "run_count": 1}, False),
+        ({**_v1_aggregate_payload(), "failure_count": 1}, False),
+    ],
+)
+def test_study_batch_archive_validation_keeps_invalid_completed_v1_atomic(
+    tmp_path,
+    aggregate_payload,
+    malformed_aggregate,
+) -> None:
+    db_path = _create_populated_v1_journal(
+        tmp_path,
+        aggregate_payload=aggregate_payload,
+        malformed_aggregate=malformed_aggregate,
+    )
+
+    with pytest.raises(SchemaCompatibilityError, match="migration 2"):
+        validate_study_batch_operation_database(db_path, "study-one")
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 1
+        assert "aggregate_payload_sha256" not in {
+            str(row[1])
+            for row in connection.execute(
+                "pragma table_info(study_batch_operations)"
+            )
+        }
+
+
+def test_study_batch_archive_validation_upgrades_failed_v1_without_aggregate(
+    tmp_path,
+) -> None:
+    db_path = _create_populated_v1_journal(tmp_path, status="failed")
+
+    validate_study_batch_operation_database(db_path, "study-one")
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 3
+        assert connection.execute(
+            """
+            select aggregate_payload_sha256 from study_batch_operations
+            where batch_id = ?
+            """,
+            (BATCH_ID,),
+        ).fetchone()[0] == ""
+
+
+def test_study_batch_archive_validation_repairs_completed_original_v2(
+    tmp_path,
+) -> None:
+    aggregate_payload = _v1_aggregate_payload()
+    db_path = _create_populated_v1_journal(
+        tmp_path,
+        aggregate_payload=aggregate_payload,
+    )
+    _promote_to_original_v2(db_path)
+
+    validate_study_batch_operation_database(db_path, "study-one")
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 3
+        assert connection.execute(
+            """
+            select aggregate_payload_sha256 from study_batch_operations
+            where batch_id = ?
+            """,
+            (BATCH_ID,),
+        ).fetchone()[0] == _canonical_json_sha256(aggregate_payload)
+
+
+def test_study_batch_archive_validation_keeps_original_v2_repair_atomic(
+    tmp_path,
+) -> None:
+    db_path = _create_populated_v1_journal(
+        tmp_path,
+        aggregate_payload=_v1_aggregate_payload(),
+    )
+    _promote_to_original_v2(db_path)
+    (
+        tmp_path / "batches" / BATCH_ID / "aggregate_results.json"
+    ).unlink()
+
+    with pytest.raises(SchemaCompatibilityError, match="migration 3"):
+        validate_study_batch_operation_database(db_path, "study-one")
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 2
+        assert connection.execute(
+            """
+            select aggregate_payload_sha256 from study_batch_operations
+            where batch_id = ?
+            """,
+            (BATCH_ID,),
+        ).fetchone()[0] == ""
+
+
+def test_study_batch_archive_validation_rejects_forged_v1_schema(
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "forged-v1.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        apply_migrations(
+            connection,
+            database_name="study batch operations v1 fixture",
+            migrations=STUDY_BATCH_OPERATION_MIGRATIONS[:1],
+        )
+        connection.execute(
+            """
+            create trigger forged_history_delete
+            after insert on study_batch_operations
+            begin
+              delete from study_batch_operations where batch_id != new.batch_id;
+            end
+            """
+        )
+
+    with pytest.raises(ValueError, match="schema definition is invalid"):
+        validate_study_batch_operation_database(db_path, "study-one")

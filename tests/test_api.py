@@ -1146,10 +1146,11 @@ def test_study_batch_operation_api_is_bounded_and_content_safe(
     assert schema.status_code == 200
     assert schema.json()["compatible"] is True
     assert schema.json()["study_id"] == study.id
-    assert schema.json()["current_version"] == 2
+    assert schema.json()["current_version"] == 3
     assert [item["name"] for item in schema.json()["migrations"]] == [
         "create-study-batch-operations",
         "add-study-batch-aggregate-hash",
+        "repair-study-batch-aggregate-hashes",
     ]
 
     missing = client.get(
@@ -1173,7 +1174,7 @@ def test_study_batch_operation_api_is_bounded_and_content_safe(
     assert "normalized study identifier" in invalid_list.json()["detail"]
     assert "normalized study identifier" in invalid_schema.json()["detail"]
     assert newer.status_code == 409
-    assert "newer than supported version 2" in newer.json()["detail"]
+    assert "newer than supported version 3" in newer.json()["detail"]
     assert newer_backup.status_code == 409
 
 

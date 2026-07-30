@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -11,6 +12,7 @@ from typing import Any
 
 from backend.storage.sqlite_migrations import (
     Migration,
+    SchemaCompatibilityError,
     apply_migrations,
     schema_status,
 )
@@ -45,6 +47,11 @@ _BATCH_ID = re.compile(STUDY_BATCH_ID_PATTERN)
 _SKILL_PACK_VERSION_ID = re.compile(r"^[a-z0-9_]+-[a-z0-9_]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
+_PATH_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_WINDOWS_DEVICE_NAME = re.compile(
+    r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])$",
+    re.IGNORECASE,
+)
 
 
 class StudyBatchOperationConflict(RuntimeError):
@@ -841,6 +848,65 @@ def _add_study_batch_aggregate_hash(connection: sqlite3.Connection) -> None:
           )
         """
     )
+    _backfill_legacy_aggregate_hashes(connection)
+
+
+def _backfill_legacy_aggregate_hashes(connection: sqlite3.Connection) -> None:
+    completed_operations = [
+        operation
+        for operation in _completed_operation_summaries(connection)
+        if not operation[6]
+    ]
+    if not completed_operations:
+        return
+    database_path = next(
+        (
+            str(row[2])
+            for row in connection.execute("pragma database_list")
+            if str(row[1]) == "main"
+        ),
+        "",
+    )
+    if not database_path:
+        raise ValueError(
+            "Completed version-1 study batch journal has no database path"
+        )
+    study_dir = Path(database_path).parent
+    for (
+        batch_id,
+        study_id,
+        skill_pack_version_id,
+        created_at,
+        run_count,
+        failure_count,
+        _,
+    ) in completed_operations:
+        validate_study_batch_id(batch_id)
+        if not _STUDY_ID.fullmatch(study_id):
+            raise ValueError("Completed study batch has an invalid study id")
+        aggregate_payload = _load_aggregate_payload(
+            study_dir,
+            batch_id,
+            study_id=study_id,
+            skill_pack_version_id=skill_pack_version_id,
+            created_at=created_at,
+            run_count=run_count,
+            failure_count=failure_count,
+        )
+        connection.execute(
+            """
+            update study_batch_operations
+            set aggregate_payload_sha256 = ?
+            where batch_id = ? and status = 'completed'
+            """,
+            (_canonical_json_sha256(aggregate_payload), batch_id),
+        )
+
+
+def _repair_study_batch_aggregate_hashes(
+    connection: sqlite3.Connection,
+) -> None:
+    _backfill_legacy_aggregate_hashes(connection)
 
 
 STUDY_BATCH_OPERATION_MIGRATIONS = (
@@ -854,6 +920,11 @@ STUDY_BATCH_OPERATION_MIGRATIONS = (
         "add-study-batch-aggregate-hash",
         _add_study_batch_aggregate_hash,
     ),
+    Migration(
+        3,
+        "repair-study-batch-aggregate-hashes",
+        _repair_study_batch_aggregate_hashes,
+    ),
 )
 
 
@@ -865,29 +936,362 @@ def validate_study_batch_operation_database(
         raise ValueError("study_id must be a normalized study identifier")
     with sqlite3.connect(Path(db_path), timeout=30) as connection:
         connection.execute("pragma foreign_keys = on")
+        connection.execute("pragma trusted_schema = off")
+        current_version = int(
+            connection.execute("pragma user_version").fetchone()[0]
+        )
+        if current_version > len(STUDY_BATCH_OPERATION_MIGRATIONS):
+            raise SchemaCompatibilityError(
+                "study batch operations schema version "
+                f"{current_version} is newer than supported version "
+                f"{len(STUDY_BATCH_OPERATION_MIGRATIONS)}"
+            )
+        _validate_schema_definition(connection, current_version)
+        _validate_database_integrity(connection)
+        if current_version:
+            _validate_study_ownership(connection, study_id)
+            _validate_persisted_operations(
+                connection,
+                study_id,
+                schema_version=current_version,
+            )
         apply_migrations(
             connection,
             database_name="study batch operations",
             migrations=STUDY_BATCH_OPERATION_MIGRATIONS,
         )
-        integrity_rows = connection.execute("pragma integrity_check").fetchall()
-        if integrity_rows != [("ok",)]:
-            raise ValueError("Study batch operation journal failed integrity check")
-        if connection.execute("pragma foreign_key_check").fetchone() is not None:
-            raise ValueError(
-                "Study batch operation journal failed foreign-key validation"
+        _validate_schema_definition(
+            connection,
+            len(STUDY_BATCH_OPERATION_MIGRATIONS),
+        )
+        _validate_database_integrity(connection)
+        _validate_study_ownership(connection, study_id)
+        _validate_persisted_operations(
+            connection,
+            study_id,
+            schema_version=len(STUDY_BATCH_OPERATION_MIGRATIONS),
+        )
+        _validate_completed_aggregate_files(connection, Path(db_path).parent)
+
+
+def _validate_database_integrity(connection: sqlite3.Connection) -> None:
+    integrity_rows = connection.execute("pragma integrity_check").fetchall()
+    if integrity_rows != [("ok",)]:
+        raise ValueError("Study batch operation journal failed integrity check")
+    if connection.execute("pragma foreign_key_check").fetchone() is not None:
+        raise ValueError(
+            "Study batch operation journal failed foreign-key validation"
+        )
+
+
+def _validate_study_ownership(
+    connection: sqlite3.Connection,
+    study_id: str,
+) -> None:
+    mismatched_study = connection.execute(
+        """
+        select 1 from study_batch_operations
+        where study_id != ? limit 1
+        """,
+        (study_id,),
+    ).fetchone()
+    if mismatched_study is not None:
+        raise ValueError(
+            "Study batch operation journal belongs to another study"
+        )
+
+
+def _validate_schema_definition(
+    connection: sqlite3.Connection,
+    version: int,
+) -> None:
+    if version == 0:
+        expected_signature: tuple[tuple[str, str, str, str], ...] = ()
+    else:
+        with sqlite3.connect(":memory:") as expected:
+            expected.execute("pragma trusted_schema = off")
+            apply_migrations(
+                expected,
+                database_name="expected study batch operations",
+                migrations=STUDY_BATCH_OPERATION_MIGRATIONS[:version],
             )
-        mismatched_study = connection.execute(
+            expected_signature = _schema_signature(expected)
+    if _schema_signature(connection) != expected_signature:
+        raise ValueError(
+            "Study batch operation journal schema definition is invalid"
+        )
+
+
+def _schema_signature(
+    connection: sqlite3.Connection,
+) -> tuple[tuple[str, str, str, str], ...]:
+    return tuple(
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            " ".join(str(row[3] or "").split()),
+        )
+        for row in connection.execute(
             """
-            select 1 from study_batch_operations
-            where study_id != ? limit 1
-            """,
-            (study_id,),
-        ).fetchone()
-        if mismatched_study is not None:
+            select type, name, tbl_name, sql from sqlite_master
+            where name not like 'sqlite_%'
+            order by type, name
+            """
+        )
+    )
+
+
+def _validate_persisted_operations(
+    connection: sqlite3.Connection,
+    study_id: str,
+    *,
+    schema_version: int,
+) -> None:
+    cursor = connection.cursor()
+    cursor.row_factory = sqlite3.Row
+    aggregate_hash_projection = (
+        "aggregate_payload_sha256" if schema_version >= 2 else "''"
+    )
+    operations = cursor.execute(
+        f"""
+        select batch_id, study_id, skill_pack_version_id,
+               skill_pack_sha256, request_sha256, item_count,
+               typeof(item_count) as item_count_type,
+               {aggregate_hash_projection} as aggregate_payload_sha256,
+               audit_event_id, status, stage,
+               attempt_count, typeof(attempt_count) as attempt_count_type,
+               last_error_type,
+               created_at, updated_at, completed_at
+        from study_batch_operations order by batch_id
+        """
+    ).fetchall()
+    for operation in operations:
+        batch_id = str(operation["batch_id"])
+        if str(operation["item_count_type"]) != "integer":
+            raise ValueError("Study batch item count must be an integer")
+        if (
+            str(operation["attempt_count_type"]) != "integer"
+            or int(operation["attempt_count"]) <= 0
+        ):
+            raise ValueError("Study batch attempt count must be a positive integer")
+        _validate_operation_identity(
+            batch_id=batch_id,
+            skill_pack_version_id=str(operation["skill_pack_version_id"]),
+            skill_pack_sha256=str(operation["skill_pack_sha256"]),
+            request_sha256=str(operation["request_sha256"]),
+            item_count=int(operation["item_count"]),
+            created_at=str(operation["created_at"]),
+        )
+        if str(operation["study_id"]) != study_id:
             raise ValueError(
                 "Study batch operation journal belongs to another study"
             )
+        if str(operation["audit_event_id"]) != _audit_event_id(
+            study_id,
+            batch_id,
+        ):
+            raise ValueError("Study batch audit identity is invalid")
+        _validate_timestamp(str(operation["updated_at"]), "updated_at")
+        completed_at = str(operation["completed_at"])
+        if completed_at:
+            _validate_timestamp(completed_at, "completed_at")
+        last_error_type = str(operation["last_error_type"])
+        if last_error_type and not _ERROR_TYPE.fullmatch(last_error_type):
+            raise ValueError("Study batch operation error type is invalid")
+        aggregate_payload_sha256 = str(
+            operation["aggregate_payload_sha256"]
+        )
+        if aggregate_payload_sha256:
+            _validate_sha256(
+                aggregate_payload_sha256,
+                "aggregate_payload_sha256",
+            )
+        if str(operation["status"]) == "running":
+            raise ValueError("Archived study batch operation is still running")
+        if str(operation["status"]) == "completed":
+            if schema_version >= 3 and not aggregate_payload_sha256:
+                raise ValueError(
+                    "Completed study batch operation has no aggregate hash"
+                )
+            item_counts = connection.execute(
+                """
+                select count(*),
+                       sum(case when stage in ('completed', 'rejected')
+                                then 1 else 0 end)
+                from study_batch_operation_items where batch_id = ?
+                """,
+                (batch_id,),
+            ).fetchone()
+            if (int(item_counts[0]), int(item_counts[1] or 0)) != (
+                int(operation["item_count"]),
+                int(operation["item_count"]),
+            ):
+                raise ValueError(
+                    "Completed study batch operation has invalid item state"
+                )
+
+    items = cursor.execute(
+        """
+        select batch_id, item_index, item_request_sha256,
+               typeof(item_index) as item_index_type,
+               run_id, import_id, project_source_id,
+               source_blob_sha256, transcript_sha256,
+               transcript_revision_id, run_payload_sha256,
+               stage, last_error_type, created_at, updated_at
+        from study_batch_operation_items order by batch_id, item_index
+        """
+    ).fetchall()
+    casefolded_run_ids: set[tuple[str, str]] = set()
+    for item in items:
+        batch_id = str(item["batch_id"])
+        validate_study_batch_id(batch_id)
+        if str(item["item_index_type"]) != "integer":
+            raise ValueError("Study batch item index must be an integer")
+        run_id = str(item["run_id"])
+        run_identity = (batch_id, run_id.casefold())
+        if run_identity in casefolded_run_ids:
+            raise ValueError(
+                "Study batch run ids collide on a case-insensitive filesystem"
+            )
+        casefolded_run_ids.add(run_identity)
+        _validate_item_identity(
+            item_index=int(item["item_index"]),
+            item_request_sha256=str(item["item_request_sha256"]),
+            run_id=run_id,
+            import_id=str(item["import_id"]),
+            project_source_id=str(item["project_source_id"]),
+            source_blob_sha256=str(item["source_blob_sha256"]),
+            transcript_sha256=str(item["transcript_sha256"]),
+            transcript_revision_id=str(item["transcript_revision_id"]),
+            created_at=str(item["created_at"]),
+        )
+        run_payload_sha256 = str(item["run_payload_sha256"])
+        if run_payload_sha256:
+            _validate_sha256(run_payload_sha256, "run_payload_sha256")
+        last_error_type = str(item["last_error_type"])
+        if last_error_type and not _ERROR_TYPE.fullmatch(last_error_type):
+            raise ValueError("Study batch item error type is invalid")
+        _validate_timestamp(str(item["updated_at"]), "updated_at")
+
+
+def _validate_completed_aggregate_files(
+    connection: sqlite3.Connection,
+    study_dir: Path,
+) -> None:
+    for (
+        batch_id,
+        study_id,
+        skill_pack_version_id,
+        created_at,
+        run_count,
+        failure_count,
+        expected_sha256,
+    ) in _completed_operation_summaries(connection):
+        validate_study_batch_id(batch_id)
+        aggregate_payload = _load_aggregate_payload(
+            study_dir,
+            batch_id,
+            study_id=study_id,
+            skill_pack_version_id=skill_pack_version_id,
+            created_at=created_at,
+            run_count=run_count,
+            failure_count=failure_count,
+        )
+        if _canonical_json_sha256(aggregate_payload) != str(expected_sha256):
+            raise ValueError(
+                "Completed study batch aggregate conflicts with its journal"
+            )
+
+
+def _completed_operation_summaries(
+    connection: sqlite3.Connection,
+) -> list[tuple[str, str, str, str, int, int, str]]:
+    return [
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            str(row[3]),
+            int(row[4]),
+            int(row[5]),
+            str(row[6]),
+        )
+        for row in connection.execute(
+            """
+            select operation.batch_id, operation.study_id,
+                   operation.skill_pack_version_id, operation.created_at,
+                   sum(case when item.stage = 'completed' then 1 else 0 end),
+                   sum(case when item.stage = 'rejected' then 1 else 0 end),
+                   operation.aggregate_payload_sha256
+            from study_batch_operations as operation
+            left join study_batch_operation_items as item
+              on item.batch_id = operation.batch_id
+            where operation.status = 'completed'
+            group by operation.batch_id, operation.study_id,
+                     operation.skill_pack_version_id, operation.created_at,
+                     operation.aggregate_payload_sha256
+            order by operation.batch_id
+            """
+        )
+    ]
+
+
+def _load_aggregate_payload(
+    study_dir: Path,
+    batch_id: str,
+    *,
+    study_id: str,
+    skill_pack_version_id: str,
+    created_at: str,
+    run_count: int,
+    failure_count: int,
+) -> dict[str, Any]:
+    aggregate_path = (
+        study_dir / "batches" / batch_id / "aggregate_results.json"
+    )
+    if aggregate_path.is_symlink() or not aggregate_path.is_file():
+        raise ValueError(
+            "Completed study batch aggregate snapshot is missing"
+        )
+    try:
+        payload = json.loads(aggregate_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            "Completed study batch aggregate snapshot is invalid"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError(
+            "Completed study batch aggregate snapshot is invalid"
+        )
+    failures = payload.get("failures")
+    if (
+        payload.get("study_id") != study_id
+        or payload.get("batch_id") != batch_id
+        or payload.get("skill_pack_version_id") != skill_pack_version_id
+        or payload.get("created_at") != created_at
+        or type(payload.get("run_count")) is not int
+        or payload.get("run_count") != run_count
+        or type(payload.get("failure_count")) is not int
+        or payload.get("failure_count") != failure_count
+        or not isinstance(failures, list)
+        or len(failures) != failure_count
+        or not isinstance(payload.get("results"), list)
+    ):
+        raise ValueError(
+            "Completed study batch aggregate identity is invalid"
+        )
+    return payload
+
+
+def _canonical_json_sha256(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
 
 
 def _validate_operation_identity(
@@ -906,8 +1310,7 @@ def _validate_operation_identity(
     _validate_sha256(request_sha256, "request_sha256")
     if item_count < 0:
         raise ValueError("item_count must be non-negative")
-    if not created_at.strip():
-        raise ValueError("created_at must be non-empty")
+    _validate_timestamp(created_at, "created_at")
 
 
 def _validate_item_identity(
@@ -925,14 +1328,17 @@ def _validate_item_identity(
     if item_index < 0:
         raise ValueError("item_index must be non-negative")
     for field_name, value in (
-        ("run_id", run_id),
         ("import_id", import_id),
         ("project_source_id", project_source_id),
         ("transcript_revision_id", transcript_revision_id),
-        ("created_at", created_at),
     ):
         if not value.strip():
             raise ValueError(f"{field_name} must be non-empty")
+    if not _PATH_SAFE_IDENTIFIER.fullmatch(run_id):
+        raise ValueError("run_id must be a path-safe identifier")
+    if _WINDOWS_DEVICE_NAME.fullmatch(run_id):
+        raise ValueError("run_id must be portable across supported filesystems")
+    _validate_timestamp(created_at, "created_at")
     _validate_sha256(item_request_sha256, "item_request_sha256")
     _validate_sha256(source_blob_sha256, "source_blob_sha256")
     _validate_sha256(transcript_sha256, "transcript_sha256")
@@ -946,6 +1352,19 @@ def validate_study_batch_id(batch_id: str) -> None:
 def _validate_sha256(value: str, field_name: str) -> None:
     if not _SHA256.fullmatch(value):
         raise ValueError(f"{field_name} must be a lowercase SHA-256")
+
+
+def _validate_timestamp(value: str, field_name: str) -> None:
+    if not value.strip() or len(value) > 64:
+        raise ValueError(f"{field_name} must be a bounded ISO-8601 timestamp")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field_name} must be a bounded ISO-8601 timestamp"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field_name} must include a timezone")
 
 
 def _utc_now() -> str:

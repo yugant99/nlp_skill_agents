@@ -39,6 +39,34 @@ def _build_study(root: Path) -> tuple[str, str]:
     return study.id, run["source_blob_sha256"]
 
 
+def _rewrite_archive_journal(
+    archive_path: Path,
+    output_path: Path,
+    journal_path: Path,
+) -> None:
+    with ZipFile(archive_path) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    members["study/batch_operations.sqlite3"] = journal_path.read_bytes()
+    manifest = json.loads(members["manifest.json"].decode("utf-8"))
+    journal_record = next(
+        record
+        for record in manifest["members"]
+        if record["path"] == "study/batch_operations.sqlite3"
+    )
+    journal_record["size_bytes"] = len(members["study/batch_operations.sqlite3"])
+    journal_record["sha256"] = sha256(
+        members["study/batch_operations.sqlite3"]
+    ).hexdigest()
+    members["manifest.json"] = json.dumps(
+        manifest,
+        indent=2,
+        sort_keys=True,
+    ).encode("utf-8")
+    with ZipFile(output_path, "w", compression=ZIP_DEFLATED) as archive:
+        for name, content in members.items():
+            archive.writestr(name, content)
+
+
 def test_project_archive_round_trips_study_evidence_and_source_blobs(tmp_path) -> None:
     source_root = tmp_path / "source"
     restore_root = tmp_path / "restore"
@@ -176,6 +204,128 @@ def test_project_archive_rejects_newer_batch_journal_before_restore_writes(
 
     assert not (restore_root / "studies" / study_id).exists()
     assert AuditLogStore(restore_root).list_events(limit=None) == []
+
+
+@pytest.mark.parametrize(
+    "tamper_sql",
+    [
+        """
+        create trigger forged_history_delete
+        after insert on study_batch_operations
+        begin
+          delete from study_batch_operations where batch_id != new.batch_id;
+        end
+        """,
+        "drop trigger study_batch_operation_items_index_guard",
+    ],
+)
+def test_project_archive_rejects_forged_batch_journal_schema(
+    tmp_path,
+    tamper_sql,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _ = _build_study(source_root)
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    forged_archive_path = tmp_path / "forged-schema.nlpstudy.zip"
+    forged_db_path = tmp_path / "forged-schema.sqlite3"
+    with ZipFile(exported.archive_path) as archive:
+        forged_db_path.write_bytes(
+            archive.read("study/batch_operations.sqlite3")
+        )
+    with sqlite3.connect(forged_db_path) as connection:
+        connection.executescript(tamper_sql)
+    _rewrite_archive_journal(
+        exported.archive_path,
+        forged_archive_path,
+        forged_db_path,
+    )
+
+    with pytest.raises(ProjectArchiveError, match="journal is invalid"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive_path)
+
+    assert not (restore_root / "studies" / study_id).exists()
+    assert AuditLogStore(restore_root).list_events(limit=None) == []
+    assert not (restore_root / "source_blobs").exists()
+
+
+@pytest.mark.parametrize(
+    "tamper_sql",
+    [
+        "update study_batch_operation_items set run_id = '../escape'",
+        "update study_batch_operations set updated_at = 'PRIVATE-CONTENT'",
+        """
+        update study_batch_operations
+        set status = 'failed', stage = 'prepared', completed_at = '',
+            last_error_type = 'PRIVATE-CONTENT'
+        """,
+        """
+        update study_batch_operations
+        set status = 'running', stage = 'prepared', completed_at = '',
+            last_error_type = ''
+        """,
+        "update study_batch_operation_items set run_id = 'CON'",
+        """
+        update study_batch_operations set item_count = 2;
+        update study_batch_operation_items set run_id = 'Run';
+        insert into study_batch_operation_items (
+          batch_id, item_index, item_request_sha256,
+          run_id, import_id, project_source_id,
+          source_blob_sha256, transcript_sha256,
+          transcript_revision_id, run_payload_sha256,
+          stage, last_error_type, created_at, updated_at
+        )
+        select batch_id, 1, item_request_sha256,
+               'run', 'casefold-import', project_source_id,
+               source_blob_sha256, transcript_sha256,
+               transcript_revision_id, run_payload_sha256,
+               stage, last_error_type, created_at, updated_at
+        from study_batch_operation_items where item_index = 0
+        """,
+        """
+        update study_batch_operations
+        set item_count = 1.5, attempt_count = 1.5
+        """,
+        "update study_batch_operation_items set item_index = 0.5",
+        """
+        update study_batch_operations
+        set aggregate_payload_sha256 =
+          '0000000000000000000000000000000000000000000000000000000000000000'
+        """,
+        """
+        update study_batch_operations
+        set skill_pack_version_id = 'other-9_9_9'
+        """,
+    ],
+)
+def test_project_archive_rejects_invalid_batch_journal_rows(
+    tmp_path,
+    tamper_sql,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _ = _build_study(source_root)
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    forged_archive_path = tmp_path / "forged-rows.nlpstudy.zip"
+    forged_db_path = tmp_path / "forged-rows.sqlite3"
+    with ZipFile(exported.archive_path) as archive:
+        forged_db_path.write_bytes(
+            archive.read("study/batch_operations.sqlite3")
+        )
+    with sqlite3.connect(forged_db_path) as connection:
+        connection.executescript(tamper_sql)
+    _rewrite_archive_journal(
+        exported.archive_path,
+        forged_archive_path,
+        forged_db_path,
+    )
+
+    with pytest.raises(ProjectArchiveError, match="journal is invalid"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive_path)
+
+    assert not (restore_root / "studies" / study_id).exists()
+    assert AuditLogStore(restore_root).list_events(limit=None) == []
+    assert not (restore_root / "source_blobs").exists()
 
 
 def test_project_archive_rejects_hash_mismatch_and_unsafe_paths(tmp_path) -> None:

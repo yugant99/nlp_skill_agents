@@ -63,6 +63,10 @@ exposes identifiers, hashes, stages, attempt counts, timestamps, and exception
 class without transcript content, filenames, specialist packets, or exception
 messages.
 
+These conflict guards cover the current same-root, shared-filesystem, single-host
+design only. The root-global journal and list endpoint are not study-scoped or
+access-controlled.
+
 This journal provides recovery diagnostics, not automatic recovery. There is no
 replay endpoint or startup reconciler, and the journal does not retain the run
 payload. A hard stop leaves a `running` row that currently blocks exact replay.

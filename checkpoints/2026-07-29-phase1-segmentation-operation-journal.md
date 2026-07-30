@@ -46,7 +46,8 @@ source-blob, evidence-catalog, specialist-packet, and run-snapshot writes.
   bounded result limits.
 - Added the segmentation journal to `GET /api/storage/schema-status`.
 - Maps journal conflicts, stale snapshots, source-integrity conflicts, and
-  unsupported newer schemas to HTTP 409 on segmentation mutation endpoints.
+  unsupported newer schemas to HTTP 409 on journaled segmentation persistence
+  endpoints.
 
 ## Failure Proof
 
@@ -73,17 +74,17 @@ source-blob, evidence-catalog, specialist-packet, and run-snapshot writes.
 
 ## CLI Verification
 
-- Segmentation journal, segmentation core, and API tests passed: 88/88.
-- Complete backend suite passed: 194/194.
+- Segmentation journal, segmentation core, and API tests passed: 89/89.
+- Complete backend suite passed: 195/195.
 - Frontend production build passed.
 - All frontend helper suites passed: 30/30.
 - `git diff --check` passed.
 
 ## UI Verification
 
-No researcher-facing control changed. The journal is currently an operator HTTP
-contract. Existing UI behavior is protected by the production build and frontend
-helper regression suites.
+No researcher-facing control changed or was exercised. The journal is currently
+a diagnostic HTTP contract. The frontend production build and all helper
+regression suites passed.
 
 ## Git Commits
 
@@ -93,6 +94,7 @@ helper regression suites.
 - `4127b74 Close segmentation recovery race conditions`
 - `eba17c0 Require guarded segmentation rewrites`
 - `c51722c Replay applied segmentation targets`
+- `d564ef2 Report segmentation integrity conflicts`
 
 ## Known Limitations And Rollback
 

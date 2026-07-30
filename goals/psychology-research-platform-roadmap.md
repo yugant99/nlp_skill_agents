@@ -147,7 +147,8 @@ controls, manual coding integration, and domain validation are not complete.
 The segmentation journal is a root-level persistence-attempt ledger, not a resume
 worker. It does not retain run payloads, take over hard-stopped operations, roll
 back earlier cross-store side effects, or include root-level segmentation data in
-per-study archives.
+per-study archives. The ledger and its list endpoint are not study-scoped or
+access-controlled.
 
 ## Gap Register
 

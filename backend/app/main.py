@@ -62,6 +62,7 @@ from backend.storage.evidence_catalog import EvidenceCatalog
 from backend.storage.library_store import LibraryStore
 from backend.storage.project_archive import (
     MAX_ARCHIVE_FILE_BYTES,
+    ProjectArchiveConflict,
     ProjectArchiveError,
     ProjectArchiveStore,
 )
@@ -765,7 +766,11 @@ def qualitative_schema_status(study_id: str) -> dict:
         ).migration_status()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
-    except (SchemaCompatibilityError, ValueError) as exc:
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        ValueError,
+    ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "compatible": True,
@@ -794,6 +799,8 @@ def update_study_schema(study_id: str, request: StudySchemaRequest) -> dict:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"schema": _study_schema_payload(schema)}
 
 
@@ -898,6 +905,8 @@ def create_study_skill_pack_version(study_id: str, payload: dict) -> dict:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (SkillPackValidationError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"version": _study_skill_pack_version_payload(version)}
@@ -983,6 +992,8 @@ def backup_study(study_id: str) -> dict:
         backup = ProjectArchiveStore(_local_data_root()).create_archive(study_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
+    except ProjectArchiveConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectArchiveError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -1010,6 +1021,8 @@ async def restore_study(file: Annotated[UploadFile, File()]) -> dict:
         )
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail="Study already exists") from exc
+    except ProjectArchiveConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectArchiveError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:

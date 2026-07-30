@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -15,6 +16,12 @@ from backend.storage.atomic import atomic_binary_writer, atomic_write_bytes
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.source_blob_store import SourceBlobStore
+from backend.storage.sqlite_migrations import SchemaCompatibilityError
+from backend.storage.study_batch_operation_store import (
+    StudyBatchOperationConflict,
+    StudyBatchOperationStore,
+    validate_study_batch_operation_database,
+)
 
 
 ARCHIVE_FORMAT_VERSION = 1
@@ -46,6 +53,10 @@ class ProjectArchiveError(ValueError):
     pass
 
 
+class ProjectArchiveConflict(ProjectArchiveError):
+    pass
+
+
 class ProjectArchiveStore:
     def __init__(self, root: Path | str = "local_data") -> None:
         self.root = Path(root)
@@ -60,6 +71,20 @@ class ProjectArchiveStore:
         study_dir = self.studies_dir / study_id
         if not (study_dir / "study.json").is_file():
             raise FileNotFoundError(study_id)
+        try:
+            with StudyBatchOperationStore(
+                self.root,
+                study_id,
+            ).archive_snapshot_guard():
+                return self._create_archive_snapshot(study_id, study_dir)
+        except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
+            raise ProjectArchiveConflict(str(exc)) from exc
+
+    def _create_archive_snapshot(
+        self,
+        study_id: str,
+        study_dir: Path,
+    ) -> ProjectArchiveExport:
         created_at = datetime.now(UTC).isoformat()
         members: dict[str, bytes] = {}
         for path in sorted(study_dir.rglob("*")):
@@ -169,6 +194,17 @@ class ProjectArchiveStore:
             study_payload = json.loads((stage_dir / "study.json").read_text("utf-8"))
             if str(study_payload.get("id") or "") != study_id:
                 raise ProjectArchiveError("Study identity does not match archive manifest")
+            try:
+                validate_study_batch_operation_database(
+                    stage_dir / "batch_operations.sqlite3",
+                    study_id,
+                )
+            except SchemaCompatibilityError as exc:
+                raise ProjectArchiveConflict(str(exc)) from exc
+            except (sqlite3.DatabaseError, ValueError) as exc:
+                raise ProjectArchiveError(
+                    "Archive batch operation journal is invalid"
+                ) from exc
             for blob_name in sorted(actual_blob_names):
                 digest = PurePosixPath(blob_name).stem
                 self.blobs.store(members[blob_name], digest)

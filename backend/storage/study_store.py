@@ -121,21 +121,25 @@ class StudyWorkspaceStore:
     def save_study_schema(self, study_id: str, payload: dict[str, Any]) -> StudySchema:
         self._require_study(study_id)
         schema = _study_schema_from_payload(study_id, payload)
-        atomic_write_text(
-            self._study_dir(study_id) / "study_schema.json",
-            json.dumps(asdict(schema), indent=2),
-        )
-        self.audit_log.record(
-            "study.schema.updated",
-            "study",
+        with StudyBatchOperationStore(
+            self.root,
             study_id,
-            {
-                "participant_count": schema.participant_count,
-                "conditions": schema.conditions,
-                "week_count": schema.week_count,
-                "custom_fields": schema.custom_fields,
-            },
-        )
+        ).study_mutation_guard():
+            atomic_write_text(
+                self._study_dir(study_id) / "study_schema.json",
+                json.dumps(asdict(schema), indent=2),
+            )
+            self.audit_log.record(
+                "study.schema.updated",
+                "study",
+                study_id,
+                {
+                    "participant_count": schema.participant_count,
+                    "conditions": schema.conditions,
+                    "week_count": schema.week_count,
+                    "custom_fields": schema.custom_fields,
+                },
+            )
         return schema
 
     def load_study_schema(self, study_id: str) -> StudySchema:
@@ -156,38 +160,42 @@ class StudyWorkspaceStore:
         if validate:
             parse_skill_pack(payload)
         version_id = _skill_pack_version_id(payload)
-        version_dir = self._study_dir(study_id) / "skill_packs"
-        version_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = version_dir / f"{version_id}.json"
-        atomic_write_text(artifact_path, json.dumps(payload, indent=2))
-        metadata = StudySkillPackVersion(
-            study_id=study_id,
-            version_id=version_id,
-            payload=payload,
-            artifact_path=artifact_path,
-        )
-        atomic_write_text(
-            version_dir / f"{version_id}.metadata.json",
-            json.dumps(
-                {
-                    "study_id": metadata.study_id,
-                    "version_id": metadata.version_id,
-                    "artifact_path": str(metadata.artifact_path),
-                    "created_at": metadata.created_at,
-                },
-                indent=2,
-            ),
-        )
-        self.audit_log.record(
-            "skill_pack.versioned",
-            "study",
+        with StudyBatchOperationStore(
+            self.root,
             study_id,
-            {
-                "version_id": version_id,
-                "skill_pack_id": str(payload["id"]),
-                "skill_pack_version": str(payload["version"]),
-            },
-        )
+        ).study_mutation_guard():
+            version_dir = self._study_dir(study_id) / "skill_packs"
+            version_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = version_dir / f"{version_id}.json"
+            atomic_write_text(artifact_path, json.dumps(payload, indent=2))
+            metadata = StudySkillPackVersion(
+                study_id=study_id,
+                version_id=version_id,
+                payload=payload,
+                artifact_path=artifact_path,
+            )
+            atomic_write_text(
+                version_dir / f"{version_id}.metadata.json",
+                json.dumps(
+                    {
+                        "study_id": metadata.study_id,
+                        "version_id": metadata.version_id,
+                        "artifact_path": str(metadata.artifact_path),
+                        "created_at": metadata.created_at,
+                    },
+                    indent=2,
+                ),
+            )
+            self.audit_log.record(
+                "skill_pack.versioned",
+                "study",
+                study_id,
+                {
+                    "version_id": version_id,
+                    "skill_pack_id": str(payload["id"]),
+                    "skill_pack_version": str(payload["version"]),
+                },
+            )
         return metadata
 
     def run_text_batch(

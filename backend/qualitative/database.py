@@ -14,6 +14,7 @@ from backend.storage.sqlite_migrations import (
     apply_migrations,
     schema_status,
 )
+from backend.storage.study_batch_operation_store import StudyBatchOperationStore
 
 
 _PROJECT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -122,22 +123,30 @@ class QualitativeProjectDatabase:
     def transaction(self) -> Iterator[sqlite3.Connection]:
         """Yield one immediate transaction with foreign-key enforcement enabled."""
 
-        self._ensure_schema()
-        with sqlite3.connect(self.db_path, timeout=30) as connection:
-            connection.execute("pragma foreign_keys = on")
-            connection.execute("begin immediate")
-            try:
-                yield connection
-            except BaseException:
-                connection.rollback()
-                raise
-            else:
-                connection.commit()
+        with StudyBatchOperationStore(
+            self.root,
+            self.project_id,
+        ).study_mutation_guard():
+            self._ensure_schema()
+            with sqlite3.connect(self.db_path, timeout=30) as connection:
+                connection.execute("pragma foreign_keys = on")
+                connection.execute("begin immediate")
+                try:
+                    yield connection
+                except BaseException:
+                    connection.rollback()
+                    raise
+                else:
+                    connection.commit()
 
     def migration_status(self) -> list[dict[str, object]]:
-        self._ensure_schema()
-        with sqlite3.connect(self.db_path) as connection:
-            return schema_status(connection)
+        with StudyBatchOperationStore(
+            self.root,
+            self.project_id,
+        ).study_mutation_guard():
+            self._ensure_schema()
+            with sqlite3.connect(self.db_path) as connection:
+                return schema_status(connection)
 
     def _ensure_schema(self) -> None:
         self._require_study()

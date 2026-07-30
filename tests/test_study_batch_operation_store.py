@@ -1,7 +1,10 @@
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import (
+    ThreadPoolExecutor,
+    TimeoutError as FutureTimeoutError,
+)
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 
 import pytest
 
@@ -102,6 +105,84 @@ def test_study_batch_operations_version_and_track_exact_retries(tmp_path) -> Non
     )
     with sqlite3.connect(store.db_path) as connection:
         assert connection.execute("pragma user_version").fetchone()[0] == 1
+
+
+def test_study_batch_archive_guard_serializes_new_operations(tmp_path) -> None:
+    store = _store(tmp_path)
+    guard_entered = Event()
+    release_guard = Event()
+
+    def hold_archive_guard() -> None:
+        with store.archive_snapshot_guard():
+            guard_entered.set()
+            assert release_guard.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        guard_future = executor.submit(hold_archive_guard)
+        assert guard_entered.wait(timeout=5)
+        begin_future = executor.submit(_begin, store)
+        with pytest.raises(FutureTimeoutError):
+            begin_future.result(timeout=0.1)
+        release_guard.set()
+        guard_future.result(timeout=5)
+        assert begin_future.result(timeout=5) == BATCH_ID
+
+    assert store.get_operation(BATCH_ID)["status"] == "running"
+
+
+def test_study_batch_archive_guard_serializes_study_metadata_writes(
+    tmp_path,
+) -> None:
+    store = _store(tmp_path)
+    workspace_store = StudyWorkspaceStore(tmp_path)
+    guard_entered = Event()
+    release_guard = Event()
+
+    def hold_archive_guard() -> None:
+        with store.archive_snapshot_guard():
+            guard_entered.set()
+            assert release_guard.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        guard_future = executor.submit(hold_archive_guard)
+        assert guard_entered.wait(timeout=5)
+        schema_future = executor.submit(
+            workspace_store.save_study_schema,
+            "study-one",
+            {"participant_count": 2, "week_count": 1},
+        )
+        with pytest.raises(FutureTimeoutError):
+            schema_future.result(timeout=0.1)
+        release_guard.set()
+        guard_future.result(timeout=5)
+        schema = schema_future.result(timeout=5)
+
+    assert schema.participant_count == 2
+    assert (tmp_path / "studies" / "study-one" / "study_schema.json").is_file()
+
+
+def test_study_batch_begin_reports_long_archive_lock_as_conflict(tmp_path) -> None:
+    store = _store(tmp_path)
+    guard_entered = Event()
+    release_guard = Event()
+
+    def hold_archive_guard() -> None:
+        with store.archive_snapshot_guard():
+            guard_entered.set()
+            assert release_guard.wait(timeout=5)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        guard_future = executor.submit(hold_archive_guard)
+        assert guard_entered.wait(timeout=5)
+        try:
+            with pytest.raises(StudyBatchOperationConflict, match="journal is busy"):
+                _begin(store)
+        finally:
+            release_guard.set()
+        guard_future.result(timeout=5)
+
+    with pytest.raises(FileNotFoundError):
+        store.get_operation(BATCH_ID)
 
 
 def test_study_batch_operations_reject_conflicts_and_bad_identity(tmp_path) -> None:

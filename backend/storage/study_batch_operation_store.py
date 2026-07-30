@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -81,8 +83,7 @@ class StudyBatchOperationStore:
         )
         self._ensure_schema()
         now = _utc_now()
-        with self._connect() as connection:
-            connection.execute("begin immediate")
+        with self._immediate_connection(timeout=1) as connection:
             stored = connection.execute(
                 """
                 select study_id, skill_pack_version_id, skill_pack_sha256,
@@ -554,6 +555,29 @@ class StudyBatchOperationStore:
         with self._connect() as connection:
             return schema_status(connection)
 
+    @contextmanager
+    def archive_snapshot_guard(self) -> Iterator[None]:
+        self._ensure_schema()
+        with self._immediate_connection() as connection:
+            running = connection.execute(
+                """
+                select batch_id from study_batch_operations
+                where status = 'running'
+                order by batch_id limit 1
+                """
+            ).fetchone()
+            if running is not None:
+                raise StudyBatchOperationConflict(
+                    "Study has a running batch operation"
+                )
+            yield
+
+    @contextmanager
+    def study_mutation_guard(self) -> Iterator[None]:
+        self._ensure_schema()
+        with self._immediate_connection(timeout=1):
+            yield
+
     def _ensure_schema(self) -> None:
         if not (self.study_dir / "study.json").is_file():
             raise FileNotFoundError(self.study_id)
@@ -564,10 +588,27 @@ class StudyBatchOperationStore:
                 migrations=STUDY_BATCH_OPERATION_MIGRATIONS,
             )
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=30)
+    def _connect(self, *, timeout: float = 30) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path, timeout=timeout)
         connection.execute("pragma foreign_keys = on")
         return connection
+
+    @contextmanager
+    def _immediate_connection(
+        self,
+        *,
+        timeout: float = 30,
+    ) -> Iterator[sqlite3.Connection]:
+        try:
+            with self._connect(timeout=timeout) as connection:
+                connection.execute("begin immediate")
+                yield connection
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower():
+                raise
+            raise StudyBatchOperationConflict(
+                "Study batch journal is busy with another operation"
+            ) from exc
 
     @staticmethod
     def _operation_state(
@@ -729,6 +770,39 @@ STUDY_BATCH_OPERATION_MIGRATIONS = (
         _create_study_batch_operations,
     ),
 )
+
+
+def validate_study_batch_operation_database(
+    db_path: Path | str,
+    study_id: str,
+) -> None:
+    if not _STUDY_ID.fullmatch(study_id):
+        raise ValueError("study_id must be a normalized study identifier")
+    with sqlite3.connect(Path(db_path), timeout=30) as connection:
+        connection.execute("pragma foreign_keys = on")
+        apply_migrations(
+            connection,
+            database_name="study batch operations",
+            migrations=STUDY_BATCH_OPERATION_MIGRATIONS,
+        )
+        integrity_rows = connection.execute("pragma integrity_check").fetchall()
+        if integrity_rows != [("ok",)]:
+            raise ValueError("Study batch operation journal failed integrity check")
+        if connection.execute("pragma foreign_key_check").fetchone() is not None:
+            raise ValueError(
+                "Study batch operation journal failed foreign-key validation"
+            )
+        mismatched_study = connection.execute(
+            """
+            select 1 from study_batch_operations
+            where study_id != ? limit 1
+            """,
+            (study_id,),
+        ).fetchone()
+        if mismatched_study is not None:
+            raise ValueError(
+                "Study batch operation journal belongs to another study"
+            )
 
 
 def _validate_operation_identity(

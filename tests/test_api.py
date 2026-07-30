@@ -1101,9 +1101,11 @@ def test_study_batch_operation_api_is_bounded_and_content_safe(
     newer = client.get(
         f"/api/studies/{study.id}/batch-operations/schema-status"
     )
+    newer_backup = client.post(f"/api/studies/{study.id}/backup")
     assert missing.status_code == 404
     assert newer.status_code == 409
     assert "newer than supported version 1" in newer.json()["detail"]
+    assert newer_backup.status_code == 409
 
 
 def test_study_file_batch_api_accepts_explicit_retry_identity(
@@ -1291,6 +1293,30 @@ def test_study_backup_and_restore_api_round_trips_project(tmp_path, monkeypatch)
         files={"file": ("backup.nlpstudy.zip", archive_bytes, "application/zip")},
     )
     assert conflict_response.status_code == 409
+
+
+def test_study_backup_api_reports_running_batch_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Backup Conflict Study"})
+    StudyBatchOperationStore(tmp_path, study.id).begin(
+        batch_id="batch_20260729090909_9999aaaa",
+        skill_pack_version_id="backup_pack-1_0_0",
+        skill_pack_sha256="a" * 64,
+        request_sha256="b" * 64,
+        item_count=0,
+        created_at="2026-07-29T09:09:09+00:00",
+    )
+    client = TestClient(app)
+
+    response = client.post(f"/api/studies/{study.id}/backup")
+
+    assert response.status_code == 409
+    assert "running batch" in response.json()["detail"]
+    assert not list((tmp_path / "backups").glob("*.nlpstudy.zip"))
 
 
 def test_study_schema_api_persists_casebook_design(tmp_path, monkeypatch) -> None:

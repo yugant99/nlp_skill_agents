@@ -182,6 +182,8 @@ def test_study_batch_item_identity_and_transitions_are_replay_safe(tmp_path) -> 
         )
     with pytest.raises(ValueError, match="cannot advance"):
         store.advance_item(BATCH_ID, 0, "evidence_cataloged")
+    with pytest.raises(ValueError, match="Unsupported"):
+        store.advance_item(BATCH_ID, 0, "analysis_completed")
 
     _advance_item(store)
     store.advance_item(BATCH_ID, 0, "source_blob_stored")
@@ -398,6 +400,22 @@ def test_study_batch_database_rejects_invalid_states_and_item_indexes(
                     CREATED_AT,
                     CREATED_AT,
                 ),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                update study_batch_operation_items set item_index = 1
+                where batch_id = ? and item_index = 0
+                """,
+                (BATCH_ID,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                update study_batch_operations set item_count = 0
+                where batch_id = ?
+                """,
+                (BATCH_ID,),
             )
 
 

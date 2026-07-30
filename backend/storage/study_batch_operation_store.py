@@ -370,7 +370,7 @@ class StudyBatchOperationStore:
         item_index: int,
         stage: str,
     ) -> None:
-        if stage not in STUDY_BATCH_ITEM_STAGES[1:]:
+        if stage not in STUDY_BATCH_ITEM_STAGES[2:]:
             raise ValueError(f"Unsupported study batch item stage: {stage}")
         self._ensure_schema()
         with self._connect() as connection:
@@ -691,6 +691,32 @@ def _create_study_batch_operations(connection: sqlite3.Connection) -> None:
         )
         begin
           select raise(abort, 'study batch item index exceeds item count');
+        end
+        """
+    )
+    connection.execute(
+        """
+        create trigger study_batch_operation_items_index_update_guard
+        before update of batch_id, item_index on study_batch_operation_items
+        when new.item_index >= (
+          select item_count from study_batch_operations
+          where batch_id = new.batch_id
+        )
+        begin
+          select raise(abort, 'study batch item index exceeds item count');
+        end
+        """
+    )
+    connection.execute(
+        """
+        create trigger study_batch_operations_item_count_guard
+        before update of item_count on study_batch_operations
+        when exists (
+          select 1 from study_batch_operation_items
+          where batch_id = new.batch_id and item_index >= new.item_count
+        )
+        begin
+          select raise(abort, 'study batch item count excludes reserved item');
         end
         """
     )

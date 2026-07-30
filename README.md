@@ -40,7 +40,8 @@ study file, workspace-scoped evidence record, referenced source blob, and
 study-scoped audit event. Restore verifies declared paths, sizes, and hashes before
 atomically exposing the staged study directory. Backup capture now holds the
 per-study mutation boundary, refuses a running batch, and validates the restored
-batch journal before importing evidence or audit records.
+batch journal's canonical SQLite definition, content-safe row semantics, and
+completed aggregate bindings before importing evidence or audit records.
 The analysis-run, evidence-catalog, segmentation-operation, per-study batch, and
 per-study qualitative databases use ordered, forward-only SQLite migration
 ledgers. Each migration is transactional, older supported database shapes are
@@ -69,11 +70,14 @@ messages.
 Study batch persistence has its own per-study operation journal. A caller can keep
 and resubmit an explicit batch ID to retry the exact ordered inputs and skill-pack
 artifact. Reserved run, import, and project-source identities survive caught
-failures; replay verifies existing blobs, evidence rows, run snapshots, aggregate
-JSON, CSV exports, the batch manifest, and the stable completion audit event rather
-than duplicating them. `GET /api/studies/{study_id}/batch-operations` exposes
-content-safe operation status, and the adjacent `schema-status` endpoint reports
-the journal migration contract.
+failures; completed rows bind the canonical aggregate hash, and replay verifies
+existing blobs, evidence rows, run snapshots, aggregate JSON, CSV exports, the
+batch manifest, and the stable completion audit event rather than duplicating
+them. Supported older journal shapes are upgraded transactionally, including
+repair of pre-hash completed rows from their persisted aggregate snapshot.
+`GET /api/studies/{study_id}/batch-operations` exposes content-safe operation
+status, and the adjacent `schema-status` endpoint reports the journal migration
+contract.
 
 The segmentation conflict guards cover the current same-root,
 shared-filesystem, single-host design only. Its root-global journal and list

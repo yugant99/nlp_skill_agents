@@ -28,7 +28,8 @@ audit boundaries without storing transcript or result content in the journal.
 
 - Added `studies/<study_id>/batch_operations.sqlite3` with an ordered migration
   ledger, operation rows, reserved child-item rows, database constraints, and
-  bounded status queries.
+  bounded status queries. Schema version 3 transactionally backfills canonical
+  aggregate hashes for supported version-1 and pre-repair version-2 journals.
 - Records a batch before its directory or any cross-store side effect is created.
   The operation binds the study, batch ID, exact skill-pack artifact hash, ordered
   request hash, item count, stable audit-event ID, stage, attempt count,
@@ -41,14 +42,15 @@ audit boundaries without storing transcript or result content in the journal.
   `KeyError` failures remain isolated rejected items with exception class only.
 - Added exact JSON and CSV snapshot writes. Existing identical artifacts are
   accepted; different bytes fail visibly without overwrite. Writes use explicit
-  UTF-8 bytes so retry comparisons are stable on Windows and POSIX.
+  UTF-8 bytes to avoid platform-default encoding differences.
 - Uses one deterministic `batch.completed` audit identity. Retrying after the
   audit write but before journal completion produces one event.
 - Added an OS-level audit lock so separate local Python processes cannot lose an
   event through concurrent read-and-replace writes.
 - A completed replay performs read-only integrity verification of the batch
   manifest, terminal item set, run payload hashes and identities, source blobs,
-  evidence records, aggregate results, CSV exports, and completion audit event.
+  evidence records, journal-bound canonical aggregate hash, CSV exports, and
+  completion audit event.
 - Added optional `batch_id` inputs to both text and multipart study-batch routes.
   Exact completed replay is a no-op; changed input under the same ID is HTTP 409.
 - Added per-study operation-list and schema-status endpoints. Operation responses
@@ -58,9 +60,15 @@ audit boundaries without storing transcript or result content in the journal.
 - Project backups hold the shared per-study mutation boundary, reject a live
   batch, and serialize batch starts, study-schema writes, skill-pack writes, and
   qualitative transactions while snapshot bytes are captured.
+- Repeated semantically identical study-schema writes are no-ops, skill-pack
+  version artifacts are immutable, and duplicate study identities are rejected
+  instead of overwriting inputs referenced by historical journal rows.
 - Batch manifests persist a root-relative path, while loaders bind it to the
-  active data root. Restored journals are migrated and integrity-checked before
-  evidence or audit records are imported and before the study is published.
+  active data root. Restored journals must match the canonical versioned SQLite
+  definition and pass integrity, foreign-key, study ownership, bounded timestamp,
+  exact integer, portable path, case-collision, terminal-item, and aggregate
+  identity/hash checks before evidence or audit records are imported and before
+  the study is published.
 
 ## Failure And Recovery Proof
 
@@ -77,6 +85,10 @@ audit boundaries without storing transcript or result content in the journal.
   without overwriting the tampered file.
 - Tampered a completed aggregate and verified the read-only completed-replay check
   rejected it.
+- Tampered only failure and study-schema fields in a completed aggregate and
+  verified the journal-bound aggregate hash rejected both.
+- Corrupted completion-audit JSON with malformed and scalar values and verified
+  exact replay returned a snapshot conflict rather than HTTP 400/500.
 - Forced a subprocess to exit immediately after source-blob storage. A new process
   observed a `running` operation and reserved item, found no false run snapshot,
   and refused a second live attempt.
@@ -91,13 +103,21 @@ audit boundaries without storing transcript or result content in the journal.
   replay remained a one-event, attempt-one no-op.
 - Rejected a newer restored batch-journal schema before evidence/audit import or
   study publication.
-- Started eight audit writers in separate processes and retained all eight events.
+- Rejected forged restored SQLite triggers, traversal and Windows-device run IDs,
+  case-colliding run files, content-bearing status fields, fractional counters,
+  running rows, aggregate identity mismatches, and aggregate hash mismatches before
+  destination writes.
+- Upgraded populated canonical version-1 journals and repaired pre-repair version-2
+  journals without losing completed aggregate identity. Missing, malformed, or
+  mismatched legacy aggregates left their migration version unchanged.
+- Started eight audit writers in separate processes on the current macOS/POSIX
+  test host and retained all eight events.
 - Verified distinctive filename, transcript, metadata, and analytical error text
   were absent from the journal database and operation API response.
 
 ## CLI Verification
 
-- Complete backend suite passed: 222/222.
+- Complete backend suite passed: 260/260.
 - Frontend production build passed.
 - All frontend helper suites passed: 30/30.
 - `git diff --check` passed.
@@ -118,6 +138,12 @@ frontend helper suites passed as the UI regression gate.
 - `eaea639 Expose study batch recovery status`
 - `1deaf0f Guard consistent study archive snapshots`
 - `aa99972 Prove hard-stopped study batch visibility`
+- `b715b3e Document study batch recovery checkpoint`
+- `0ff8e6a Harden study batch retry boundaries`
+- `546d2fc Bind completed batch aggregates to journal`
+- `d595a21 Preserve versioned study batch inputs`
+- `ebd4824 Refuse duplicate study overwrites`
+- `57912ae Validate restored study batch journals`
 
 ## Known Limitations And Rollback
 
@@ -139,6 +165,9 @@ frontend helper suites passed as the UI regression gate.
   the same guard to participate in consistent backups.
 - Audit and archive coordination is designed for the documented single-host local
   appliance. It is not a distributed lock or a multi-host collaboration protocol.
+- The audit lock's Windows `msvcrt` branch has not yet been executed on the target
+  Alienware/Windows host. The current multi-process proof covers macOS/POSIX; a
+  Windows execution gate remains required before the Phase 5 appliance release.
 - Per-study archives still exclude root-level segmentation journals and artifacts.
 - Phase 1 remains open: codebook, case/attribute, coding-reference, memo,
   annotation, saved-query, and complete project-lifecycle workflows are not done.

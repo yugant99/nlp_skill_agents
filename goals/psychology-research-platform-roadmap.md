@@ -152,10 +152,12 @@ access-controlled.
 
 The study-batch journal is study-scoped and included in portable project backups.
 It reserves child identities before analysis, supports caller-driven exact replay
-of caught failures, verifies completed outputs, and reports content-safe status.
-Backups serialize the current managed study mutation paths and refuse live batch
-operations. A hard-stopped batch still remains `running`; there is no lease,
-takeover, abandon, or automatic startup-reconciliation workflow yet.
+of caught failures, binds completed aggregate payloads, verifies completed outputs,
+and reports content-safe status. Backups serialize the current managed study
+mutation paths, refuse live batch operations, and validate canonical journal
+schema, portable identifiers, row semantics, and aggregate identity before
+publishing a restore. A hard-stopped batch still remains `running`; there is no
+lease, takeover, abandon, or automatic startup-reconciliation workflow yet.
 
 ## Gap Register
 

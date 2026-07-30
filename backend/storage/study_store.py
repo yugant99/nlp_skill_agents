@@ -22,7 +22,10 @@ from backend.storage.audit_log import AuditLogStore
 from backend.storage.atomic import atomic_write_bytes, atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.source_blob_store import SourceBlobStore
-from backend.storage.study_batch_operation_store import StudyBatchOperationStore
+from backend.storage.study_batch_operation_store import (
+    StudyBatchOperationStore,
+    validate_study_batch_id,
+)
 
 
 MAX_STUDY_PARTICIPANTS = 10_000
@@ -231,11 +234,17 @@ class StudyWorkspaceStore:
             f"batch_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_"
             f"{uuid4().hex[:8]}"
         )
+        validate_study_batch_id(resolved_batch_id)
+        aggregate_dir = self._study_dir(study_id) / "batches" / resolved_batch_id
         journal = StudyBatchOperationStore(self.root, study_id)
         try:
             existing_operation = journal.get_operation(resolved_batch_id)
         except FileNotFoundError:
             existing_operation = None
+        if existing_operation is None and aggregate_dir.exists():
+            raise StudyBatchSnapshotConflict(
+                "Study batch artifacts exist without a journal operation"
+            )
         created_at = (
             str(existing_operation["created_at"])
             if existing_operation is not None
@@ -258,7 +267,6 @@ class StudyWorkspaceStore:
                 operation,
             )
 
-        aggregate_dir = self._study_dir(study_id) / "batches" / resolved_batch_id
         runs_dir = aggregate_dir / "runs"
         try:
             runs_dir.mkdir(parents=True, exist_ok=True)
@@ -683,9 +691,19 @@ class StudyWorkspaceStore:
             },
             "created_at": str(operation["created_at"]),
         }
+        try:
+            audit_events = self.audit_log.list_events(limit=None)
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch audit log is invalid"
+            ) from exc
+        if any(not isinstance(event, dict) for event in audit_events):
+            raise StudyBatchSnapshotConflict(
+                "Completed study batch audit log is invalid"
+            )
         matching_audit_events = [
             event
-            for event in self.audit_log.list_events(limit=None)
+            for event in audit_events
             if event.get("id") == operation["audit_event_id"]
         ]
         if matching_audit_events != [expected_audit_event]:
@@ -955,7 +973,7 @@ def _normalized_metadata(payload: Any) -> dict[str, str]:
     if not isinstance(payload, dict):
         return {}
     metadata: dict[str, str] = {}
-    for key, value in payload.items():
+    for key, value in sorted(payload.items(), key=lambda item: str(item[0])):
         normalized_key = str(key).strip()
         normalized_value = str(value).strip()
         if normalized_key and normalized_value:

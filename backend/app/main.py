@@ -73,6 +73,7 @@ from backend.storage.segmentation_operation_store import (
 from backend.storage.source_blob_store import SourceBlobIntegrityError, SourceBlobStore
 from backend.storage.sqlite_migrations import SchemaCompatibilityError
 from backend.storage.study_batch_operation_store import (
+    STUDY_BATCH_ID_PATTERN,
     StudyBatchOperationConflict,
     StudyBatchOperationStore,
 )
@@ -201,7 +202,10 @@ class StudyTextTranscript(BaseModel):
 class StudyTextBatchRequest(BaseModel):
     skill_pack_version_id: str = Field(min_length=1)
     transcripts: list[StudyTextTranscript] = Field(min_length=1)
-    batch_id: str | None = Field(default=None, min_length=1)
+    batch_id: str | None = Field(
+        default=None,
+        pattern=STUDY_BATCH_ID_PATTERN,
+    )
 
 
 class LibraryApprovalRequest(BaseModel):
@@ -833,6 +837,8 @@ def study_batch_operation_schema_status(study_id: str) -> dict:
         raise HTTPException(status_code=404, detail="Study not found") from exc
     except SchemaCompatibilityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "compatible": True,
         "study_id": study_id,
@@ -859,6 +865,8 @@ def list_study_batch_operations(
         raise HTTPException(status_code=404, detail="Study not found") from exc
     except SchemaCompatibilityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"operations": operations}
 
 
@@ -941,7 +949,10 @@ async def create_study_file_batch(
     skill_pack_version_id: Annotated[str, Form()],
     files: Annotated[list[UploadFile], File()],
     metadata: Annotated[str, Form()] = "{}",
-    batch_id: Annotated[str | None, Form()] = None,
+    batch_id: Annotated[
+        str | None,
+        Form(pattern=STUDY_BATCH_ID_PATTERN),
+    ] = None,
 ) -> dict:
     try:
         parsed_metadata = _batch_metadata_from_json(metadata)

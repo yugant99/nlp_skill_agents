@@ -1094,6 +1094,10 @@ def test_study_batch_operation_api_is_bounded_and_content_safe(
     missing = client.get(
         "/api/studies/missing/batch-operations/schema-status"
     )
+    invalid_list = client.get("/api/studies/INVALID/batch-operations")
+    invalid_schema = client.get(
+        "/api/studies/INVALID/batch-operations/schema-status"
+    )
     with sqlite3.connect(
         tmp_path / "studies" / study.id / "batch_operations.sqlite3"
     ) as connection:
@@ -1103,6 +1107,10 @@ def test_study_batch_operation_api_is_bounded_and_content_safe(
     )
     newer_backup = client.post(f"/api/studies/{study.id}/backup")
     assert missing.status_code == 404
+    assert invalid_list.status_code == 400
+    assert invalid_schema.status_code == 400
+    assert "normalized study identifier" in invalid_list.json()["detail"]
+    assert "normalized study identifier" in invalid_schema.json()["detail"]
     assert newer.status_code == 409
     assert "newer than supported version 1" in newer.json()["detail"]
     assert newer_backup.status_code == 409
@@ -1141,6 +1149,49 @@ def test_study_file_batch_api_accepts_explicit_retry_identity(
     assert StudyBatchOperationStore(tmp_path, study.id).get_operation(batch_id)[
         "status"
     ] == "completed"
+
+
+def test_study_batch_api_declares_and_enforces_retry_identity_pattern(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    text_response = client.post(
+        "/api/studies/any-study/batches/text",
+        json={
+            "skill_pack_version_id": "pack-1_0_0",
+            "batch_id": "ordinary-client-key",
+            "transcripts": [
+                {"source_filename": "session.txt", "content": "CG: Hello."}
+            ],
+        },
+    )
+    file_response = client.post(
+        "/api/studies/any-study/batches/files",
+        data={
+            "skill_pack_version_id": "pack-1_0_0",
+            "batch_id": "ordinary-client-key",
+        },
+        files={"files": ("session.txt", b"CG: Hello.", "text/plain")},
+    )
+    openapi = client.get("/openapi.json").json()
+    text_pattern = openapi["components"]["schemas"]["StudyTextBatchRequest"][
+        "properties"
+    ]["batch_id"]["anyOf"][0]["pattern"]
+    multipart_schema_name = next(
+        name
+        for name in openapi["components"]["schemas"]
+        if name.startswith("Body_create_study_file_batch")
+    )
+    file_pattern = openapi["components"]["schemas"][multipart_schema_name][
+        "properties"
+    ]["batch_id"]["anyOf"][0]["pattern"]
+
+    assert text_response.status_code == 422
+    assert file_response.status_code == 422
+    assert text_pattern == r"^batch_[0-9]{14}_[0-9a-f]{8}$"
+    assert file_pattern == text_pattern
 
 
 def test_study_workspace_file_batch_api_accepts_txt_and_docx(

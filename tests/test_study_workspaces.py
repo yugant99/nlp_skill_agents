@@ -760,6 +760,30 @@ def test_study_batch_completed_retry_verifies_persisted_outputs(
         )
 
 
+@pytest.mark.parametrize("corrupt_audit", ["{not-json\n", "42\n"])
+def test_study_batch_completed_retry_rejects_malformed_audit_log(
+    tmp_path: Path,
+    corrupt_audit: str,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260729036303_dcba4321"
+    store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+    store.audit_log.events_path.write_text(corrupt_audit, encoding="utf-8")
+
+    with pytest.raises(StudyBatchSnapshotConflict, match="audit log is invalid"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+
+
 def test_study_batch_retry_rejects_conflicting_existing_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -804,6 +828,104 @@ def test_study_batch_retry_rejects_conflicting_existing_snapshot(
     operation = StudyBatchOperationStore(tmp_path, study_id).get_operation(batch_id)
     assert operation["status"] == "failed"
     assert operation["last_error_type"] == "StudyBatchSnapshotConflict"
+
+
+def test_study_batch_retry_normalizes_metadata_key_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260729041414_5678abcd"
+    original_advance_item = StudyBatchOperationStore.advance_item
+    failed = False
+
+    def fail_after_snapshot(self, current_batch_id, item_index, stage):
+        nonlocal failed
+        original_advance_item(self, current_batch_id, item_index, stage)
+        if stage == "snapshot_written" and not failed:
+            failed = True
+            raise OSError("injected post-snapshot failure")
+
+    first_request = [
+        {
+            **transcripts[0],
+            "metadata": {"week": "week_1", "participant_id": "P1"},
+        }
+    ]
+    reordered_request = [
+        {
+            **transcripts[0],
+            "metadata": {"participant_id": "P1", "week": "week_1"},
+        }
+    ]
+    monkeypatch.setattr(
+        StudyBatchOperationStore,
+        "advance_item",
+        fail_after_snapshot,
+    )
+    with pytest.raises(OSError, match="post-snapshot failure"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            first_request,
+            batch_id=batch_id,
+        )
+    monkeypatch.setattr(
+        StudyBatchOperationStore,
+        "advance_item",
+        original_advance_item,
+    )
+
+    batch = store.run_text_batch(
+        study_id,
+        version_id,
+        reordered_request,
+        batch_id=batch_id,
+    )
+
+    assert batch.batch_id == batch_id
+    operation = StudyBatchOperationStore(tmp_path, study_id).get_operation(batch_id)
+    assert operation["status"] == "completed"
+    assert operation["attempt_count"] == 2
+
+
+def test_study_batch_refuses_unjournaled_existing_artifacts_before_side_effects(
+    tmp_path: Path,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260729042424_8765dcba"
+    batch = store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+    journal = StudyBatchOperationStore(tmp_path, study_id)
+    journal.db_path.unlink()
+    run_paths_before = set((batch.aggregate_dir / "runs").glob("*.json"))
+    import_ids_before = {
+        record.import_id
+        for record in EvidenceCatalog(tmp_path).workspace_import_records(study_id)
+    }
+
+    with pytest.raises(
+        StudyBatchSnapshotConflict,
+        match="artifacts exist without a journal",
+    ):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+
+    assert set((batch.aggregate_dir / "runs").glob("*.json")) == run_paths_before
+    assert {
+        record.import_id
+        for record in EvidenceCatalog(tmp_path).workspace_import_records(study_id)
+    } == import_ids_before
+    with pytest.raises(FileNotFoundError):
+        StudyBatchOperationStore(tmp_path, study_id).get_operation(batch_id)
 
 
 def test_study_batch_journal_does_not_store_source_or_error_content(

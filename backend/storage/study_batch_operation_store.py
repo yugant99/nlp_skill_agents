@@ -40,7 +40,8 @@ _NEXT_OPERATION_STAGE = dict(
     )
 )
 _STUDY_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-_BATCH_ID = re.compile(r"^batch_[0-9]{14}_[0-9a-f]{8}$")
+STUDY_BATCH_ID_PATTERN = r"^batch_[0-9]{14}_[0-9a-f]{8}$"
+_BATCH_ID = re.compile(STUDY_BATCH_ID_PATTERN)
 _SKILL_PACK_VERSION_ID = re.compile(r"^[a-z0-9_]+-[a-z0-9_]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
@@ -814,8 +815,7 @@ def _validate_operation_identity(
     item_count: int,
     created_at: str,
 ) -> None:
-    if not _BATCH_ID.fullmatch(batch_id):
-        raise ValueError("batch_id must be a generated study batch identifier")
+    validate_study_batch_id(batch_id)
     if not _SKILL_PACK_VERSION_ID.fullmatch(skill_pack_version_id):
         raise ValueError("skill_pack_version_id must be a normalized version identifier")
     _validate_sha256(skill_pack_sha256, "skill_pack_sha256")
@@ -852,6 +852,11 @@ def _validate_item_identity(
     _validate_sha256(item_request_sha256, "item_request_sha256")
     _validate_sha256(source_blob_sha256, "source_blob_sha256")
     _validate_sha256(transcript_sha256, "transcript_sha256")
+
+
+def validate_study_batch_id(batch_id: str) -> None:
+    if not _BATCH_ID.fullmatch(batch_id):
+        raise ValueError("batch_id must be a generated study batch identifier")
 
 
 def _validate_sha256(value: str, field_name: str) -> None:

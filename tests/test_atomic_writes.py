@@ -1,3 +1,6 @@
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -82,3 +85,65 @@ def test_audit_log_rejects_an_incomplete_existing_record(tmp_path: Path) -> None
         store.record("study.updated", "study", "study-one")
 
     assert store.events_path.read_text(encoding="utf-8") == '{"partial":'
+
+
+def test_audit_log_serializes_writes_across_processes(tmp_path: Path) -> None:
+    process_count = 8
+    start_path = tmp_path / "start"
+    worker = """
+import sys
+import time
+from pathlib import Path
+from backend.storage.audit_log import AuditLogStore
+
+root = Path(sys.argv[1])
+ready_path = Path(sys.argv[2])
+start_path = Path(sys.argv[3])
+worker_index = int(sys.argv[4])
+ready_path.write_text("ready", encoding="utf-8")
+while not start_path.exists():
+    time.sleep(0.005)
+AuditLogStore(root).record(
+    "concurrent.event",
+    "worker",
+    str(worker_index),
+    {"worker_index": worker_index},
+)
+"""
+    processes = []
+    ready_paths = []
+    for index in range(process_count):
+        ready_path = tmp_path / f"ready-{index}"
+        ready_paths.append(ready_path)
+        processes.append(
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    worker,
+                    str(tmp_path),
+                    str(ready_path),
+                    str(start_path),
+                    str(index),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        )
+
+    deadline = time.monotonic() + 10
+    while not all(path.exists() for path in ready_paths):
+        if time.monotonic() >= deadline:
+            raise AssertionError("audit worker processes did not become ready")
+        time.sleep(0.01)
+    start_path.write_text("start", encoding="utf-8")
+    for process in processes:
+        _, stderr = process.communicate(timeout=20)
+        assert process.returncode == 0, stderr
+
+    events = AuditLogStore(tmp_path).list_events(limit=None)
+    assert len(events) == process_count
+    assert {event["metadata"]["worker_index"] for event in events} == set(
+        range(process_count)
+    )

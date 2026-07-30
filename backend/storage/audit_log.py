@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,6 +33,7 @@ class AuditLogStore:
         self.root = Path(root)
         self.audit_dir = self.root / "audit"
         self.events_path = self.audit_dir / "events.jsonl"
+        self.lock_path = self.audit_dir / ".events.lock"
 
     def record(
         self,
@@ -50,7 +54,7 @@ class AuditLogStore:
             metadata=metadata or {},
         )
         event_line = json.dumps(asdict(event)) + "\n"
-        with _AUDIT_WRITE_LOCK:
+        with _AUDIT_WRITE_LOCK, _audit_process_lock(self.lock_path):
             existing_events = (
                 self.events_path.read_text(encoding="utf-8")
                 if self.events_path.exists()
@@ -84,7 +88,7 @@ class AuditLogStore:
         ]
 
     def import_events(self, events: list[dict[str, Any]]) -> int:
-        with _AUDIT_WRITE_LOCK:
+        with _AUDIT_WRITE_LOCK, _audit_process_lock(self.lock_path):
             existing_text = (
                 self.events_path.read_text(encoding="utf-8")
                 if self.events_path.exists()
@@ -114,3 +118,31 @@ class AuditLogStore:
                 appended = "".join(json.dumps(event) + "\n" for event in additions)
                 atomic_write_text(self.events_path, existing_text + appended)
             return len(additions)
+
+
+@contextmanager
+def _audit_process_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as lock_file:
+        if lock_file.seek(0, os.SEEK_END) == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+            os.fsync(lock_file.fileno())
+        lock_file.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)

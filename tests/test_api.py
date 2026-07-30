@@ -183,8 +183,8 @@ def test_segmentation_operations_endpoint_reports_completed_and_incomplete(
     created = client.post(
         "/api/segmentation/runs",
         json={
-            "source_filename": "journal.txt",
-            "descript_text": "[00:00:00] P: Journal this.",
+            "source_filename": "PRIVATE-FILENAME-NEVER-JOURNAL.txt",
+            "descript_text": "[00:00:00] P: PRIVATE-CONTENT-NEVER-JOURNAL.",
             "rule_ids": ["speaker-markers"],
         },
     )
@@ -200,6 +200,14 @@ def test_segmentation_operations_endpoint_reports_completed_and_incomplete(
     incomplete = client.get(
         "/api/storage/segmentation-operations",
         params={"incomplete_only": "true"},
+    )
+    limited = client.get(
+        "/api/storage/segmentation-operations",
+        params={"limit": 0},
+    )
+    oversized = client.get(
+        "/api/storage/segmentation-operations",
+        params={"limit": 999},
     )
 
     assert created.status_code == 200
@@ -221,6 +229,54 @@ def test_segmentation_operations_endpoint_reports_completed_and_incomplete(
         operation["operation_id"]
         for operation in incomplete.json()["operations"]
     ] == [pending_id]
+    assert len(limited.json()["operations"]) == 1
+    assert len(oversized.json()["operations"]) == 2
+    assert "PRIVATE-FILENAME-NEVER-JOURNAL" not in response.text
+    assert "PRIVATE-CONTENT-NEVER-JOURNAL" not in response.text
+    with sqlite3.connect(tmp_path / "segmentation.sqlite3") as connection:
+        journal_values = str(
+            connection.execute("select * from segmentation_operations").fetchall()
+        )
+    assert "PRIVATE-FILENAME-NEVER-JOURNAL" not in journal_values
+    assert "PRIVATE-CONTENT-NEVER-JOURNAL" not in journal_values
+
+
+def test_segmentation_mutations_report_active_operation_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    created = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "conflict.txt",
+            "descript_text": "[00:00:00] P: Keep this version.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    run_id = created.json()["run"]["run_id"]
+    operation_store = SegmentationOperationStore(tmp_path)
+    create_operation = operation_store.list_operations()[0]
+    operation_store.begin(
+        run_id=run_id,
+        import_id=created.json()["run"]["import_id"],
+        operation_kind="patch",
+        previous_payload_sha256=create_operation["payload_sha256"],
+        payload_sha256="b" * 64,
+    )
+
+    verified = client.post(f"/api/segmentation/runs/{run_id}/verify")
+    patched = client.post(
+        f"/api/segmentation/runs/{run_id}/specialists/speaker_turn/patches",
+        json={"patches": []},
+    )
+
+    assert created.status_code == 200
+    assert verified.status_code == 409
+    assert patched.status_code == 409
+    assert "already running" in verified.json()["detail"]
+    assert "already running" in patched.json()["detail"]
 
 
 def test_segmentation_operations_endpoint_rejects_newer_schema(
@@ -233,9 +289,19 @@ def test_segmentation_operations_endpoint_rejects_newer_schema(
     client = TestClient(app)
 
     response = client.get("/api/storage/segmentation-operations")
+    mutation = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "future.txt",
+            "descript_text": "[00:00:00] P: Future schema.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
 
     assert response.status_code == 409
     assert "newer than supported version 1" in response.json()["detail"]
+    assert mutation.status_code == 409
+    assert "newer than supported version 1" in mutation.json()["detail"]
 
 
 def test_default_skill_pack_endpoint() -> None:

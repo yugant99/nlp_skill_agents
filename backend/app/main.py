@@ -49,6 +49,7 @@ from backend.segmentation.models import SyntheticSegmentationCase
 from backend.segmentation.pipeline import (
     PatchOperation,
     SegmentationRunStore,
+    SegmentationSnapshotConflict,
     segmentation_corpus_run_to_payload,
     segmentation_run_to_payload,
 )
@@ -64,7 +65,10 @@ from backend.storage.project_archive import (
     ProjectArchiveError,
     ProjectArchiveStore,
 )
-from backend.storage.segmentation_operation_store import SegmentationOperationStore
+from backend.storage.segmentation_operation_store import (
+    SegmentationOperationConflict,
+    SegmentationOperationStore,
+)
 from backend.storage.source_blob_store import SourceBlobIntegrityError, SourceBlobStore
 from backend.storage.sqlite_migrations import SchemaCompatibilityError
 from backend.storage.study_store import MAX_STUDY_PARTICIPANTS, StudyWorkspaceStore
@@ -480,6 +484,12 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
             project_source_id=request.project_source_id,
             parent_transcript_revision_id=request.parent_transcript_revision_id,
         )
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"run": segmentation_run_to_payload(run)}
@@ -489,9 +499,18 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
 def create_segmentation_corpus_run(
     request: SegmentationCorpusRunCreateRequest,
 ) -> dict:
-    corpus_run = SegmentationRunStore(_local_data_root()).create_corpus_run(
-        seed=request.seed,
-    )
+    try:
+        corpus_run = SegmentationRunStore(_local_data_root()).create_corpus_run(
+            seed=request.seed,
+        )
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"corpus_run": segmentation_corpus_run_to_payload(corpus_run)}
 
 
@@ -547,6 +566,12 @@ async def create_segmentation_file_run(
             status_code=400,
             detail="Segmentation upload must be UTF-8 text",
         ) from exc
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"run": segmentation_run_to_payload(run)}
@@ -567,6 +592,13 @@ def verify_segmentation_run(run_id: str) -> dict:
         run = SegmentationRunStore(_local_data_root()).verify_run(run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"run": segmentation_run_to_payload(run)}
 
 
@@ -623,6 +655,13 @@ def submit_segmentation_specialist_patches(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Segmentation run not found") from exc
+    except (
+        SchemaCompatibilityError,
+        SegmentationOperationConflict,
+        SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"run": segmentation_run_to_payload(run)}

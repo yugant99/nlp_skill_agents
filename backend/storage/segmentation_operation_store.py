@@ -32,6 +32,10 @@ _NEXT_STAGE = dict(
 _ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 
 
+class SegmentationOperationConflict(RuntimeError):
+    pass
+
+
 class SegmentationOperationStore:
     def __init__(self, root: Path | str = "local_data") -> None:
         self.root = Path(root)
@@ -72,7 +76,9 @@ class SegmentationOperationStore:
                 (run_id, import_id),
             ).fetchone()
             if conflicting_import is not None:
-                raise ValueError("Segmentation run import identity conflicts with journal")
+                raise SegmentationOperationConflict(
+                    "Segmentation run import identity conflicts with journal"
+                )
             conflicting_run = connection.execute(
                 """
                 select run_id from segmentation_operations
@@ -82,12 +88,14 @@ class SegmentationOperationStore:
                 (import_id, run_id),
             ).fetchone()
             if conflicting_run is not None:
-                raise ValueError("Segmentation import run identity conflicts with journal")
+                raise SegmentationOperationConflict(
+                    "Segmentation import run identity conflicts with journal"
+                )
 
             stored = connection.execute(
                 """
                 select run_id, import_id, operation_kind,
-                       previous_payload_sha256, payload_sha256
+                       previous_payload_sha256, payload_sha256, status
                 from segmentation_operations where operation_id = ?
                 """,
                 (operation_id,),
@@ -100,9 +108,13 @@ class SegmentationOperationStore:
                 payload_sha256,
             )
             if stored is not None:
-                if stored != expected:
-                    raise ValueError(
+                if stored[:5] != expected:
+                    raise SegmentationOperationConflict(
                         "Segmentation operation identity conflicts with journal"
+                    )
+                if stored[5] == "running":
+                    raise SegmentationOperationConflict(
+                        "Segmentation operation is already running"
                     )
                 active_other = connection.execute(
                     """
@@ -113,7 +125,7 @@ class SegmentationOperationStore:
                     (run_id, operation_id),
                 ).fetchone()
                 if active_other is not None:
-                    raise RuntimeError(
+                    raise SegmentationOperationConflict(
                         "Another segmentation operation is already running"
                     )
                 connection.execute(
@@ -137,7 +149,9 @@ class SegmentationOperationStore:
                 (run_id,),
             ).fetchone()
             if active is not None:
-                raise RuntimeError("Another segmentation operation is already running")
+                raise SegmentationOperationConflict(
+                    "Another segmentation operation is already running"
+                )
             connection.execute(
                 """
                 insert into segmentation_operations (

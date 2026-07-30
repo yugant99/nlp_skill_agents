@@ -31,7 +31,10 @@ from backend.segmentation.rulebook import SUPPORTED_RULE_IDS
 from backend.segmentation.synthetic import OFFICIAL_SOURCE_GUARD_TOKENS
 from backend.storage.atomic import atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
-from backend.storage.segmentation_operation_store import SegmentationOperationStore
+from backend.storage.segmentation_operation_store import (
+    SEGMENTATION_OPERATION_KINDS,
+    SegmentationOperationStore,
+)
 from backend.storage.source_blob_store import SourceBlobStore
 
 
@@ -49,6 +52,10 @@ RULE_TO_SPECIALIST = {
 }
 
 SEGMENTATION_SOURCES = {"researcher_provided", "synthetic"}
+
+
+class SegmentationSnapshotConflict(ValueError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -413,12 +420,10 @@ class SegmentationRunStore:
         )
         payload_sha256 = _segmentation_payload_sha256(run)
         run_path = self.runs_dir / f"{run.run_id}.json"
-        previous_payload_sha256 = self._validate_snapshot_transition(
+        previous_payload_sha256 = self._operation_previous_payload_sha256(
             run_path,
-            run,
             operation_kind=operation_kind,
             expected_previous_payload_sha256=expected_previous_payload_sha256,
-            payload_sha256=payload_sha256,
         )
         journal = SegmentationOperationStore(self.root)
         operation_id = journal.begin(
@@ -429,6 +434,13 @@ class SegmentationRunStore:
             payload_sha256=payload_sha256,
         )
         try:
+            self._validate_snapshot_transition(
+                run_path,
+                run,
+                operation_kind=operation_kind,
+                expected_previous_payload_sha256=previous_payload_sha256,
+                payload_sha256=payload_sha256,
+            )
             if run.source_blob_sha256:
                 SourceBlobStore(self.root).store(
                     source_bytes
@@ -565,6 +577,29 @@ class SegmentationRunStore:
             for output in outputs
         ]
 
+    def _operation_previous_payload_sha256(
+        self,
+        run_path: Path,
+        *,
+        operation_kind: str,
+        expected_previous_payload_sha256: str | None,
+    ) -> str:
+        if operation_kind not in SEGMENTATION_OPERATION_KINDS:
+            raise ValueError(f"Unsupported segmentation operation kind: {operation_kind}")
+        if operation_kind == "create":
+            if expected_previous_payload_sha256 not in (None, ""):
+                raise ValueError("Create operations cannot replace a prior snapshot")
+            return ""
+        if expected_previous_payload_sha256 is not None:
+            return expected_previous_payload_sha256
+        if operation_kind != "rewrite":
+            raise ValueError(
+                "Mutable segmentation operations require the previous payload hash"
+            )
+        if not run_path.exists():
+            raise FileNotFoundError(run_path.stem)
+        return _payload_sha256(_read_segmentation_payload(run_path))
+
     def _validate_snapshot_transition(
         self,
         run_path: Path,
@@ -582,7 +617,9 @@ class SegmentationRunStore:
             existing_payload = _read_segmentation_payload(run_path)
             _validate_immutable_run_identity(existing_payload, run)
             if _payload_sha256(existing_payload) != payload_sha256:
-                raise ValueError("Segmentation create conflicts with stored snapshot")
+                raise SegmentationSnapshotConflict(
+                    "Segmentation create conflicts with stored snapshot"
+                )
             return ""
 
         if not run_path.exists():
@@ -592,7 +629,9 @@ class SegmentationRunStore:
         stored_payload_sha256 = _payload_sha256(existing_payload)
         if expected_previous_payload_sha256 is not None:
             if stored_payload_sha256 != expected_previous_payload_sha256:
-                raise ValueError("Segmentation snapshot changed before persistence")
+                raise SegmentationSnapshotConflict(
+                    "Segmentation snapshot changed before persistence"
+                )
             return expected_previous_payload_sha256
         if operation_kind != "rewrite":
             raise ValueError(
@@ -770,9 +809,13 @@ def _read_segmentation_payload(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError("Stored segmentation snapshot is unreadable") from exc
+        raise SegmentationSnapshotConflict(
+            "Stored segmentation snapshot is unreadable"
+        ) from exc
     if not isinstance(payload, dict):
-        raise ValueError("Stored segmentation snapshot must be a JSON object")
+        raise SegmentationSnapshotConflict(
+            "Stored segmentation snapshot must be a JSON object"
+        )
     return payload
 
 
@@ -797,9 +840,13 @@ def _validate_immutable_run_identity(
     try:
         existing = segmentation_run_from_payload(existing_payload)
     except (KeyError, TypeError, ValueError) as exc:
-        raise ValueError("Stored segmentation snapshot has invalid identity") from exc
+        raise SegmentationSnapshotConflict(
+            "Stored segmentation snapshot has invalid identity"
+        ) from exc
     if _immutable_run_identity(existing) != _immutable_run_identity(target):
-        raise ValueError("Segmentation run identity conflicts with stored snapshot")
+        raise SegmentationSnapshotConflict(
+            "Segmentation run identity conflicts with stored snapshot"
+        )
 
 
 def _immutable_run_identity(run: SegmentationRun) -> tuple[str, ...]:

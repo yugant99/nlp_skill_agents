@@ -559,6 +559,7 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     tmp_path: Path,
 ) -> None:
     from backend.segmentation.pipeline import SegmentationRunStore
+    from backend.storage.segmentation_operation_store import SegmentationOperationStore
 
     store = SegmentationRunStore(tmp_path)
     run = store.create_run(
@@ -620,6 +621,13 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
 
     store.persist_run(loaded)
     rewritten = json.loads(run_path.read_text(encoding="utf-8"))
+    operations = SegmentationOperationStore(tmp_path).list_operations()
+    assert len(operations) == 1
+    assert operations[0]["operation_kind"] == "rewrite"
+    assert operations[0]["status"] == "completed"
+    assert operations[0]["previous_payload_sha256"] != operations[0][
+        "payload_sha256"
+    ]
     assert "score" not in rewritten["evaluation"]
     assert "confidence" not in rewritten["cunit_adjudication"]["decisions"][0]
     assert rewritten["source_id"] == loaded.source_id

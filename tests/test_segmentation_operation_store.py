@@ -1,5 +1,9 @@
 import sqlite3
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -10,7 +14,11 @@ from backend.segmentation.pipeline import (
     _segmentation_payload_sha256,
 )
 from backend.storage.evidence_catalog import EvidenceCatalog
-from backend.storage.segmentation_operation_store import SegmentationOperationStore
+from backend.storage.segmentation_operation_store import (
+    SegmentationOperationConflict,
+    SegmentationOperationStore,
+)
+from backend.storage.source_blob_store import SourceBlobStore
 from backend.storage.sqlite_migrations import SchemaCompatibilityError
 
 
@@ -63,6 +71,9 @@ def test_segmentation_operations_version_and_track_exact_retries(tmp_path) -> No
     store = SegmentationOperationStore(tmp_path)
 
     first_operation = _begin_create(store)
+    with pytest.raises(SegmentationOperationConflict, match="already running"):
+        _begin_create(store)
+    store.fail(first_operation, error_type="InterruptedError")
     repeated_operation = _begin_create(store)
 
     assert first_operation == repeated_operation
@@ -103,7 +114,7 @@ def test_segmentation_operations_reject_identity_conflicts_and_bad_fields(
     store = SegmentationOperationStore(tmp_path)
     _begin_create(store)
 
-    with pytest.raises(RuntimeError, match="already running"):
+    with pytest.raises(SegmentationOperationConflict, match="already running"):
         store.begin(
             run_id="run_one",
             import_id="imp_one",
@@ -111,13 +122,19 @@ def test_segmentation_operations_reject_identity_conflicts_and_bad_fields(
             previous_payload_sha256="a" * 64,
             payload_sha256="b" * 64,
         )
-    with pytest.raises(ValueError, match="run import identity conflicts"):
+    with pytest.raises(
+        SegmentationOperationConflict,
+        match="run import identity conflicts",
+    ):
         _begin_create(
             store,
             import_id="imp_changed",
             payload_sha256="c" * 64,
         )
-    with pytest.raises(ValueError, match="import run identity conflicts"):
+    with pytest.raises(
+        SegmentationOperationConflict,
+        match="import run identity conflicts",
+    ):
         _begin_create(
             store,
             run_id="run_changed",
@@ -222,6 +239,34 @@ def test_segmentation_operations_bound_list_limit(tmp_path) -> None:
     assert len(store.list_operations(limit=2)) == 2
 
 
+def test_segmentation_operations_serialize_concurrent_exact_starts(tmp_path) -> None:
+    store = SegmentationOperationStore(tmp_path)
+    operation_id = _begin_create(store)
+    store.fail(operation_id, error_type="InterruptedError")
+
+    def begin() -> str:
+        return _begin_create(SegmentationOperationStore(tmp_path))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(begin) for _ in range(2)]
+    results = []
+    errors = []
+    for future in futures:
+        try:
+            results.append(future.result())
+        except Exception as exc:
+            errors.append(exc)
+
+    assert results == [operation_id]
+    assert len(errors) == 1
+    assert isinstance(errors[0], SegmentationOperationConflict)
+    assert "already running" in str(errors[0])
+    running = store.list_operations(incomplete_only=True)
+    assert len(running) == 1
+    assert running[0]["status"] == "running"
+    assert running[0]["attempt_count"] == 2
+
+
 def test_segmentation_operations_refuse_newer_schema(tmp_path) -> None:
     database_path = tmp_path / "segmentation.sqlite3"
     with sqlite3.connect(database_path) as connection:
@@ -270,6 +315,34 @@ def test_segmentation_persistence_journals_failure_and_exact_retry(
     assert completed["attempt_count"] == 2
     assert len(EvidenceCatalog(target_root).list_imports()) == 1
     assert target_store.load_run(run.run_id) == stored
+
+
+def test_segmentation_persistence_records_source_blob_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    target_store, target_root, run = _seed_segmentation_run(tmp_path)
+    original_store = SourceBlobStore.store
+
+    def fail_target_blob(self, content, expected_sha256):
+        if self.root == target_root:
+            raise OSError("sensitive blob failure")
+        return original_store(self, content, expected_sha256)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SourceBlobStore, "store", fail_target_blob)
+        with pytest.raises(OSError, match="sensitive blob"):
+            target_store.persist_run(
+                run,
+                operation_kind="create",
+                expected_previous_payload_sha256="",
+            )
+
+    failed = SegmentationOperationStore(target_root).list_operations()[0]
+    assert failed["status"] == "failed"
+    assert failed["stage"] == "prepared"
+    assert failed["last_error_type"] == "OSError"
+    assert "sensitive blob" not in str(failed)
 
 
 def test_segmentation_persistence_includes_specialist_artifacts_in_journal(
@@ -356,6 +429,114 @@ def test_segmentation_persistence_recovers_when_snapshot_precedes_stage_update(
     assert completed["attempt_count"] == 2
 
 
+def test_segmentation_persistence_records_snapshot_write_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    target_store, target_root, run = _seed_segmentation_run(tmp_path)
+    original_atomic_write_text = segmentation_pipeline.atomic_write_text
+
+    def fail_snapshot_write(path, content, **kwargs):
+        if Path(path).name == f"{run.run_id}.json":
+            raise OSError("sensitive snapshot failure")
+        return original_atomic_write_text(path, content, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            segmentation_pipeline,
+            "atomic_write_text",
+            fail_snapshot_write,
+        )
+        with pytest.raises(OSError, match="sensitive snapshot"):
+            target_store.persist_run(
+                run,
+                operation_kind="create",
+                expected_previous_payload_sha256="",
+            )
+
+    failed = SegmentationOperationStore(target_root).list_operations()[0]
+    assert failed["status"] == "failed"
+    assert failed["stage"] == "specialist_artifacts_written"
+    assert failed["last_error_type"] == "OSError"
+    assert not (target_root / "segmentation_runs" / f"{run.run_id}.json").exists()
+
+
+def test_segmentation_persistence_recovers_when_completion_marker_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    target_store, target_root, run = _seed_segmentation_run(tmp_path)
+    original_complete = SegmentationOperationStore.complete
+
+    def fail_target_complete(self, operation_id):
+        if self.root == target_root:
+            raise OSError("completion marker failed")
+        return original_complete(self, operation_id)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            SegmentationOperationStore,
+            "complete",
+            fail_target_complete,
+        )
+        with pytest.raises(OSError, match="completion marker"):
+            target_store.persist_run(
+                run,
+                operation_kind="create",
+                expected_previous_payload_sha256="",
+            )
+
+    failed = SegmentationOperationStore(target_root).list_operations()[0]
+    assert failed["status"] == "failed"
+    assert failed["stage"] == "snapshot_written"
+
+    target_store.persist_run(
+        run,
+        operation_kind="create",
+        expected_previous_payload_sha256="",
+    )
+    completed = SegmentationOperationStore(target_root).list_operations()[0]
+    assert completed["status"] == "completed"
+    assert completed["attempt_count"] == 2
+
+
+def test_hard_interruption_leaves_visible_running_operation(tmp_path) -> None:
+    target_root = tmp_path / "hard-stop"
+    script = """
+import os
+import sys
+from backend.segmentation.pipeline import SegmentationRunStore
+from backend.storage.evidence_catalog import EvidenceCatalog
+
+def stop_after_blob(self, record):
+    os._exit(23)
+
+EvidenceCatalog.record_import = stop_after_blob
+SegmentationRunStore(sys.argv[1]).create_run(
+    source_filename="hard-stop.txt",
+    descript_text="[00:00:00] P: Preserve the visible journal.",
+    rule_ids=["speaker-markers"],
+)
+"""
+
+    process = subprocess.run(
+        [sys.executable, "-c", script, str(target_root)],
+        cwd=Path(__file__).parents[1],
+        check=False,
+    )
+
+    assert process.returncode == 23
+    operations = SegmentationOperationStore(target_root).list_operations(
+        incomplete_only=True
+    )
+    assert len(operations) == 1
+    assert operations[0]["status"] == "running"
+    assert operations[0]["stage"] == "source_blob_stored"
+    assert not (
+        target_root / "segmentation_runs" / f"{operations[0]['run_id']}.json"
+    ).exists()
+
+
 def test_segmentation_persistence_rejects_stale_and_conflicting_snapshots(
     tmp_path,
 ) -> None:
@@ -398,4 +579,109 @@ def test_segmentation_persistence_rejects_stale_and_conflicting_snapshots(
         )
 
     assert store.load_run(run.run_id) == current
-    assert len(SegmentationOperationStore(tmp_path).list_operations()) == 2
+    operations = SegmentationOperationStore(tmp_path).list_operations()
+    assert len(operations) == 4
+    failed_verify = next(
+        operation
+        for operation in operations
+        if operation["operation_kind"] == "verify"
+    )
+    assert failed_verify["status"] == "failed"
+    assert failed_verify["stage"] == "prepared"
+    failed_rewrite = next(
+        operation
+        for operation in operations
+        if operation["operation_kind"] == "rewrite"
+    )
+    assert failed_rewrite["status"] == "failed"
+    assert failed_rewrite["last_error_type"] == "SegmentationSnapshotConflict"
+
+
+def test_segmentation_mutations_record_completed_hash_chain(tmp_path) -> None:
+    store = SegmentationRunStore(tmp_path)
+    created = store.create_run(
+        source_filename="session.txt",
+        descript_text="[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+        rule_ids=["speaker-markers", "timestamp-markers"],
+    )
+    created_hash = _segmentation_payload_sha256(created)
+    patched = store.apply_specialist_patches(
+        created.run_id,
+        specialist_id="speaker_turn",
+        patches=[
+            PatchOperation(
+                operation="event_line",
+                event_index=0,
+                text="P: Updated greeting.",
+                reason="hash-chain proof",
+            )
+        ],
+    )
+    patched_hash = _segmentation_payload_sha256(patched)
+    verified = store.verify_run(created.run_id)
+    verified_hash = _segmentation_payload_sha256(verified)
+
+    operations = {
+        operation["operation_kind"]: operation
+        for operation in SegmentationOperationStore(tmp_path).list_operations()
+    }
+    assert set(operations) == {"create", "patch", "verify"}
+    assert operations["create"]["previous_payload_sha256"] == ""
+    assert operations["create"]["payload_sha256"] == created_hash
+    assert operations["patch"]["previous_payload_sha256"] == created_hash
+    assert operations["patch"]["payload_sha256"] == patched_hash
+    assert operations["verify"]["previous_payload_sha256"] == patched_hash
+    assert operations["verify"]["payload_sha256"] == verified_hash
+    assert all(operation["status"] == "completed" for operation in operations.values())
+
+
+def test_segmentation_persistence_rechecks_snapshot_after_claiming_operation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="session.txt",
+        descript_text="[00:00:00] P: Good morning.\n[00:00:03] Av: Uh yes.",
+        rule_ids=["speaker-markers", "timestamp-markers"],
+    )
+    stale = store.load_run(run.run_id)
+    stale_hash = _segmentation_payload_sha256(stale)
+    original_begin = SegmentationOperationStore.begin
+    competing_write_finished = False
+
+    def begin_after_competing_write(self, **kwargs):
+        nonlocal competing_write_finished
+        if self.root == tmp_path and not competing_write_finished:
+            competing_write_finished = True
+            store.apply_specialist_patches(
+                run.run_id,
+                specialist_id="speaker_turn",
+                patches=[
+                    PatchOperation(
+                        operation="event_line",
+                        event_index=0,
+                        text="P: Concurrent update wins.",
+                        reason="interleaving regression test",
+                    )
+                ],
+            )
+        return original_begin(self, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            SegmentationOperationStore,
+            "begin",
+            begin_after_competing_write,
+        )
+        with pytest.raises(ValueError, match="changed before persistence"):
+            store.persist_run(
+                stale,
+                operation_kind="verify",
+                expected_previous_payload_sha256=stale_hash,
+            )
+
+    current = store.load_run(run.run_id)
+    assert "P: Concurrent update wins." in current.merged_draft
+    assert "P: Good morning." not in current.merged_draft
+    assert _segmentation_payload_sha256(current) != stale_hash

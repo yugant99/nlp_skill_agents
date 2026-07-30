@@ -561,6 +561,84 @@ def test_segmentation_persistence_recovers_when_completion_marker_fails(
     assert completed["attempt_count"] == 2
 
 
+@pytest.mark.parametrize(
+    ("failure_point", "failed_stage"),
+    [
+        ("snapshot_advance", "specialist_artifacts_written"),
+        ("complete", "snapshot_written"),
+    ],
+)
+def test_mutable_segmentation_retry_accepts_its_already_applied_target(
+    tmp_path,
+    monkeypatch,
+    failure_point,
+    failed_stage,
+) -> None:
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="session.txt",
+        descript_text="[00:00:00] P: Preserve the mutable target.",
+        rule_ids=["speaker-markers"],
+    )
+    previous_payload_sha256 = _segmentation_payload_sha256(run)
+    updated = replace(run, merged_draft=f"{run.merged_draft}\n")
+    target_payload_sha256 = _segmentation_payload_sha256(updated)
+    original_advance = SegmentationOperationStore.advance
+    original_complete = SegmentationOperationStore.complete
+
+    def fail_snapshot_advance(self, operation_id, stage):
+        if self.root == tmp_path and stage == "snapshot_written":
+            raise OSError("mutable snapshot stage failed")
+        return original_advance(self, operation_id, stage)
+
+    def fail_complete(self, operation_id):
+        if self.root == tmp_path:
+            raise OSError("mutable completion failed")
+        return original_complete(self, operation_id)
+
+    with monkeypatch.context() as patch:
+        if failure_point == "snapshot_advance":
+            patch.setattr(
+                SegmentationOperationStore,
+                "advance",
+                fail_snapshot_advance,
+            )
+        else:
+            patch.setattr(SegmentationOperationStore, "complete", fail_complete)
+        with pytest.raises(OSError, match="mutable"):
+            store.persist_run(
+                updated,
+                operation_kind="rewrite",
+                expected_previous_payload_sha256=previous_payload_sha256,
+            )
+
+    assert store.load_run(run.run_id) == updated
+    failed = next(
+        operation
+        for operation in SegmentationOperationStore(tmp_path).list_operations()
+        if operation["operation_kind"] == "rewrite"
+    )
+    assert failed["status"] == "failed"
+    assert failed["stage"] == failed_stage
+
+    stored = store.persist_run(
+        updated,
+        operation_kind="rewrite",
+        expected_previous_payload_sha256=previous_payload_sha256,
+    )
+
+    assert store.load_run(run.run_id) == stored
+    completed = next(
+        operation
+        for operation in SegmentationOperationStore(tmp_path).list_operations()
+        if operation["operation_kind"] == "rewrite"
+    )
+    assert completed["status"] == "completed"
+    assert completed["attempt_count"] == 2
+    assert completed["previous_payload_sha256"] == previous_payload_sha256
+    assert completed["payload_sha256"] == target_payload_sha256
+
+
 def test_hard_interruption_leaves_visible_running_operation(tmp_path) -> None:
     target_root = tmp_path / "hard-stop"
     script = """

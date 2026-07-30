@@ -625,6 +625,8 @@ class SegmentationRunStore:
             raise ValueError(
                 "Mutable segmentation operations require the previous payload hash"
             )
+        if stored_payload_sha256 == payload_sha256:
+            return expected_previous_payload_sha256
         if stored_payload_sha256 != expected_previous_payload_sha256:
             raise SegmentationSnapshotConflict(
                 "Segmentation snapshot changed before persistence"

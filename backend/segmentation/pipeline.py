@@ -408,8 +408,8 @@ class SegmentationRunStore:
         run: SegmentationRun,
         *,
         source_bytes: bytes | None = None,
-        operation_kind: str = "rewrite",
-        expected_previous_payload_sha256: str | None = None,
+        operation_kind: str,
+        expected_previous_payload_sha256: str | None,
     ) -> SegmentationRun:
         run = replace(
             run,
@@ -421,7 +421,6 @@ class SegmentationRunStore:
         payload_sha256 = _segmentation_payload_sha256(run)
         run_path = self.runs_dir / f"{run.run_id}.json"
         previous_payload_sha256 = self._operation_previous_payload_sha256(
-            run_path,
             operation_kind=operation_kind,
             expected_previous_payload_sha256=expected_previous_payload_sha256,
         )
@@ -579,7 +578,6 @@ class SegmentationRunStore:
 
     def _operation_previous_payload_sha256(
         self,
-        run_path: Path,
         *,
         operation_kind: str,
         expected_previous_payload_sha256: str | None,
@@ -590,15 +588,11 @@ class SegmentationRunStore:
             if expected_previous_payload_sha256 not in (None, ""):
                 raise ValueError("Create operations cannot replace a prior snapshot")
             return ""
-        if expected_previous_payload_sha256 is not None:
-            return expected_previous_payload_sha256
-        if operation_kind != "rewrite":
+        if expected_previous_payload_sha256 is None:
             raise ValueError(
                 "Mutable segmentation operations require the previous payload hash"
             )
-        if not run_path.exists():
-            raise FileNotFoundError(run_path.stem)
-        return _payload_sha256(_read_segmentation_payload(run_path))
+        return expected_previous_payload_sha256
 
     def _validate_snapshot_transition(
         self,
@@ -627,17 +621,15 @@ class SegmentationRunStore:
         existing_payload = _read_segmentation_payload(run_path)
         _validate_immutable_run_identity(existing_payload, run)
         stored_payload_sha256 = _payload_sha256(existing_payload)
-        if expected_previous_payload_sha256 is not None:
-            if stored_payload_sha256 != expected_previous_payload_sha256:
-                raise SegmentationSnapshotConflict(
-                    "Segmentation snapshot changed before persistence"
-                )
-            return expected_previous_payload_sha256
-        if operation_kind != "rewrite":
+        if expected_previous_payload_sha256 is None:
             raise ValueError(
                 "Mutable segmentation operations require the previous payload hash"
             )
-        return stored_payload_sha256
+        if stored_payload_sha256 != expected_previous_payload_sha256:
+            raise SegmentationSnapshotConflict(
+                "Segmentation snapshot changed before persistence"
+            )
+        return expected_previous_payload_sha256
 
 
 def plan_rule_work(rule_ids: list[str]) -> list[RuleWorkPacket]:

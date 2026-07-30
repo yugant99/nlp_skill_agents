@@ -4,6 +4,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -267,6 +268,46 @@ def test_segmentation_operations_serialize_concurrent_exact_starts(tmp_path) -> 
     assert running[0]["attempt_count"] == 2
 
 
+def test_segmentation_operations_serialize_distinct_mutations_for_one_run(
+    tmp_path,
+) -> None:
+    store = SegmentationOperationStore(tmp_path)
+    store.migration_status()
+    barrier = Barrier(2)
+
+    def begin(operation_kind, payload_sha256):
+        barrier.wait()
+        return store.begin(
+            run_id="run_one",
+            import_id="imp_one",
+            operation_kind=operation_kind,
+            previous_payload_sha256="a" * 64,
+            payload_sha256=payload_sha256,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(begin, "patch", "b" * 64),
+            executor.submit(begin, "verify", "c" * 64),
+        ]
+    results = []
+    errors = []
+    for future in futures:
+        try:
+            results.append(future.result())
+        except Exception as exc:
+            errors.append(exc)
+
+    assert len(results) == 1
+    assert len(errors) == 1
+    assert isinstance(errors[0], SegmentationOperationConflict)
+    assert "already running" in str(errors[0])
+    running = store.list_operations(incomplete_only=True)
+    assert len(running) == 1
+    assert running[0]["operation_id"] == results[0]
+    assert running[0]["operation_kind"] in {"patch", "verify"}
+
+
 def test_segmentation_operations_refuse_newer_schema(tmp_path) -> None:
     database_path = tmp_path / "segmentation.sqlite3"
     with sqlite3.connect(database_path) as connection:
@@ -343,6 +384,16 @@ def test_segmentation_persistence_records_source_blob_failure(
     assert failed["stage"] == "prepared"
     assert failed["last_error_type"] == "OSError"
     assert "sensitive blob" not in str(failed)
+
+    stored = target_store.persist_run(
+        run,
+        operation_kind="create",
+        expected_previous_payload_sha256="",
+    )
+    completed = SegmentationOperationStore(target_root).list_operations()[0]
+    assert completed["status"] == "completed"
+    assert completed["attempt_count"] == 2
+    assert target_store.load_run(run.run_id) == stored
 
 
 def test_segmentation_persistence_includes_specialist_artifacts_in_journal(
@@ -459,6 +510,16 @@ def test_segmentation_persistence_records_snapshot_write_failure(
     assert failed["stage"] == "specialist_artifacts_written"
     assert failed["last_error_type"] == "OSError"
     assert not (target_root / "segmentation_runs" / f"{run.run_id}.json").exists()
+
+    stored = target_store.persist_run(
+        run,
+        operation_kind="create",
+        expected_previous_payload_sha256="",
+    )
+    completed = SegmentationOperationStore(target_root).list_operations()[0]
+    assert completed["status"] == "completed"
+    assert completed["attempt_count"] == 2
+    assert target_store.load_run(run.run_id) == stored
 
 
 def test_segmentation_persistence_recovers_when_completion_marker_fails(
@@ -595,6 +656,30 @@ def test_segmentation_persistence_rejects_stale_and_conflicting_snapshots(
     )
     assert failed_rewrite["status"] == "failed"
     assert failed_rewrite["last_error_type"] == "SegmentationSnapshotConflict"
+
+
+def test_segmentation_persistence_requires_explicit_mutable_predecessor(
+    tmp_path,
+) -> None:
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="session.txt",
+        descript_text="[00:00:00] P: Keep this snapshot.",
+        rule_ids=["speaker-markers"],
+    )
+
+    with pytest.raises(ValueError, match="previous payload hash"):
+        store.persist_run(
+            run,
+            operation_kind="rewrite",
+            expected_previous_payload_sha256=None,
+        )
+
+    assert store.load_run(run.run_id) == run
+    operations = SegmentationOperationStore(tmp_path).list_operations()
+    assert len(operations) == 1
+    assert operations[0]["operation_kind"] == "create"
+    assert operations[0]["status"] == "completed"
 
 
 def test_segmentation_mutations_record_completed_hash_chain(tmp_path) -> None:

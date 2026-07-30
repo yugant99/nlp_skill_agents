@@ -2,6 +2,13 @@ import csv
 import json
 from pathlib import Path
 
+import pytest
+
+from backend.storage.evidence_catalog import EvidenceCatalog
+from backend.storage.study_batch_operation_store import (
+    StudyBatchOperationConflict,
+    StudyBatchOperationStore,
+)
 from backend.storage.study_store import StudyWorkspaceStore
 
 
@@ -526,3 +533,309 @@ def test_study_workspace_writes_audit_events(tmp_path: Path) -> None:
     assert events[0]["subject_id"] == "audit-study"
     assert events[2]["metadata"]["batch_id"] == batch.batch_id
     assert events[3]["metadata"]["bundle_id"] == bundle.bundle_id
+
+
+def test_study_batch_journal_completes_with_reserved_item_identity(
+    tmp_path: Path,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+
+    batch = store.run_text_batch(study_id, version_id, transcripts)
+
+    journal = StudyBatchOperationStore(tmp_path, study_id)
+    operation = journal.get_operation(batch.batch_id)
+    item = journal.list_items(batch.batch_id)[0]
+    run = store.list_batch_runs(study_id, batch.batch_id)[0]
+    manifest = json.loads(
+        (batch.aggregate_dir / "batch.json").read_text(encoding="utf-8")
+    )
+    assert operation["status"] == "completed"
+    assert operation["stage"] == "completed"
+    assert operation["attempt_count"] == 1
+    assert operation["item_count"] == 1
+    assert operation["completed_at"]
+    assert item["stage"] == "completed"
+    assert item["run_id"] == run["run_id"]
+    assert item["import_id"] == run["import_id"]
+    assert item["project_source_id"] == run["project_source_id"]
+    assert item["source_blob_sha256"] == run["source_blob_sha256"]
+    assert item["transcript_revision_id"] == run["transcript_revision_id"]
+    assert manifest["aggregate_dir"] == (
+        f"studies/{study_id}/batches/{batch.batch_id}"
+    )
+    assert store.load_batch(study_id, batch.batch_id).aggregate_dir == (
+        batch.aggregate_dir
+    )
+
+
+def test_study_batch_exact_retry_reuses_side_effect_identities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260729010101_deadbeef"
+    original_record_import = EvidenceCatalog.record_import
+    call_count = 0
+
+    def fail_after_first_import(self, record):
+        nonlocal call_count
+        original_record_import(self, record)
+        call_count += 1
+        if call_count == 1:
+            raise OSError("injected persistence failure")
+
+    monkeypatch.setattr(EvidenceCatalog, "record_import", fail_after_first_import)
+    with pytest.raises(OSError, match="injected persistence failure"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+
+    journal = StudyBatchOperationStore(tmp_path, study_id)
+    failed_operation = journal.get_operation(batch_id)
+    reserved_before_retry = journal.list_items(batch_id)[0]
+    assert failed_operation["status"] == "failed"
+    assert failed_operation["last_error_type"] == "OSError"
+    assert reserved_before_retry["stage"] == "source_blob_stored"
+
+    batch = store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+
+    completed_operation = journal.get_operation(batch_id)
+    reserved_after_retry = journal.list_items(batch_id)[0]
+    imports = EvidenceCatalog(tmp_path).list_imports()
+    batch_events = [
+        event
+        for event in store.audit_log.list_events(limit=None)
+        if event["event_type"] == "batch.completed"
+        and event["metadata"]["batch_id"] == batch_id
+    ]
+    assert batch.batch_id == batch_id
+    assert completed_operation["status"] == "completed"
+    assert completed_operation["attempt_count"] == 2
+    assert reserved_after_retry["stage"] == "completed"
+    assert {
+        key: reserved_after_retry[key]
+        for key in ("run_id", "import_id", "project_source_id", "created_at")
+    } == {
+        key: reserved_before_retry[key]
+        for key in ("run_id", "import_id", "project_source_id", "created_at")
+    }
+    assert [item["import_id"] for item in imports] == [
+        reserved_before_retry["import_id"]
+    ]
+    assert len(batch_events) == 1
+
+
+def test_study_batch_retry_deduplicates_audit_written_before_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260729020202_cafebabe"
+    original_import_events = store.audit_log.import_events
+    call_count = 0
+
+    def fail_after_first_audit(events):
+        nonlocal call_count
+        imported = original_import_events(events)
+        call_count += 1
+        if call_count == 1:
+            raise OSError("injected post-audit failure")
+        return imported
+
+    monkeypatch.setattr(store.audit_log, "import_events", fail_after_first_audit)
+    with pytest.raises(OSError, match="injected post-audit failure"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+
+    journal = StudyBatchOperationStore(tmp_path, study_id)
+    assert journal.get_operation(batch_id)["stage"] == "batch_manifest_written"
+    store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+
+    batch_events = [
+        event
+        for event in store.audit_log.list_events(limit=None)
+        if event["event_type"] == "batch.completed"
+        and event["metadata"]["batch_id"] == batch_id
+    ]
+    assert journal.get_operation(batch_id)["status"] == "completed"
+    assert len(batch_events) == 1
+
+
+def test_study_batch_completed_retry_is_a_noop_and_changed_request_conflicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260729030303_0badf00d"
+    first = store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+    journal = StudyBatchOperationStore(tmp_path, study_id)
+    original_operation = journal.get_operation(batch_id)
+
+    def unexpected_analysis(*args, **kwargs):
+        raise AssertionError("completed retries must not execute analysis")
+
+    monkeypatch.setattr(
+        "backend.storage.study_store.execute_analysis",
+        unexpected_analysis,
+    )
+    replayed = store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+    with pytest.raises(StudyBatchOperationConflict, match="identity conflicts"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            [{**transcripts[0], "content": "P1_c: Changed.\nP1_p: Changed."}],
+            batch_id=batch_id,
+        )
+
+    batch_events = [
+        event
+        for event in store.audit_log.list_events(limit=None)
+        if event["event_type"] == "batch.completed"
+        and event["metadata"]["batch_id"] == batch_id
+    ]
+    assert replayed == first
+    assert journal.get_operation(batch_id)["attempt_count"] == (
+        original_operation["attempt_count"]
+    )
+    assert len(batch_events) == 1
+
+
+def test_study_batch_retry_rejects_conflicting_existing_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.storage.study_store import StudyBatchSnapshotConflict
+
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260729040404_1234abcd"
+    original_advance = StudyBatchOperationStore.advance
+
+    def fail_after_aggregate(self, current_batch_id, stage):
+        if stage == "aggregate_json_written":
+            raise OSError("injected post-aggregate failure")
+        return original_advance(self, current_batch_id, stage)
+
+    monkeypatch.setattr(StudyBatchOperationStore, "advance", fail_after_aggregate)
+    with pytest.raises(OSError, match="injected post-aggregate failure"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+    monkeypatch.setattr(StudyBatchOperationStore, "advance", original_advance)
+    aggregate_path = (
+        tmp_path
+        / "studies"
+        / study_id
+        / "batches"
+        / batch_id
+        / "aggregate_results.json"
+    )
+    aggregate_path.write_text("tampered snapshot", encoding="utf-8")
+
+    with pytest.raises(StudyBatchSnapshotConflict, match="aggregate_results.json"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+
+    assert aggregate_path.read_text(encoding="utf-8") == "tampered snapshot"
+    operation = StudyBatchOperationStore(tmp_path, study_id).get_operation(batch_id)
+    assert operation["status"] == "failed"
+    assert operation["last_error_type"] == "StudyBatchSnapshotConflict"
+
+
+def test_study_batch_journal_does_not_store_source_or_error_content(
+    tmp_path: Path,
+) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Journal Privacy Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "journal_privacy_pack",
+            "name": "Journal Privacy Pack",
+            "version": "1.0.0",
+            "metrics": ["secret_error_detail_metric"],
+        },
+        validate=False,
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [
+            {
+                "source_filename": "secret_patient_filename.txt",
+                "content": "secret transcript sentence only for privacy proof",
+                "metadata": {"private_note": "secret metadata value"},
+            }
+        ],
+    )
+
+    database_text = StudyBatchOperationStore(
+        tmp_path,
+        study.id,
+    ).db_path.read_bytes().decode("utf-8", errors="ignore")
+    assert batch.failure_count == 1
+    assert "secret_patient_filename" not in database_text
+    assert "secret transcript sentence" not in database_text
+    assert "secret metadata value" not in database_text
+    assert "secret_error_detail_metric" not in database_text
+
+
+def _journal_batch_fixture(
+    root: Path,
+) -> tuple[StudyWorkspaceStore, str, str, list[dict[str, object]]]:
+    store = StudyWorkspaceStore(root)
+    study = store.create_study({"name": "Journal Integration Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "journal_integration_pack",
+            "name": "Journal Integration Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    return (
+        store,
+        study.id,
+        version.version_id,
+        [
+            {
+                "source_filename": "session.txt",
+                "content": "P1_c: Hello.\nP1_p: Hi.",
+                "metadata": {"participant_id": "P1"},
+            }
+        ],
+    )

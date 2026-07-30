@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import re
 from dataclasses import asdict, dataclass, field, replace
@@ -13,13 +14,23 @@ from uuid import uuid4
 from backend.analysis.pipeline import execute_analysis
 from backend.analysis.skill_packs import parse_skill_pack
 from backend.analysis.transcripts import StudyConfig
+from backend.evidence.identifiers import (
+    source_import_identity,
+    transcript_evidence_identity,
+)
 from backend.storage.audit_log import AuditLogStore
-from backend.storage.atomic import atomic_text_writer, atomic_write_text
+from backend.storage.atomic import atomic_write_bytes, atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.source_blob_store import SourceBlobStore
+from backend.storage.study_batch_operation_store import StudyBatchOperationStore
 
 
 MAX_STUDY_PARTICIPANTS = 10_000
+_SKILL_PACK_VERSION_ID = re.compile(r"^[a-z0-9_]+-[a-z0-9_]+$")
+
+
+class StudyBatchSnapshotConflict(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -184,157 +195,311 @@ class StudyWorkspaceStore:
         study_id: str,
         skill_pack_version_id: str,
         transcripts: list[dict[str, Any]],
+        *,
+        batch_id: str | None = None,
     ) -> StudyBatchRun:
         self._require_study(study_id)
+        if not _SKILL_PACK_VERSION_ID.fullmatch(skill_pack_version_id):
+            raise ValueError(
+                "skill_pack_version_id must be a normalized version identifier"
+            )
         skill_pack_payload = self._load_skill_pack_version(
             study_id,
             skill_pack_version_id,
         )
-        batch_id = f"batch_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}"
-        aggregate_dir = self._study_dir(study_id) / "batches" / batch_id
-        runs_dir = aggregate_dir / "runs"
-        runs_dir.mkdir(parents=True, exist_ok=True)
-
-        successes = []
-        failures = []
-        for item in transcripts:
-            source_filename = _required_string(item, "source_filename")
-            metadata = _normalized_metadata(item.get("metadata", {}))
-            try:
-                run = execute_analysis(
-                    _required_string(item, "content"),
-                    _study_config_for_batch_item(skill_pack_payload, metadata),
-                    source_filename=source_filename,
-                    source_bytes=item.get("source_bytes"),
-                    source_media_type=str(
-                        item.get("source_media_type") or "text/plain"
-                    ),
-                    project_source_id=str(item.get("project_source_id") or ""),
-                    parent_transcript_revision_id=str(
-                        item.get("parent_transcript_revision_id") or ""
-                    ),
-                    workspace_id=study_id,
-                )
-            except (ValueError, KeyError) as exc:
-                failures.append(
-                    {
-                        "source_filename": source_filename,
-                        "error": str(exc),
-                    }
-                )
-                continue
-
-            run_payload = {
-                "run_id": run.run_id,
-                "import_id": run.import_id,
-                "project_source_id": run.project_source_id,
-                "parent_transcript_revision_id": (
-                    run.parent_transcript_revision_id
-                ),
-                "workspace_id": run.workspace_id,
-                "source_blob_sha256": run.source_blob_sha256,
-                "source_media_type": run.source_media_type,
-                "source_id": run.source_id,
-                "transcript_sha256": run.transcript_sha256,
-                "transcript_revision_id": run.transcript_revision_id,
-                "source_filename": run.source_filename,
-                "metadata": metadata,
-                "created_at": run.created_at,
-                "turn_count": len(run.transcript.turns),
-                "turns": [asdict(turn) for turn in run.transcript.turns],
-                "results": [asdict(result) for result in run.results],
+        study_schema = self._load_optional_study_schema(study_id)
+        skill_pack_sha256 = _canonical_json_sha256(skill_pack_payload)
+        item_request_sha256s = [
+            _study_batch_item_request_sha256(item) for item in transcripts
+        ]
+        request_sha256 = _canonical_json_sha256(
+            {
+                "skill_pack_sha256": skill_pack_sha256,
+                "study_schema": asdict(study_schema) if study_schema else None,
+                "items": item_request_sha256s,
             }
-            evidence_record = EvidenceImportRecord(
-                import_id=run.import_id,
-                run_id=run.run_id,
-                pipeline="study_batch",
-                project_source_id=run.project_source_id,
-                parent_transcript_revision_id=run.parent_transcript_revision_id,
-                workspace_id=run.workspace_id,
-                source_id=run.source_id,
-                source_filename=run.source_filename,
-                source_media_type=run.source_media_type,
-                source_blob_sha256=run.source_blob_sha256,
-                transcript_revision_id=run.transcript_revision_id,
-                transcript_sha256=run.transcript_sha256,
-                imported_at=run.created_at,
-            )
-            evidence_catalog = EvidenceCatalog(self.root)
-            evidence_catalog.validate_lineage(
-                project_source_id=run.project_source_id,
-                parent_transcript_revision_id=run.parent_transcript_revision_id,
-                workspace_id=run.workspace_id,
-                transcript_revision_id=run.transcript_revision_id,
-            )
-            source_bytes = item.get("source_bytes")
-            SourceBlobStore(self.root).store(
-                source_bytes
-                if source_bytes is not None
-                else run.source_content.encode("utf-8"),
-                run.source_blob_sha256,
-            )
-            evidence_catalog.record_import(evidence_record)
-            atomic_write_text(
-                runs_dir / f"{run.run_id}.json",
-                json.dumps(run_payload, indent=2),
-            )
-            successes.append(run_payload)
-
-        aggregate_payload = _aggregate_batch_payload(
-            study_id,
-            batch_id,
-            skill_pack_version_id,
-            self._load_optional_study_schema(study_id),
-            successes,
-            failures,
         )
-        atomic_write_text(
-            aggregate_dir / "aggregate_results.json",
-            json.dumps(aggregate_payload, indent=2),
+        resolved_batch_id = batch_id or (
+            f"batch_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_"
+            f"{uuid4().hex[:8]}"
         )
-        for result in aggregate_payload["results"]:
-            _write_csv(aggregate_dir / f"{result['metric_id']}.csv", result["rows"])
-
-        batch = StudyBatchRun(
-            study_id=study_id,
-            batch_id=batch_id,
+        journal = StudyBatchOperationStore(self.root, study_id)
+        try:
+            existing_operation = journal.get_operation(resolved_batch_id)
+        except FileNotFoundError:
+            existing_operation = None
+        created_at = (
+            str(existing_operation["created_at"])
+            if existing_operation is not None
+            else datetime.now(UTC).isoformat()
+        )
+        journal.begin(
+            batch_id=resolved_batch_id,
             skill_pack_version_id=skill_pack_version_id,
-            run_count=len(successes),
-            failure_count=len(failures),
-            aggregate_dir=aggregate_dir,
+            skill_pack_sha256=skill_pack_sha256,
+            request_sha256=request_sha256,
+            item_count=len(transcripts),
+            created_at=created_at,
         )
-        atomic_write_text(
-            aggregate_dir / "batch.json",
-            json.dumps(
+        if journal.get_operation(resolved_batch_id)["status"] == "completed":
+            return self.load_batch(study_id, resolved_batch_id)
+
+        aggregate_dir = self._study_dir(study_id) / "batches" / resolved_batch_id
+        runs_dir = aggregate_dir / "runs"
+        try:
+            runs_dir.mkdir(parents=True, exist_ok=True)
+            successes: list[dict[str, Any]] = []
+            failures: list[dict[str, str]] = []
+            evidence_catalog = EvidenceCatalog(self.root)
+            source_blob_store = SourceBlobStore(self.root)
+            for item_index, item in enumerate(transcripts):
+                source_filename = _required_string(item, "source_filename")
+                metadata = _normalized_metadata(item.get("metadata", {}))
+                content = str(item.get("content") or "").strip()
+                source_bytes = item.get("source_bytes")
+                source_media_type = str(
+                    item.get("source_media_type") or "text/plain"
+                )
+                requested_project_source_id = str(
+                    item.get("project_source_id") or ""
+                )
+                parent_transcript_revision_id = str(
+                    item.get("parent_transcript_revision_id") or ""
+                )
+                transcript_identity = transcript_evidence_identity(content)
+                source_identity = source_import_identity(
+                    content,
+                    source_bytes=source_bytes,
+                    source_media_type=source_media_type,
+                    project_source_id=requested_project_source_id,
+                )
+                existing_item = journal.get_item(resolved_batch_id, item_index)
+                reserved = journal.reserve_item(
+                    resolved_batch_id,
+                    item_index=item_index,
+                    item_request_sha256=item_request_sha256s[item_index],
+                    run_id=(
+                        str(existing_item["run_id"])
+                        if existing_item is not None
+                        else uuid4().hex
+                    ),
+                    import_id=(
+                        str(existing_item["import_id"])
+                        if existing_item is not None
+                        else source_identity.import_id
+                    ),
+                    project_source_id=(
+                        str(existing_item["project_source_id"])
+                        if existing_item is not None
+                        else source_identity.project_source_id
+                    ),
+                    source_blob_sha256=source_identity.source_blob_sha256,
+                    transcript_sha256=transcript_identity.transcript_sha256,
+                    transcript_revision_id=(
+                        transcript_identity.transcript_revision_id
+                    ),
+                    created_at=(
+                        str(existing_item["created_at"])
+                        if existing_item is not None
+                        else datetime.now(UTC).isoformat()
+                    ),
+                )
+                try:
+                    run = execute_analysis(
+                        _required_string(item, "content"),
+                        _study_config_for_batch_item(
+                            skill_pack_payload,
+                            metadata,
+                        ),
+                        source_filename=source_filename,
+                        source_bytes=source_bytes,
+                        source_media_type=source_media_type,
+                        project_source_id=requested_project_source_id,
+                        parent_transcript_revision_id=(
+                            parent_transcript_revision_id
+                        ),
+                        workspace_id=study_id,
+                    )
+                except (ValueError, KeyError) as exc:
+                    journal.reject_item(
+                        resolved_batch_id,
+                        item_index=item_index,
+                        item_request_sha256=item_request_sha256s[item_index],
+                        error_type=type(exc).__name__,
+                    )
+                    failures.append(
+                        {
+                            "source_filename": source_filename,
+                            "error": str(exc),
+                        }
+                    )
+                    continue
+
+                run = replace(
+                    run,
+                    run_id=str(reserved["run_id"]),
+                    import_id=str(reserved["import_id"]),
+                    project_source_id=str(reserved["project_source_id"]),
+                    source_blob_sha256=str(reserved["source_blob_sha256"]),
+                    source_id=transcript_identity.source_id,
+                    transcript_sha256=str(reserved["transcript_sha256"]),
+                    transcript_revision_id=str(
+                        reserved["transcript_revision_id"]
+                    ),
+                    created_at=str(reserved["created_at"]),
+                )
+                run_payload = _study_batch_run_payload(run, metadata)
+                journal.record_analysis_completed(
+                    resolved_batch_id,
+                    item_index,
+                    run_payload_sha256=_canonical_json_sha256(run_payload),
+                )
+                evidence_record = EvidenceImportRecord(
+                    import_id=run.import_id,
+                    run_id=run.run_id,
+                    pipeline="study_batch",
+                    project_source_id=run.project_source_id,
+                    parent_transcript_revision_id=(
+                        run.parent_transcript_revision_id
+                    ),
+                    workspace_id=run.workspace_id,
+                    source_id=run.source_id,
+                    source_filename=run.source_filename,
+                    source_media_type=run.source_media_type,
+                    source_blob_sha256=run.source_blob_sha256,
+                    transcript_revision_id=run.transcript_revision_id,
+                    transcript_sha256=run.transcript_sha256,
+                    imported_at=run.created_at,
+                )
+                evidence_catalog.validate_lineage(
+                    project_source_id=run.project_source_id,
+                    parent_transcript_revision_id=(
+                        run.parent_transcript_revision_id
+                    ),
+                    workspace_id=run.workspace_id,
+                    transcript_revision_id=run.transcript_revision_id,
+                )
+                source_blob_store.store(
+                    source_bytes
+                    if source_bytes is not None
+                    else run.source_content.encode("utf-8"),
+                    run.source_blob_sha256,
+                )
+                journal.advance_item(
+                    resolved_batch_id,
+                    item_index,
+                    "source_blob_stored",
+                )
+                evidence_catalog.record_import(evidence_record)
+                journal.advance_item(
+                    resolved_batch_id,
+                    item_index,
+                    "evidence_cataloged",
+                )
+                _write_exact_json(
+                    runs_dir / f"{run.run_id}.json",
+                    run_payload,
+                )
+                journal.advance_item(
+                    resolved_batch_id,
+                    item_index,
+                    "snapshot_written",
+                )
+                journal.advance_item(
+                    resolved_batch_id,
+                    item_index,
+                    "completed",
+                )
+                successes.append(run_payload)
+
+            journal.advance(resolved_batch_id, "items_processed")
+            aggregate_payload = _aggregate_batch_payload(
+                study_id,
+                resolved_batch_id,
+                skill_pack_version_id,
+                study_schema,
+                successes,
+                failures,
+                created_at=created_at,
+            )
+            _write_exact_json(
+                aggregate_dir / "aggregate_results.json",
+                aggregate_payload,
+            )
+            journal.advance(resolved_batch_id, "aggregate_json_written")
+            for result in aggregate_payload["results"]:
+                _write_exact_csv(
+                    aggregate_dir / f"{result['metric_id']}.csv",
+                    result["rows"],
+                )
+            journal.advance(resolved_batch_id, "csv_exports_written")
+
+            batch = StudyBatchRun(
+                study_id=study_id,
+                batch_id=resolved_batch_id,
+                skill_pack_version_id=skill_pack_version_id,
+                run_count=len(successes),
+                failure_count=len(failures),
+                aggregate_dir=aggregate_dir,
+                created_at=created_at,
+            )
+            _write_exact_json(
+                aggregate_dir / "batch.json",
                 {
                     **asdict(batch),
-                    "aggregate_dir": str(batch.aggregate_dir),
+                    "aggregate_dir": batch.aggregate_dir.relative_to(
+                        self.root
+                    ).as_posix(),
                 },
-                indent=2,
-            ),
-        )
-        self.audit_log.record(
-            "batch.completed",
-            "study",
-            study_id,
-            {
-                "batch_id": batch.batch_id,
-                "skill_pack_version_id": skill_pack_version_id,
-                "run_count": batch.run_count,
-                "failure_count": batch.failure_count,
-            },
-        )
-        return batch
+            )
+            journal.advance(resolved_batch_id, "batch_manifest_written")
+            operation = journal.get_operation(resolved_batch_id)
+            self.audit_log.import_events(
+                [
+                    {
+                        "id": str(operation["audit_event_id"]),
+                        "event_type": "batch.completed",
+                        "subject_type": "study",
+                        "subject_id": study_id,
+                        "actor": "local-system",
+                        "metadata": {
+                            "batch_id": batch.batch_id,
+                            "skill_pack_version_id": skill_pack_version_id,
+                            "run_count": batch.run_count,
+                            "failure_count": batch.failure_count,
+                        },
+                        "created_at": created_at,
+                    }
+                ]
+            )
+            journal.advance(resolved_batch_id, "audit_recorded")
+            journal.complete(resolved_batch_id)
+            return batch
+        except BaseException as exc:
+            try:
+                journal.fail(
+                    resolved_batch_id,
+                    error_type=type(exc).__name__,
+                )
+            except BaseException as journal_exc:
+                raise RuntimeError(
+                    "Study batch failed and its journal could not record the failure"
+                ) from journal_exc
+            raise
 
     def list_batches(self, study_id: str) -> list[StudyBatchRun]:
         self._require_study(study_id)
         batches_dir = self._study_dir(study_id) / "batches"
         if not batches_dir.exists():
             return []
-        batches = [
-            _batch_run_from_payload(json.loads(path.read_text(encoding="utf-8")))
-            for path in batches_dir.glob("*/batch.json")
-        ]
+        batches = []
+        for path in batches_dir.glob("*/batch.json"):
+            batches.append(
+                _batch_run_from_payload(
+                    json.loads(path.read_text(encoding="utf-8")),
+                    aggregate_dir=path.parent,
+                )
+            )
         return sorted(batches, key=lambda batch: batch.created_at, reverse=True)
 
     def load_batch(self, study_id: str, batch_id: str) -> StudyBatchRun:
@@ -342,7 +507,10 @@ class StudyWorkspaceStore:
         batch_path = self._study_dir(study_id) / "batches" / batch_id / "batch.json"
         if not batch_path.exists():
             raise FileNotFoundError(batch_id)
-        return _batch_run_from_payload(json.loads(batch_path.read_text(encoding="utf-8")))
+        return _batch_run_from_payload(
+            json.loads(batch_path.read_text(encoding="utf-8")),
+            aggregate_dir=batch_path.parent,
+        )
 
     def list_batch_runs(self, study_id: str, batch_id: str) -> list[dict[str, Any]]:
         batch = self.load_batch(study_id, batch_id)
@@ -429,6 +597,8 @@ def _aggregate_batch_payload(
     study_schema: StudySchema | None,
     runs: list[dict[str, Any]],
     failures: list[dict[str, str]],
+    *,
+    created_at: str,
 ) -> dict[str, Any]:
     results_by_metric: dict[str, dict[str, Any]] = {}
     for run in runs:
@@ -455,7 +625,7 @@ def _aggregate_batch_payload(
         "batch_id": batch_id,
         "skill_pack_version_id": skill_pack_version_id,
         "study_schema": asdict(study_schema) if study_schema else None,
-        "created_at": datetime.now(UTC).isoformat(),
+        "created_at": created_at,
         "run_count": len(runs),
         "failure_count": len(failures),
         "failures": failures,
@@ -463,14 +633,42 @@ def _aggregate_batch_payload(
     }
 
 
-def _batch_run_from_payload(payload: dict[str, Any]) -> StudyBatchRun:
+def _study_batch_run_payload(
+    run: Any,
+    metadata: dict[str, str],
+) -> dict[str, Any]:
+    return {
+        "run_id": run.run_id,
+        "import_id": run.import_id,
+        "project_source_id": run.project_source_id,
+        "parent_transcript_revision_id": run.parent_transcript_revision_id,
+        "workspace_id": run.workspace_id,
+        "source_blob_sha256": run.source_blob_sha256,
+        "source_media_type": run.source_media_type,
+        "source_id": run.source_id,
+        "transcript_sha256": run.transcript_sha256,
+        "transcript_revision_id": run.transcript_revision_id,
+        "source_filename": run.source_filename,
+        "metadata": metadata,
+        "created_at": run.created_at,
+        "turn_count": len(run.transcript.turns),
+        "turns": [asdict(turn) for turn in run.transcript.turns],
+        "results": [asdict(result) for result in run.results],
+    }
+
+
+def _batch_run_from_payload(
+    payload: dict[str, Any],
+    *,
+    aggregate_dir: Path,
+) -> StudyBatchRun:
     return StudyBatchRun(
         study_id=str(payload["study_id"]),
         batch_id=str(payload["batch_id"]),
         skill_pack_version_id=str(payload["skill_pack_version_id"]),
         run_count=int(payload["run_count"]),
         failure_count=int(payload["failure_count"]),
-        aggregate_dir=Path(str(payload["aggregate_dir"])),
+        aggregate_dir=aggregate_dir,
         created_at=str(payload["created_at"]),
     )
 
@@ -613,12 +811,61 @@ def _ordered_metadata(metadata: dict[str, Any]) -> dict[str, str]:
     return ordered
 
 
-def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+def _write_exact_json(path: Path, payload: dict[str, Any]) -> None:
+    _write_exact_text(path, json.dumps(payload, indent=2))
+
+
+def _write_exact_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     fieldnames = _ordered_fieldnames(rows)
-    with atomic_text_writer(path, newline="") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    csv_file = io.StringIO(newline="")
+    writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    _write_exact_text(path, csv_file.getvalue())
+
+
+def _write_exact_text(path: Path, content: str) -> None:
+    expected_bytes = content.encode("utf-8")
+    if path.exists():
+        if path.read_bytes() != expected_bytes:
+            raise StudyBatchSnapshotConflict(
+                f"Study batch artifact conflicts with existing snapshot: {path.name}"
+            )
+        return
+    atomic_write_bytes(path, expected_bytes)
+
+
+def _study_batch_item_request_sha256(item: dict[str, Any]) -> str:
+    return _canonical_json_sha256(_canonical_request_value(item))
+
+
+def _canonical_json_sha256(payload: Any) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_request_value(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return {
+            "type": "bytes",
+            "sha256": hashlib.sha256(value).hexdigest(),
+            "size_bytes": len(value),
+        }
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_request_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_request_value(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def _ordered_fieldnames(rows: list[dict[str, Any]]) -> list[str]:

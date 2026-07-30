@@ -591,6 +591,7 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
         decision.pop("passage_id")
         decision.pop("cunit_ids")
     run_path.write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "segmentation.sqlite3").unlink()
 
     loaded = store.load_run(run.run_id)
     assert loaded.source == "synthetic"

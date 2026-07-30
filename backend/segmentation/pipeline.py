@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -30,6 +31,7 @@ from backend.segmentation.rulebook import SUPPORTED_RULE_IDS
 from backend.segmentation.synthetic import OFFICIAL_SOURCE_GUARD_TOKENS
 from backend.storage.atomic import atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.segmentation_operation_store import SegmentationOperationStore
 from backend.storage.source_blob_store import SourceBlobStore
 
 
@@ -180,10 +182,8 @@ class SegmentationRunStore:
             build_specialist_output(packet, events)
             for packet in rule_plan
         ]
-        specialist_outputs = self._write_specialist_artifacts(
+        specialist_outputs = self._prepare_specialist_outputs(
             run_id,
-            source_filename,
-            events,
             specialist_outputs,
         )
         merged_draft, merge_evidence = merge_specialist_outputs(
@@ -225,8 +225,12 @@ class SegmentationRunStore:
             failure_routes=failure_routes,
             source=source,
         )
-        self.persist_run(run, source_bytes=source_bytes)
-        return run
+        return self.persist_run(
+            run,
+            source_bytes=source_bytes,
+            operation_kind="create",
+            expected_previous_payload_sha256="",
+        )
 
     def create_corpus_run(self, *, seed: int = 0) -> SegmentationCorpusRun:
         cases = generate_synthetic_corpus(seed=seed)
@@ -289,6 +293,7 @@ class SegmentationRunStore:
         patches: list[PatchOperation],
     ) -> SegmentationRun:
         run = self.load_run(run_id)
+        previous_payload_sha256 = _segmentation_payload_sha256(run)
         packet = next(
             (
                 packet
@@ -316,10 +321,8 @@ class SegmentationRunStore:
             updated_output if output.specialist_id == specialist_id else output
             for output in run.specialist_outputs
         ]
-        specialist_outputs = self._write_specialist_artifacts(
+        specialist_outputs = self._prepare_specialist_outputs(
             run.run_id,
-            run.source_filename,
-            run.events,
             specialist_outputs,
         )
         merged_draft, merge_evidence = merge_specialist_outputs(
@@ -360,11 +363,15 @@ class SegmentationRunStore:
             source=run.source,
             created_at=run.created_at,
         )
-        self.persist_run(updated_run)
-        return updated_run
+        return self.persist_run(
+            updated_run,
+            operation_kind="patch",
+            expected_previous_payload_sha256=previous_payload_sha256,
+        )
 
     def verify_run(self, run_id: str) -> SegmentationRun:
         run = self.load_run(run_id)
+        previous_payload_sha256 = _segmentation_payload_sha256(run)
         evaluation = evaluate_segmented_draft(
             run.merged_draft,
             expected_rule_ids=run.rule_ids,
@@ -383,44 +390,80 @@ class SegmentationRunStore:
                 "failure_routes": route_failures(evaluation.failures),
             }
         )
-        self.persist_run(updated)
-        return updated
+        return self.persist_run(
+            updated,
+            operation_kind="verify",
+            expected_previous_payload_sha256=previous_payload_sha256,
+        )
 
     def persist_run(
         self,
         run: SegmentationRun,
         *,
         source_bytes: bytes | None = None,
-    ) -> None:
-        self.runs_dir.mkdir(parents=True, exist_ok=True)
-        if run.source_blob_sha256:
-            SourceBlobStore(self.root).store(
-                source_bytes
-                if source_bytes is not None
-                else run.descript_text.encode("utf-8"),
-                run.source_blob_sha256,
-            )
-        EvidenceCatalog(self.root).record_import(
-            EvidenceImportRecord(
-                import_id=run.import_id,
-                run_id=run.run_id,
-                pipeline="segmentation",
-                project_source_id=run.project_source_id,
-                parent_transcript_revision_id=run.parent_transcript_revision_id,
-                workspace_id=run.workspace_id,
-                source_id=run.source_id,
-                source_filename=run.source_filename,
-                source_media_type=run.source_media_type,
-                source_blob_sha256=run.source_blob_sha256,
-                transcript_revision_id=run.transcript_revision_id,
-                transcript_sha256=run.transcript_sha256,
-                imported_at=run.created_at,
-            )
+        operation_kind: str = "rewrite",
+        expected_previous_payload_sha256: str | None = None,
+    ) -> SegmentationRun:
+        run = replace(
+            run,
+            specialist_outputs=self._prepare_specialist_outputs(
+                run.run_id,
+                run.specialist_outputs,
+            ),
         )
-        atomic_write_text(
-            self.runs_dir / f"{run.run_id}.json",
-            json.dumps(segmentation_run_to_payload(run), indent=2),
+        payload_sha256 = _segmentation_payload_sha256(run)
+        run_path = self.runs_dir / f"{run.run_id}.json"
+        previous_payload_sha256 = self._validate_snapshot_transition(
+            run_path,
+            run,
+            operation_kind=operation_kind,
+            expected_previous_payload_sha256=expected_previous_payload_sha256,
+            payload_sha256=payload_sha256,
         )
+        journal = SegmentationOperationStore(self.root)
+        operation_id = journal.begin(
+            run_id=run.run_id,
+            import_id=run.import_id,
+            operation_kind=operation_kind,
+            previous_payload_sha256=previous_payload_sha256,
+            payload_sha256=payload_sha256,
+        )
+        try:
+            if run.source_blob_sha256:
+                SourceBlobStore(self.root).store(
+                    source_bytes
+                    if source_bytes is not None
+                    else run.descript_text.encode("utf-8"),
+                    run.source_blob_sha256,
+                )
+            journal.advance(operation_id, "source_blob_stored")
+
+            EvidenceCatalog(self.root).record_import(_evidence_import_record(run))
+            journal.advance(operation_id, "evidence_cataloged")
+
+            self._write_specialist_artifacts(
+                run.run_id,
+                run.source_filename,
+                run.events,
+                run.specialist_outputs,
+            )
+            journal.advance(operation_id, "specialist_artifacts_written")
+
+            atomic_write_text(
+                run_path,
+                json.dumps(segmentation_run_to_payload(run), indent=2),
+            )
+            journal.advance(operation_id, "snapshot_written")
+            journal.complete(operation_id)
+        except BaseException as exc:
+            try:
+                journal.fail(operation_id, error_type=type(exc).__name__)
+            except Exception as journal_exc:
+                raise RuntimeError(
+                    "Segmentation persistence failed and its journal could not be updated"
+                ) from journal_exc
+            raise
+        return run
 
     def persist_corpus_run(self, corpus_run: SegmentationCorpusRun) -> None:
         self.corpus_runs_dir.mkdir(parents=True, exist_ok=True)
@@ -490,9 +533,23 @@ class SegmentationRunStore:
         source_filename: str,
         events: list[RawTranscriptEvent],
         outputs: list[SpecialistOutput],
-    ) -> list[SpecialistOutput]:
+    ) -> None:
         specialist_dir = self.runs_dir / run_id / "specialists"
         specialist_dir.mkdir(parents=True, exist_ok=True)
+        for output in outputs:
+            _write_specialist_artifact(
+                specialist_dir,
+                source_filename,
+                events,
+                output,
+            )
+
+    def _prepare_specialist_outputs(
+        self,
+        run_id: str,
+        outputs: list[SpecialistOutput],
+    ) -> list[SpecialistOutput]:
+        specialist_dir = self.runs_dir / run_id / "specialists"
         return [
             SpecialistOutput(
                 specialist_id=output.specialist_id,
@@ -501,17 +558,47 @@ class SegmentationRunStore:
                 evidence={
                     **output.evidence,
                     "artifact_path": str(
-                        _write_specialist_artifact(
-                            specialist_dir,
-                            source_filename,
-                            events,
-                            output,
-                        )
+                        specialist_dir / f"{output.specialist_id}.html"
                     ),
                 },
             )
             for output in outputs
         ]
+
+    def _validate_snapshot_transition(
+        self,
+        run_path: Path,
+        run: SegmentationRun,
+        *,
+        operation_kind: str,
+        expected_previous_payload_sha256: str | None,
+        payload_sha256: str,
+    ) -> str:
+        if operation_kind == "create":
+            if expected_previous_payload_sha256 not in (None, ""):
+                raise ValueError("Create operations cannot replace a prior snapshot")
+            if not run_path.exists():
+                return ""
+            existing_payload = _read_segmentation_payload(run_path)
+            _validate_immutable_run_identity(existing_payload, run)
+            if _payload_sha256(existing_payload) != payload_sha256:
+                raise ValueError("Segmentation create conflicts with stored snapshot")
+            return ""
+
+        if not run_path.exists():
+            raise FileNotFoundError(run.run_id)
+        existing_payload = _read_segmentation_payload(run_path)
+        _validate_immutable_run_identity(existing_payload, run)
+        stored_payload_sha256 = _payload_sha256(existing_payload)
+        if expected_previous_payload_sha256 is not None:
+            if stored_payload_sha256 != expected_previous_payload_sha256:
+                raise ValueError("Segmentation snapshot changed before persistence")
+            return expected_previous_payload_sha256
+        if operation_kind != "rewrite":
+            raise ValueError(
+                "Mutable segmentation operations require the previous payload hash"
+            )
+        return stored_payload_sha256
 
 
 def plan_rule_work(rule_ids: list[str]) -> list[RuleWorkPacket]:
@@ -659,6 +746,79 @@ def _write_specialist_artifact(
 """,
     )
     return artifact_path
+
+
+def _evidence_import_record(run: SegmentationRun) -> EvidenceImportRecord:
+    return EvidenceImportRecord(
+        import_id=run.import_id,
+        run_id=run.run_id,
+        pipeline="segmentation",
+        project_source_id=run.project_source_id,
+        parent_transcript_revision_id=run.parent_transcript_revision_id,
+        workspace_id=run.workspace_id,
+        source_id=run.source_id,
+        source_filename=run.source_filename,
+        source_media_type=run.source_media_type,
+        source_blob_sha256=run.source_blob_sha256,
+        transcript_revision_id=run.transcript_revision_id,
+        transcript_sha256=run.transcript_sha256,
+        imported_at=run.created_at,
+    )
+
+
+def _read_segmentation_payload(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Stored segmentation snapshot is unreadable") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Stored segmentation snapshot must be a JSON object")
+    return payload
+
+
+def _payload_sha256(payload: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _segmentation_payload_sha256(run: SegmentationRun) -> str:
+    return _payload_sha256(segmentation_run_to_payload(run))
+
+
+def _validate_immutable_run_identity(
+    existing_payload: dict[str, Any],
+    target: SegmentationRun,
+) -> None:
+    try:
+        existing = segmentation_run_from_payload(existing_payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Stored segmentation snapshot has invalid identity") from exc
+    if _immutable_run_identity(existing) != _immutable_run_identity(target):
+        raise ValueError("Segmentation run identity conflicts with stored snapshot")
+
+
+def _immutable_run_identity(run: SegmentationRun) -> tuple[str, ...]:
+    return (
+        run.run_id,
+        run.import_id,
+        run.project_source_id,
+        run.parent_transcript_revision_id,
+        run.workspace_id,
+        run.source_blob_sha256,
+        run.source_media_type,
+        run.source_id,
+        run.transcript_sha256,
+        run.transcript_revision_id,
+        run.source_filename,
+        run.descript_text,
+        run.source,
+        run.created_at,
+    )
 
 
 def segmentation_run_to_payload(run: SegmentationRun) -> dict[str, Any]:

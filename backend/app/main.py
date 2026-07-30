@@ -488,6 +488,7 @@ def create_segmentation_run(request: SegmentationRunCreateRequest) -> dict:
         SchemaCompatibilityError,
         SegmentationOperationConflict,
         SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
     ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -507,6 +508,7 @@ def create_segmentation_corpus_run(
         SchemaCompatibilityError,
         SegmentationOperationConflict,
         SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
     ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -570,6 +572,7 @@ async def create_segmentation_file_run(
         SchemaCompatibilityError,
         SegmentationOperationConflict,
         SegmentationSnapshotConflict,
+        SourceBlobIntegrityError,
     ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (json.JSONDecodeError, ValueError) as exc:

@@ -9,6 +9,10 @@ from fastapi.testclient import TestClient
 
 from backend.app.main import app
 from backend.storage.segmentation_operation_store import SegmentationOperationStore
+from backend.storage.source_blob_store import (
+    SourceBlobIntegrityError,
+    SourceBlobStore,
+)
 from backend.storage.study_store import StudyWorkspaceStore
 
 
@@ -277,6 +281,44 @@ def test_segmentation_mutations_report_active_operation_conflict(
     assert patched.status_code == 409
     assert "already running" in verified.json()["detail"]
     assert "already running" in patched.json()["detail"]
+
+
+def test_segmentation_create_routes_report_source_integrity_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+
+    def reject_blob(self, content, expected_sha256):
+        raise SourceBlobIntegrityError("Stored source blob failed verification")
+
+    monkeypatch.setattr(SourceBlobStore, "store", reject_blob)
+    client = TestClient(app)
+
+    created = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "conflict.txt",
+            "descript_text": "[00:00:00] P: Preserve integrity.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    uploaded = client.post(
+        "/api/segmentation/runs/files",
+        data={"rule_ids": '["speaker-markers"]'},
+        files={
+            "file": (
+                "conflict.txt",
+                b"[00:00:00] P: Preserve integrity.",
+                "text/plain",
+            )
+        },
+    )
+    corpus = client.post("/api/segmentation/corpus-runs", json={"seed": 0})
+
+    for response in (created, uploaded, corpus):
+        assert response.status_code == 409
+        assert "failed verification" in response.json()["detail"]
 
 
 def test_segmentation_operations_endpoint_rejects_newer_schema(

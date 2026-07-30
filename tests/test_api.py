@@ -8,6 +8,7 @@ from docx import Document
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.storage.segmentation_operation_store import SegmentationOperationStore
 from backend.storage.study_store import StudyWorkspaceStore
 
 
@@ -50,6 +51,13 @@ def test_storage_schema_status_reports_applied_migrations(tmp_path, monkeypatch)
         "add-project-source-lineage",
         "index-workspace-history",
     ]
+    assert payload["databases"]["segmentation_operations"]["current_version"] == 1
+    assert [
+        migration["name"]
+        for migration in payload["databases"]["segmentation_operations"][
+            "migrations"
+        ]
+    ] == ["create-segmentation-operations"]
 
 
 def test_storage_schema_status_rejects_newer_database(tmp_path, monkeypatch) -> None:
@@ -62,6 +70,21 @@ def test_storage_schema_status_rejects_newer_database(tmp_path, monkeypatch) -> 
 
     assert response.status_code == 409
     assert "newer than supported version 3" in response.json()["detail"]
+
+
+def test_storage_schema_status_rejects_newer_segmentation_database(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    with sqlite3.connect(tmp_path / "segmentation.sqlite3") as connection:
+        connection.execute("pragma user_version = 99")
+    client = TestClient(app)
+
+    response = client.get("/api/storage/schema-status")
+
+    assert response.status_code == 409
+    assert "segmentation operations schema version 99" in response.json()["detail"]
 
 
 def test_qualitative_schema_status_reports_per_study_contract(
@@ -149,6 +172,70 @@ def test_analysis_operations_endpoint_reports_completed_and_incomplete(
     assert "content" not in operations[0]
     assert incomplete.status_code == 200
     assert incomplete.json() == {"operations": []}
+
+
+def test_segmentation_operations_endpoint_reports_completed_and_incomplete(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    created = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "journal.txt",
+            "descript_text": "[00:00:00] P: Journal this.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    pending_id = SegmentationOperationStore(tmp_path).begin(
+        run_id="pending_run",
+        import_id="pending_import",
+        operation_kind="create",
+        previous_payload_sha256="",
+        payload_sha256="a" * 64,
+    )
+
+    response = client.get("/api/storage/segmentation-operations")
+    incomplete = client.get(
+        "/api/storage/segmentation-operations",
+        params={"incomplete_only": "true"},
+    )
+
+    assert created.status_code == 200
+    assert response.status_code == 200
+    operations = response.json()["operations"]
+    completed = next(
+        operation
+        for operation in operations
+        if operation["run_id"] == created.json()["run"]["run_id"]
+    )
+    assert completed["operation_kind"] == "create"
+    assert completed["status"] == "completed"
+    assert completed["stage"] == "completed"
+    assert completed["last_error_type"] == ""
+    assert "descript_text" not in completed
+    assert "source_filename" not in completed
+    assert incomplete.status_code == 200
+    assert [
+        operation["operation_id"]
+        for operation in incomplete.json()["operations"]
+    ] == [pending_id]
+
+
+def test_segmentation_operations_endpoint_rejects_newer_schema(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    with sqlite3.connect(tmp_path / "segmentation.sqlite3") as connection:
+        connection.execute("pragma user_version = 99")
+    client = TestClient(app)
+
+    response = client.get("/api/storage/segmentation-operations")
+
+    assert response.status_code == 409
+    assert "newer than supported version 1" in response.json()["detail"]
 
 
 def test_default_skill_pack_endpoint() -> None:

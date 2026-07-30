@@ -64,6 +64,7 @@ from backend.storage.project_archive import (
     ProjectArchiveError,
     ProjectArchiveStore,
 )
+from backend.storage.segmentation_operation_store import SegmentationOperationStore
 from backend.storage.source_blob_store import SourceBlobIntegrityError, SourceBlobStore
 from backend.storage.sqlite_migrations import SchemaCompatibilityError
 from backend.storage.study_store import MAX_STUDY_PARTICIPANTS, StudyWorkspaceStore
@@ -205,6 +206,9 @@ def storage_schema_status() -> dict:
     try:
         analysis_migrations = LocalRunStore(_local_data_root()).migration_status()
         evidence_migrations = EvidenceCatalog(_local_data_root()).migration_status()
+        segmentation_migrations = SegmentationOperationStore(
+            _local_data_root()
+        ).migration_status()
     except SchemaCompatibilityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
@@ -217,6 +221,10 @@ def storage_schema_status() -> dict:
             "evidence_catalog": {
                 "current_version": evidence_migrations[-1]["version"],
                 "migrations": evidence_migrations,
+            },
+            "segmentation_operations": {
+                "current_version": segmentation_migrations[-1]["version"],
+                "migrations": segmentation_migrations,
             },
         },
     }
@@ -233,6 +241,23 @@ def list_analysis_operations(
             limit=limit,
         )
     }
+
+
+@app.get("/api/storage/segmentation-operations")
+def list_segmentation_operations(
+    incomplete_only: bool = False,
+    limit: int = 100,
+) -> dict:
+    try:
+        operations = SegmentationOperationStore(
+            _local_data_root()
+        ).list_operations(
+            incomplete_only=incomplete_only,
+            limit=limit,
+        )
+    except SchemaCompatibilityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"operations": operations}
 
 
 @app.get("/api/skill-packs/default")

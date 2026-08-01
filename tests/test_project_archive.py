@@ -747,8 +747,12 @@ def test_project_archive_round_trips_original_pre_audit_batch_generation(
     )
 
 
+@pytest.mark.parametrize("catalog_workspace", ["legacy", "local-default"])
+@pytest.mark.parametrize("destination_blob_state", ["absent", "corrupt"])
 def test_project_archive_preserves_import_v1_catalog_without_original_blob(
     tmp_path: Path,
+    catalog_workspace: str,
+    destination_blob_state: str,
 ) -> None:
     source_root = tmp_path / "source"
     restore_root = tmp_path / "restore"
@@ -769,10 +773,10 @@ def test_project_archive_preserves_import_v1_catalog_without_original_blob(
     with sqlite3.connect(catalog.db_path) as connection:
         connection.execute(
             """
-            update project_sources set workspace_id = 'legacy'
+            update project_sources set workspace_id = ?
             where project_source_id = ?
             """,
-            (project_source_id,),
+            (catalog_workspace, project_source_id),
         )
     SourceBlobStore(source_root).blob_path(
         run_payload["source_blob_sha256"]
@@ -788,6 +792,18 @@ def test_project_archive_preserves_import_v1_catalog_without_original_blob(
         assert f"blobs/{run_payload['source_blob_sha256']}.blob" not in (
             archive.namelist()
         )
+    if destination_blob_state == "corrupt":
+        destination_blob = SourceBlobStore(restore_root).blob_path(
+            run_payload["source_blob_sha256"]
+        )
+        destination_blob.parent.mkdir(parents=True, exist_ok=True)
+        destination_blob.write_bytes(b"corrupt")
+        with pytest.raises(ProjectArchiveError, match="destination"):
+            ProjectArchiveStore(restore_root).restore_archive(
+                exported.archive_path
+            )
+        assert not (restore_root / "studies" / study_id).exists()
+        return
     restored = ProjectArchiveStore(restore_root).restore_archive(
         exported.archive_path
     )
@@ -836,6 +852,54 @@ def test_project_archive_rejects_invalid_unretained_blob_marker(
         ProjectArchiveStore(restore_root).restore_archive(tampered_archive)
 
     assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_rejects_unretained_marker_for_non_batch_import(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study = StudyWorkspaceStore(source_root).create_study(
+        {"name": "Ordinary Evidence Archive Study"}
+    )
+    content = b"ordinary retained source"
+    digest = sha256(content).hexdigest()
+    SourceBlobStore(source_root).store(content, digest)
+    EvidenceCatalog(source_root).record_import(
+        EvidenceImportRecord(
+            import_id="imp_ordinary_archive_evidence",
+            run_id="run_ordinary_archive_evidence",
+            pipeline="analysis",
+            source_id=f"src_{digest[:32]}",
+            source_filename="ordinary.txt",
+            source_media_type="text/plain",
+            source_blob_sha256=digest,
+            transcript_revision_id=f"trv_{digest[:32]}",
+            transcript_sha256=digest,
+            imported_at="2026-08-01T12:00:00+00:00",
+            project_source_id="psrc_ordinary_archive_evidence",
+            workspace_id=study.id,
+        )
+    )
+    exported = ProjectArchiveStore(source_root).create_archive(study.id)
+    tampered_archive = tmp_path / "ordinary-unretained.nlpstudy.zip"
+
+    def mutate(members):
+        members.pop(f"blobs/{digest}.blob")
+        members["evidence/unretained_blobs.json"] = json.dumps([digest]).encode(
+            "utf-8"
+        )
+
+    _rewrite_archive_members(
+        exported.archive_path,
+        tampered_archive,
+        mutate,
+    )
+
+    with pytest.raises(ProjectArchiveError, match="artifacts are invalid"):
+        ProjectArchiveStore(restore_root).restore_archive(tampered_archive)
+
+    assert not (restore_root / "studies" / study.id).exists()
 
 
 @pytest.mark.parametrize(

@@ -82,6 +82,9 @@ visibly without partial destination evidence writes.
   backup and restore without inventing a source blob.
 - Rejected hash-aligned current run snapshots with incomplete evidence identity
   across detail, run drilldown, and exact-retry APIs.
+- Bound unretained-blob markers to eligible pre-journal import IDs, preserved
+  matching `legacy` and `local-default` catalog rows, and rejected restore when a
+  marked digest already resolves to corrupt destination content.
 - Rejected unsafe portable paths, prefix collisions, encrypted ZIP entries, and
   unsupported compression without extraction or HTTP 500 responses.
 - Injected a failure at final study publication and verified the destination
@@ -90,8 +93,8 @@ visibly without partial destination evidence writes.
 
 ## CLI Verification
 
-- Focused backend integration suite passed: 264/264.
-- Complete backend suite passed: 394/394.
+- Focused backend integration suite passed: 268/268.
+- Complete backend suite passed: 398/398.
 - Frontend production build passed with 1,710 modules transformed.
 - All eight frontend helper suites passed: 30/30.
 - `git diff --check` passed.

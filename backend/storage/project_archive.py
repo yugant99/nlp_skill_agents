@@ -186,12 +186,13 @@ class ProjectArchiveStore:
             for record in self.catalog.workspace_import_records(study_id)
         }
         if legacy_import_ids:
-            for record in self.catalog.workspace_import_records("legacy"):
-                if record.import_id in legacy_import_ids:
-                    imports_by_id[record.import_id] = replace(
-                        record,
-                        workspace_id=study_id,
-                    )
+            for workspace_id in ("legacy", "local-default"):
+                for record in self.catalog.workspace_import_records(workspace_id):
+                    if record.import_id in legacy_import_ids:
+                        imports_by_id[record.import_id] = replace(
+                            record,
+                            workspace_id=study_id,
+                        )
         imports = [imports_by_id[import_id] for import_id in sorted(imports_by_id)]
         members["evidence/imports.json"] = json.dumps(
             [asdict(record) for record in imports],
@@ -351,6 +352,16 @@ class ProjectArchiveStore:
                         study_id
                     )
                 )
+                for digest in unretained_blob_digests:
+                    if any(
+                        record.import_id
+                        not in compatibility.legacy_import_ids
+                        for record in imports
+                        if record.source_blob_sha256 == digest
+                    ):
+                        raise StudyBatchSnapshotConflict(
+                            "Archive unretained blob is not eligible legacy evidence"
+                        )
                 validation_store.validate_skill_pack_versions(
                     study_id,
                     legacy_unaudited_versions=(
@@ -379,6 +390,7 @@ class ProjectArchiveStore:
                     imports,
                     audit_events,
                     actual_blob_names,
+                    unretained_blob_digests,
                     members,
                 )
                 self._commit_restore(
@@ -404,6 +416,7 @@ class ProjectArchiveStore:
         imports: list[EvidenceImportRecord],
         audit_events: list[dict[str, object]],
         blob_names: set[str],
+        unretained_blob_digests: set[str],
         members: dict[str, bytes],
     ) -> int:
         preflight_root = stage_root / "destination-preflight"
@@ -431,6 +444,12 @@ class ProjectArchiveStore:
                     stored_content = self.blobs.read_verified(digest)
                     if stored_content != members[blob_name]:
                         raise ValueError("Destination source blob conflicts")
+            for digest in sorted(unretained_blob_digests):
+                destination = self.blobs.blob_path(digest)
+                if destination.is_symlink():
+                    raise ValueError("Destination source blob is a symbolic link")
+                if destination.exists():
+                    self.blobs.read_verified(digest)
             _restore_imports(EvidenceCatalog(preflight_root), imports)
             return AuditLogStore(preflight_root).import_events(audit_events)
         except (

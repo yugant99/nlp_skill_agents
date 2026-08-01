@@ -261,7 +261,7 @@ class CodeCreateRequest(BaseModel):
     examples: list[str] = Field(default_factory=list)
     notes: str = ""
     color: str = ""
-    sort_order: int = 0
+    sort_order: Annotated[int, Field(strict=True)] = 0
 
 
 class CodeUpdateRequest(BaseModel):
@@ -274,7 +274,7 @@ class CodeUpdateRequest(BaseModel):
     examples: list[str] = Field(default_factory=list)
     notes: str = ""
     color: str = ""
-    sort_order: int = 0
+    sort_order: Annotated[int, Field(strict=True)] = 0
 
 
 class CodebookFreezeRequest(BaseModel):

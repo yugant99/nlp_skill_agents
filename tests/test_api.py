@@ -468,6 +468,63 @@ def test_codebook_api_maps_structural_domain_missing_and_conflict_errors(
     assert duplicate.status_code == 409
 
 
+@pytest.mark.parametrize("invalid_sort_order", [True, "1", 1.0])
+def test_codebook_api_rejects_coercive_sort_order_types(
+    tmp_path,
+    monkeypatch,
+    invalid_sort_order: object,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id, researcher_id = _bootstrap_qualitative_project(
+        client,
+        name="Codebook Strict Sort Order API",
+    )
+    base = f"/api/studies/{study_id}/qualitative/codebooks"
+    codebook = client.post(
+        base,
+        json={"researcher_id": researcher_id, "title": "Strict ordering"},
+    ).json()["codebook"]
+    draft = client.post(
+        f"{base}/{codebook['codebook_id']}/versions",
+        json={"researcher_id": researcher_id, "based_on_version_id": None},
+    ).json()["version"]
+    codes_url = (
+        f"{base}/{codebook['codebook_id']}/versions/"
+        f"{draft['codebook_version_id']}/codes"
+    )
+
+    rejected_create = client.post(
+        codes_url,
+        json={
+            "researcher_id": researcher_id,
+            "stable_code_key": "rejected",
+            "label": "Rejected",
+            "sort_order": invalid_sort_order,
+        },
+    )
+    accepted = client.post(
+        codes_url,
+        json={
+            "researcher_id": researcher_id,
+            "stable_code_key": "accepted",
+            "label": "Accepted",
+        },
+    )
+    assert accepted.status_code == 200
+    rejected_update = client.put(
+        f"{codes_url}/{accepted.json()['code']['code_id']}",
+        json={
+            "researcher_id": researcher_id,
+            "label": "Rejected update",
+            "sort_order": invalid_sort_order,
+        },
+    )
+
+    assert rejected_create.status_code == 422
+    assert rejected_update.status_code == 422
+
+
 def test_codebook_api_exports_imports_and_rejects_invalid_or_newer_documents(
     tmp_path,
     monkeypatch,

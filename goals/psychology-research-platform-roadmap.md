@@ -160,12 +160,14 @@ publishing a restore. Completed pre-journal history is retained and validated at
 the manifest, run, aggregate, CSV, audit, evidence, and blob boundaries. Restore
 preflights shared destination state and rolls it back if final study publication
 fails. Legacy validation preserves the original writer contract: current
-lineage-aware snapshots require their exact catalog row and verified blob, the
-first import-catalog generation validates any retained row without inventing a
-blob, and earlier deterministic-hash, metadata-only, and pre-audit generations
-remain readable at explicitly reduced trust. Invalid journal filesystem objects
-fail as controlled conflicts. A hard-stopped batch still remains `running`; there
-is no lease, takeover, abandon, or automatic
+lineage-aware snapshots require their exact catalog row, journal-backed snapshots
+require a verified blob, and pre-journal lineage validates that blob when the
+writer retained it. Backup preserves first-generation import-catalog rows and
+marks their never-retained blobs explicitly instead of dropping evidence. Earlier
+deterministic-hash, metadata-only, and pre-audit generations remain readable at
+explicitly reduced trust. Invalid journal filesystem objects and structurally
+invalid current-ledger databases fail as controlled conflicts. A hard-stopped
+batch still remains `running`; there is no lease, takeover, abandon, or automatic
 startup-reconciliation workflow yet.
 
 ## Gap Register

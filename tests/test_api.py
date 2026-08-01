@@ -1963,7 +1963,10 @@ def test_completed_study_batch_reader_apis_report_dependency_io_conflict(
     )
 
 
-@pytest.mark.parametrize("journal_state", ["directory", "corrupt", "symlink"])
+@pytest.mark.parametrize(
+    "journal_state",
+    ["directory", "corrupt", "symlink", "missing-table"],
+)
 def test_study_batch_apis_report_invalid_journal_conflict(
     tmp_path,
     monkeypatch,
@@ -1988,12 +1991,16 @@ def test_study_batch_apis_report_invalid_journal_conflict(
     )
     run_id = store.list_batch_runs(study.id, batch.batch_id)[0]["run_id"]
     journal_path = tmp_path / "studies" / study.id / "batch_operations.sqlite3"
-    journal_path.unlink()
+    if journal_state == "missing-table":
+        with sqlite3.connect(journal_path) as connection:
+            connection.execute("drop table study_batch_operation_items")
+    else:
+        journal_path.unlink()
     if journal_state == "directory":
         journal_path.mkdir()
     elif journal_state == "corrupt":
         journal_path.write_bytes(b"not a sqlite database")
-    else:
+    elif journal_state == "symlink":
         target = tmp_path / "journal-target.sqlite3"
         target.write_bytes(b"not a sqlite database")
         journal_path.symlink_to(target)
@@ -2013,6 +2020,84 @@ def test_study_batch_apis_report_invalid_journal_conflict(
     assert [response.status_code for response in responses] == [409] * 6
     assert all(
         "journal is invalid" in response.json()["detail"].lower()
+        for response in responses
+    )
+
+
+def test_study_batch_apis_reject_hash_aligned_incomplete_current_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Incomplete Current Evidence API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "incomplete_current_evidence_api_pack",
+            "name": "Incomplete Current Evidence API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch_id = "batch_20260731151515_aabbccdd"
+    transcript = {
+        "source_filename": "one.txt",
+        "content": "CG: Hello.\nP: Hi.",
+        "metadata": {},
+        "project_source_id": "",
+        "parent_transcript_revision_id": "",
+    }
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [transcript],
+        batch_id=batch_id,
+    )
+    journal = StudyBatchOperationStore(tmp_path, study.id)
+    item = journal.list_items(batch_id)[0]
+    run_path = batch.aggregate_dir / "runs" / f"{item['run_id']}.json"
+    run_payload = json.loads(run_path.read_text(encoding="utf-8"))
+    run_payload.pop("workspace_id")
+    run_path.write_text(json.dumps(run_payload), encoding="utf-8")
+    aligned_hash = sha256(
+        json.dumps(
+            run_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    with sqlite3.connect(journal.db_path) as connection:
+        connection.execute(
+            """
+            update study_batch_operation_items
+            set run_payload_sha256 = ?
+            where batch_id = ? and item_index = ?
+            """,
+            (aligned_hash, batch_id, item["item_index"]),
+        )
+    client = TestClient(app)
+
+    responses = [
+        client.get(f"/api/studies/{study.id}/batches/{batch_id}"),
+        client.get(f"/api/studies/{study.id}/batches/{batch_id}/runs"),
+        client.get(
+            f"/api/studies/{study.id}/batches/{batch_id}/runs/{item['run_id']}"
+        ),
+        client.post(
+            f"/api/studies/{study.id}/batches/text",
+            json={
+                "skill_pack_version_id": version.version_id,
+                "batch_id": batch_id,
+                "transcripts": [transcript],
+            },
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [409] * 4
+    assert all(
+        "completed study batch" in response.json()["detail"].lower()
         for response in responses
     )
 

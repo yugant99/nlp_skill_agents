@@ -677,7 +677,19 @@ class StudyBatchOperationStore:
                     database_name="study batch operations",
                     migrations=STUDY_BATCH_OPERATION_MIGRATIONS,
                 )
-        except (OSError, sqlite3.Error) as exc:
+                _validate_schema_definition(
+                    connection,
+                    len(STUDY_BATCH_OPERATION_MIGRATIONS),
+                )
+                _validate_database_integrity(connection)
+                _validate_study_ownership(connection, self.study_id)
+                _validate_persisted_operations(
+                    connection,
+                    self.study_id,
+                    schema_version=len(STUDY_BATCH_OPERATION_MIGRATIONS),
+                    allow_running=True,
+                )
+        except (OSError, sqlite3.Error, ValueError) as exc:
             raise StudyBatchOperationConflict(
                 "Study batch operation journal is invalid"
             ) from exc
@@ -693,6 +705,7 @@ class StudyBatchOperationStore:
             connection = sqlite3.connect(self.db_path, timeout=timeout)
             try:
                 connection.execute("pragma foreign_keys = on")
+                connection.execute("pragma trusted_schema = off")
             except BaseException:
                 connection.close()
                 raise
@@ -1082,6 +1095,7 @@ def _validate_persisted_operations(
     study_id: str,
     *,
     schema_version: int,
+    allow_running: bool = False,
 ) -> None:
     cursor = connection.cursor()
     cursor.row_factory = sqlite3.Row
@@ -1142,7 +1156,7 @@ def _validate_persisted_operations(
                 aggregate_payload_sha256,
                 "aggregate_payload_sha256",
             )
-        if str(operation["status"]) == "running":
+        if str(operation["status"]) == "running" and not allow_running:
             raise ValueError("Archived study batch operation is still running")
         if str(operation["status"]) == "completed":
             if schema_version >= 3 and not aggregate_payload_sha256:

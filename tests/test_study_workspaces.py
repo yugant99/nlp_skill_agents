@@ -16,6 +16,7 @@ from backend.storage.project_archive import (
     ProjectArchiveError,
     ProjectArchiveStore,
 )
+from backend.storage.source_blob_store import SourceBlobStore
 from backend.storage.study_batch_operation_store import (
     StudyBatchOperationConflict,
     StudyBatchOperationStore,
@@ -713,7 +714,13 @@ def test_study_workspace_lists_legacy_batch_runs_without_identity_fields(
 
 @pytest.mark.parametrize(
     "generation",
-    ["pre-audit", "metadata", "early-evidence", "import-v1"],
+    [
+        "pre-audit",
+        "metadata",
+        "early-evidence",
+        "import-v1",
+        "lineage-no-blob",
+    ],
 )
 def test_study_workspace_reads_historical_pre_journal_generations(
     tmp_path: Path,
@@ -738,7 +745,12 @@ def test_study_workspace_reads_historical_pre_journal_generations(
     run_path = next((batch.aggregate_dir / "runs").glob("*.json"))
     run_payload = json.loads(run_path.read_text(encoding="utf-8"))
     transcript_sha256 = run_payload["transcript_sha256"]
-    if generation == "early-evidence":
+    if generation == "lineage-no-blob":
+        source_blob_path = SourceBlobStore(tmp_path).blob_path(
+            run_payload["source_blob_sha256"]
+        )
+        source_blob_path.unlink()
+    elif generation == "early-evidence":
         for field_name in _current_evidence_fields():
             run_payload.pop(field_name)
         run_payload.update(
@@ -770,6 +782,12 @@ def test_study_workspace_reads_historical_pre_journal_generations(
         aggregate_path.write_text(json.dumps(aggregate_payload), encoding="utf-8")
     if generation == "pre-audit":
         (tmp_path / "audit" / "events.jsonl").write_text("", encoding="utf-8")
+        store.audit_log.record(
+            "study.schema.updated",
+            "study",
+            study.id,
+            {"updated_at": "2026-07-31T12:00:00+00:00"},
+        )
     (tmp_path / "studies" / study.id / "batch_operations.sqlite3").unlink()
 
     loaded = store.load_batch(study.id, batch.batch_id)

@@ -747,6 +747,97 @@ def test_project_archive_round_trips_original_pre_audit_batch_generation(
     )
 
 
+def test_project_archive_preserves_import_v1_catalog_without_original_blob(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _ = _build_study(source_root)
+    source_store = StudyWorkspaceStore(source_root)
+    batch = source_store.list_batches(study_id)[0]
+    run_path = next((batch.aggregate_dir / "runs").glob("*.json"))
+    run_payload = json.loads(run_path.read_text(encoding="utf-8"))
+    project_source_id = run_payload["project_source_id"]
+    for field_name in (
+        "project_source_id",
+        "parent_transcript_revision_id",
+        "workspace_id",
+    ):
+        run_payload.pop(field_name)
+    run_path.write_text(json.dumps(run_payload), encoding="utf-8")
+    catalog = EvidenceCatalog(source_root)
+    with sqlite3.connect(catalog.db_path) as connection:
+        connection.execute(
+            """
+            update project_sources set workspace_id = 'legacy'
+            where project_source_id = ?
+            """,
+            (project_source_id,),
+        )
+    SourceBlobStore(source_root).blob_path(
+        run_payload["source_blob_sha256"]
+    ).unlink()
+    (source_root / "studies" / study_id / "batch_operations.sqlite3").unlink()
+
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    with ZipFile(exported.archive_path) as archive:
+        archived_imports = json.loads(archive.read("evidence/imports.json"))
+        unretained_blobs = json.loads(
+            archive.read("evidence/unretained_blobs.json")
+        )
+        assert f"blobs/{run_payload['source_blob_sha256']}.blob" not in (
+            archive.namelist()
+        )
+    restored = ProjectArchiveStore(restore_root).restore_archive(
+        exported.archive_path
+    )
+
+    restored_imports = EvidenceCatalog(restore_root).workspace_import_records(
+        study_id
+    )
+    assert archived_imports[0]["import_id"] == run_payload["import_id"]
+    assert archived_imports[0]["workspace_id"] == study_id
+    assert unretained_blobs == [run_payload["source_blob_sha256"]]
+    assert restored.import_count == 1
+    assert restored.blob_count == 0
+    assert restored_imports[0].import_id == run_payload["import_id"]
+    assert StudyWorkspaceStore(restore_root).list_batch_runs(
+        study_id,
+        batch.batch_id,
+    )
+
+
+@pytest.mark.parametrize("marker_state", ["unreferenced", "journal-backed"])
+def test_project_archive_rejects_invalid_unretained_blob_marker(
+    tmp_path: Path,
+    marker_state: str,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, digest = _build_study(source_root)
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    tampered_archive = tmp_path / f"unretained-{marker_state}.nlpstudy.zip"
+
+    def mutate(members):
+        marked_digest = "0" * 64 if marker_state == "unreferenced" else digest
+        members["evidence/unretained_blobs.json"] = json.dumps(
+            [marked_digest]
+        ).encode("utf-8")
+        if marker_state == "journal-backed":
+            members.pop(f"blobs/{digest}.blob")
+
+    _rewrite_archive_members(
+        exported.archive_path,
+        tampered_archive,
+        mutate,
+    )
+
+    with pytest.raises(ProjectArchiveError):
+        ProjectArchiveStore(restore_root).restore_archive(tampered_archive)
+
+    assert not (restore_root / "studies" / study_id).exists()
+
+
 @pytest.mark.parametrize(
     "artifact_kind",
     ["aggregate", "run", "identity", "csv", "audit"],

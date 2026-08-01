@@ -8,7 +8,7 @@ import sqlite3
 import tempfile
 import unicodedata
 import zlib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
@@ -132,16 +132,22 @@ class ProjectArchiveStore:
             ).archive_snapshot_guard():
                 with workspace_mutation_lock(self.root):
                     validation_store = StudyWorkspaceStore(self.root)
-                    legacy_unaudited_versions = (
+                    compatibility = (
                         validation_store.validate_completed_batch_snapshots(
                             study_id
                         )
                     )
                     validation_store.validate_skill_pack_versions(
                         study_id,
-                        legacy_unaudited_versions=legacy_unaudited_versions,
+                        legacy_unaudited_versions=(
+                            compatibility.legacy_unaudited_versions
+                        ),
                     )
-                    return self._create_archive_snapshot(study_id, study_dir)
+                    return self._create_archive_snapshot(
+                        study_id,
+                        study_dir,
+                        legacy_import_ids=compatibility.legacy_import_ids,
+                    )
         except (
             FileNotFoundError,
             OSError,
@@ -159,6 +165,8 @@ class ProjectArchiveStore:
         self,
         study_id: str,
         study_dir: Path,
+        *,
+        legacy_import_ids: frozenset[str],
     ) -> ProjectArchiveExport:
         if self.catalog.db_path.is_symlink() or self.audit.events_path.is_symlink():
             raise ProjectArchiveError(
@@ -173,7 +181,18 @@ class ProjectArchiveStore:
                 relative = path.relative_to(study_dir).as_posix()
                 members[f"study/{relative}"] = path.read_bytes()
 
-        imports = self.catalog.workspace_import_records(study_id)
+        imports_by_id = {
+            record.import_id: record
+            for record in self.catalog.workspace_import_records(study_id)
+        }
+        if legacy_import_ids:
+            for record in self.catalog.workspace_import_records("legacy"):
+                if record.import_id in legacy_import_ids:
+                    imports_by_id[record.import_id] = replace(
+                        record,
+                        workspace_id=study_id,
+                    )
+        imports = [imports_by_id[import_id] for import_id in sorted(imports_by_id)]
         members["evidence/imports.json"] = json.dumps(
             [asdict(record) for record in imports],
             indent=2,
@@ -184,8 +203,25 @@ class ProjectArchiveStore:
             indent=2,
             sort_keys=True,
         ).encode("utf-8")
-        for digest in sorted({record.source_blob_sha256 for record in imports}):
-            members[f"blobs/{digest}.blob"] = self.blobs.read_verified(digest)
+        records_by_blob: dict[str, list[EvidenceImportRecord]] = {}
+        for record in imports:
+            records_by_blob.setdefault(record.source_blob_sha256, []).append(record)
+        unretained_blobs: list[str] = []
+        for digest, blob_records in sorted(records_by_blob.items()):
+            try:
+                members[f"blobs/{digest}.blob"] = self.blobs.read_verified(digest)
+            except FileNotFoundError:
+                if not all(
+                    record.import_id in legacy_import_ids
+                    for record in blob_records
+                ):
+                    raise
+                unretained_blobs.append(digest)
+        if unretained_blobs:
+            members["evidence/unretained_blobs.json"] = json.dumps(
+                unretained_blobs,
+                indent=2,
+            ).encode("utf-8")
         _validate_member_names(["manifest.json", *members])
         _enforce_archive_budget(members)
 
@@ -246,13 +282,25 @@ class ProjectArchiveStore:
             members["evidence/imports.json"],
             study_id,
         )
+        unretained_blob_digests = _parse_unretained_blob_digests(
+            members.get("evidence/unretained_blobs.json", b"[]")
+        )
         audit_events = _parse_audit_events(
             members["evidence/audit.json"],
             study_id,
         )
         expected_blob_names = {
-            f"blobs/{record.source_blob_sha256}.blob" for record in imports
+            f"blobs/{record.source_blob_sha256}.blob"
+            for record in imports
+            if record.source_blob_sha256 not in unretained_blob_digests
         }
+        referenced_blob_digests = {
+            record.source_blob_sha256 for record in imports
+        }
+        if not unretained_blob_digests.issubset(referenced_blob_digests):
+            raise ProjectArchiveError(
+                "Archive unretained blob set does not match evidence imports"
+            )
         actual_blob_names = {name for name in members if name.startswith("blobs/")}
         if actual_blob_names != expected_blob_names:
             raise ProjectArchiveError("Archive blob set does not match evidence imports")
@@ -298,14 +346,16 @@ class ProjectArchiveStore:
                 _restore_imports(EvidenceCatalog(stage_root), imports)
                 AuditLogStore(stage_root).import_events(audit_events)
                 validation_store = StudyWorkspaceStore(stage_root)
-                legacy_unaudited_versions = (
+                compatibility = (
                     validation_store.validate_completed_batch_snapshots(
                         study_id
                     )
                 )
                 validation_store.validate_skill_pack_versions(
                     study_id,
-                    legacy_unaudited_versions=legacy_unaudited_versions,
+                    legacy_unaudited_versions=(
+                        compatibility.legacy_unaudited_versions
+                    ),
                 )
             except (
                 FileNotFoundError,
@@ -686,6 +736,28 @@ def _parse_evidence_imports(
         import_ids.add(payload["import_id"])
         imports.append(EvidenceImportRecord(**payload))
     return imports
+
+
+def _parse_unretained_blob_digests(content: bytes) -> set[str]:
+    try:
+        payload = json.loads(content.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ProjectArchiveError(
+            "Archive unretained blob records are malformed"
+        ) from exc
+    if (
+        not isinstance(payload, list)
+        or any(
+            not isinstance(digest, str)
+            or not _SHA256_PATTERN.fullmatch(digest)
+            for digest in payload
+        )
+        or len(payload) != len(set(payload))
+    ):
+        raise ProjectArchiveError(
+            "Archive unretained blob records are malformed"
+        )
+    return set(payload)
 
 
 def _validate_evidence_string(

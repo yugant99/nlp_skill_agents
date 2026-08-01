@@ -48,12 +48,15 @@ preflights shared evidence state under a workspace mutation lock and rolls back
 catalog, audit, and newly introduced blob writes if final study publication fails.
 Legacy validation follows the persisted generation instead of imposing the newest
 contract retroactively. Current lineage-aware snapshots are bound to the exact
-catalog record and verified blob; the first import-catalog generation validates
-its deterministic transcript identity and any retained catalog row without
-requiring a blob that writer never stored. Earlier hash-only snapshots validate
-their deterministic source/revision IDs. Metadata-only and original pre-audit
-snapshots remain readable as explicitly reduced-trust history rather than
-receiving invented provenance or audit events.
+catalog record. Journal-backed snapshots always require their verified blob;
+pre-journal lineage snapshots verify it when retained because an intermediate
+writer generation predated blob storage. The first import-catalog generation
+validates its deterministic transcript identity, and backup promotes its migrated
+legacy catalog row into the study archive while explicitly recording the original
+blob as unretained. Earlier hash-only snapshots validate their deterministic
+source/revision IDs. Metadata-only and original pre-audit snapshots remain
+readable as explicitly reduced-trust history rather than receiving invented
+provenance or audit events.
 The analysis-run, evidence-catalog, segmentation-operation, per-study batch, and
 per-study qualitative databases use ordered, forward-only SQLite migration
 ledgers. Each migration is transactional, older supported database shapes are

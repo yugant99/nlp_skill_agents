@@ -137,6 +137,12 @@ class StudyBundleExport:
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
 
+@dataclass(frozen=True)
+class StudyBatchArchiveCompatibility:
+    legacy_unaudited_versions: frozenset[str]
+    legacy_import_ids: frozenset[str]
+
+
 class StudyWorkspaceStore:
     def __init__(self, root: Path | str = "local_data") -> None:
         self.root = Path(root)
@@ -996,23 +1002,34 @@ class StudyWorkspaceStore:
                     "Completed study batch source blob conflicts with its journal"
                 ) from exc
             import_record = import_records.get(str(item["import_id"]))
-            expected_import = {
-                "import_id": run_payload["import_id"],
-                "run_id": run_payload["run_id"],
-                "pipeline": "study_batch",
-                "project_source_id": run_payload["project_source_id"],
-                "parent_transcript_revision_id": run_payload[
-                    "parent_transcript_revision_id"
-                ],
-                "workspace_id": run_payload["workspace_id"],
-                "source_id": run_payload["source_id"],
-                "source_filename": run_payload["source_filename"],
-                "source_media_type": run_payload["source_media_type"],
-                "source_blob_sha256": run_payload["source_blob_sha256"],
-                "transcript_revision_id": run_payload["transcript_revision_id"],
-                "transcript_sha256": run_payload["transcript_sha256"],
-                "imported_at": run_payload["created_at"],
-            }
+            try:
+                if _legacy_evidence_generation(run_payload) != "current":
+                    raise ValueError(
+                        "Current run evidence identity is incomplete"
+                    )
+                expected_import = {
+                    "import_id": run_payload["import_id"],
+                    "run_id": run_payload["run_id"],
+                    "pipeline": "study_batch",
+                    "project_source_id": run_payload["project_source_id"],
+                    "parent_transcript_revision_id": run_payload[
+                        "parent_transcript_revision_id"
+                    ],
+                    "workspace_id": run_payload["workspace_id"],
+                    "source_id": run_payload["source_id"],
+                    "source_filename": run_payload["source_filename"],
+                    "source_media_type": run_payload["source_media_type"],
+                    "source_blob_sha256": run_payload["source_blob_sha256"],
+                    "transcript_revision_id": run_payload[
+                        "transcript_revision_id"
+                    ],
+                    "transcript_sha256": run_payload["transcript_sha256"],
+                    "imported_at": run_payload["created_at"],
+                }
+            except (KeyError, TypeError, ValueError) as exc:
+                raise StudyBatchSnapshotConflict(
+                    "Completed study batch run evidence is invalid"
+                ) from exc
             if import_record is None or asdict(import_record) != expected_import:
                 raise StudyBatchSnapshotConflict(
                     "Completed study batch evidence conflicts with its journal"
@@ -1122,10 +1139,14 @@ class StudyWorkspaceStore:
             )
         return batch
 
-    def validate_completed_batch_snapshots(self, study_id: str) -> set[str]:
+    def validate_completed_batch_snapshots(
+        self,
+        study_id: str,
+    ) -> StudyBatchArchiveCompatibility:
         self._require_study(study_id)
         journal = StudyBatchOperationStore(self.root, study_id)
         legacy_unaudited_versions: set[str] = set()
+        legacy_import_ids: set[str] = set()
         batches_dir = self._study_dir(study_id) / "batches"
         manifest_batch_ids = {
             path.parent.name for path in batches_dir.glob("*/batch.json")
@@ -1145,6 +1166,7 @@ class StudyWorkspaceStore:
                     study_id,
                     batch_id,
                     legacy_unaudited_versions=legacy_unaudited_versions,
+                    legacy_import_ids=legacy_import_ids,
                 )
             elif operation["status"] == "completed":
                 self._load_completed_batch(
@@ -1153,7 +1175,10 @@ class StudyWorkspaceStore:
                     journal,
                     operation,
                 )
-        return legacy_unaudited_versions
+        return StudyBatchArchiveCompatibility(
+            legacy_unaudited_versions=frozenset(legacy_unaudited_versions),
+            legacy_import_ids=frozenset(legacy_import_ids),
+        )
 
     def _load_legacy_completed_batch(
         self,
@@ -1161,6 +1186,7 @@ class StudyWorkspaceStore:
         batch_id: str,
         *,
         legacy_unaudited_versions: set[str] | None = None,
+        legacy_import_ids: set[str] | None = None,
     ) -> StudyBatchRun:
         try:
             batch = self._load_batch_manifest(study_id, batch_id)
@@ -1325,6 +1351,12 @@ class StudyWorkspaceStore:
                     run_payload,
                     import_records,
                 )
+                if (
+                    legacy_import_ids is not None
+                    and _legacy_evidence_generation(run_payload)
+                    in {"import-v1", "current"}
+                ):
+                    legacy_import_ids.add(str(run_payload["import_id"]))
         except (
             KeyError,
             OSError,
@@ -1417,13 +1449,7 @@ class StudyWorkspaceStore:
             raise StudyBatchSnapshotConflict(
                 "Legacy completed study batch audit log is invalid"
             ) from exc
-        study_audit_events = [
-            event
-            for event in audit_events
-            if event.get("subject_type") == "study"
-            and event.get("subject_id") == study_id
-        ]
-        if not matching_events and pre_audit_shape and not study_audit_events:
+        if not matching_events and pre_audit_shape:
             return batch
         if len(matching_events) != 1:
             raise StudyBatchSnapshotConflict(
@@ -1512,15 +1538,18 @@ class StudyWorkspaceStore:
         ):
             raise ValueError("legacy run evidence conflicts with catalog")
         if generation == "current":
-            SourceBlobStore(self.root).read_verified(
-                run_payload["source_blob_sha256"]
-            )
+            try:
+                SourceBlobStore(self.root).read_verified(
+                    run_payload["source_blob_sha256"]
+                )
+            except FileNotFoundError:
+                pass
 
     def validate_skill_pack_versions(
         self,
         study_id: str,
         *,
-        legacy_unaudited_versions: set[str] | None = None,
+        legacy_unaudited_versions: set[str] | frozenset[str] | None = None,
     ) -> None:
         self._require_study(study_id)
         version_dir = self._study_dir(study_id) / "skill_packs"

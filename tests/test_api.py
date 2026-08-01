@@ -9,6 +9,7 @@ from docx import Document
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.segmentation_operation_store import SegmentationOperationStore
 from backend.storage.source_blob_store import (
     SourceBlobIntegrityError,
@@ -37,6 +38,31 @@ def _bootstrap_qualitative_project(
     )
     assert bootstrap_response.status_code == 200
     return study_id, researcher_id
+
+
+def _record_api_project_source(
+    root: Path,
+    *,
+    project_source_id: str,
+    workspace_id: str,
+    suffix: str,
+) -> None:
+    EvidenceCatalog(root).record_import(
+        EvidenceImportRecord(
+            import_id=f"imp_{suffix}",
+            run_id=f"run_{suffix}",
+            pipeline="api-test",
+            source_id=f"src_{suffix}",
+            source_filename=f"{suffix}.txt",
+            source_media_type="text/plain",
+            source_blob_sha256="a" * 64,
+            transcript_revision_id=f"trv_{suffix}",
+            transcript_sha256="b" * 64,
+            imported_at="2026-08-01T12:00:00+00:00",
+            project_source_id=project_source_id,
+            workspace_id=workspace_id,
+        )
+    )
 
 
 def test_health_endpoint() -> None:
@@ -614,6 +640,501 @@ def test_codebook_api_exports_imports_and_rejects_invalid_or_newer_documents(
         },
     )
     assert newer.status_code == 409
+
+
+def test_case_attribute_api_happy_flow_and_exact_envelopes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id, researcher_id = _bootstrap_qualitative_project(
+        client,
+        name="Case Attribute Happy API",
+    )
+    cases_url = f"/api/studies/{study_id}/qualitative/cases"
+
+    created_by_kind = {}
+    for case_kind, label in [
+        ("timepoint", "Week 1"),
+        ("participant", " P1 "),
+        ("session", "Session 1"),
+        ("condition", "Control"),
+        ("dyad", "Dyad 1"),
+    ]:
+        response = client.post(
+            cases_url,
+            json={
+                "researcher_id": researcher_id,
+                "case_kind": case_kind,
+                "label": label,
+            },
+        )
+        assert response.status_code == 200
+        case = response.json()["case"]
+        assert set(case) == {
+            "case_id",
+            "project_id",
+            "case_kind",
+            "label",
+            "description",
+            "created_by",
+            "updated_by",
+            "created_at",
+            "updated_at",
+        }
+        created_by_kind[case_kind] = case
+
+    listed = client.get(cases_url)
+    assert listed.status_code == 200
+    assert [case["case_kind"] for case in listed.json()["cases"]] == [
+        "condition",
+        "dyad",
+        "participant",
+        "session",
+        "timepoint",
+    ]
+
+    participant = created_by_kind["participant"]
+    updated = client.put(
+        f"{cases_url}/{participant['case_id']}",
+        json={
+            "researcher_id": researcher_id,
+            "case_kind": "participant",
+            "label": "P1 revised",
+            "description": "Primary participant",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["case"]["case_id"] == participant["case_id"]
+    assert updated.json()["case"]["label"] == "P1 revised"
+
+    definitions_url = (
+        f"/api/studies/{study_id}/qualitative/attribute-definitions"
+    )
+    definition_response = client.post(
+        definitions_url,
+        json={
+            "researcher_id": researcher_id,
+            "attribute_key": "study_arm",
+            "label": "Study arm",
+            "value_type": "categorical",
+            "allowed_values": ["control", "intervention"],
+            "required": True,
+        },
+    )
+    assert definition_response.status_code == 200
+    definition = definition_response.json()["attribute_definition"]
+    assert set(definition) == {
+        "attribute_definition_id",
+        "project_id",
+        "attribute_key",
+        "label",
+        "value_type",
+        "allowed_values",
+        "required",
+        "created_by",
+        "updated_by",
+        "created_at",
+        "updated_at",
+    }
+    assert definition["allowed_values"] == ["control", "intervention"]
+    assert definition["required"] is True
+    assert client.get(definitions_url).json()["attribute_definitions"] == [
+        definition
+    ]
+
+    attribute_url = (
+        f"{cases_url}/{participant['case_id']}/attributes/"
+        f"{definition['attribute_definition_id']}"
+    )
+    set_value = client.put(
+        attribute_url,
+        json={"researcher_id": researcher_id, "value": "control"},
+    )
+    assert set_value.status_code == 200
+    attribute_value = set_value.json()["attribute_value"]
+    assert set(attribute_value) == {
+        "project_id",
+        "case_id",
+        "attribute_definition_id",
+        "attribute_key",
+        "value_type",
+        "value",
+        "updated_by",
+        "created_at",
+        "updated_at",
+    }
+    assert attribute_value["value"] == "control"
+
+    source_id = "psrc/case-api?revision=1"
+    _record_api_project_source(
+        tmp_path,
+        project_source_id=source_id,
+        workspace_id=study_id,
+        suffix="case_api_source",
+    )
+    sources_url = f"{cases_url}/{participant['case_id']}/sources"
+    source_request = {
+        "researcher_id": researcher_id,
+        "project_source_id": source_id,
+    }
+    linked = client.put(sources_url, json=source_request)
+    retried = client.put(sources_url, json=source_request)
+    assert linked.status_code == 200
+    assert retried.status_code == 200
+    assert retried.json() == linked.json()
+    assert set(linked.json()["source_link"]) == {
+        "project_id",
+        "project_source_id",
+        "case_id",
+        "linked_by",
+        "created_at",
+    }
+
+    snapshot = client.get(f"{cases_url}/{participant['case_id']}")
+    assert snapshot.status_code == 200
+    assert set(snapshot.json()) == {
+        "case",
+        "attribute_values",
+        "project_source_ids",
+    }
+    assert snapshot.json()["attribute_values"] == [attribute_value]
+    assert snapshot.json()["project_source_ids"] == [source_id]
+
+    replaced = client.put(
+        attribute_url,
+        json={"researcher_id": researcher_id, "value": "intervention"},
+    )
+    padded_attribute_url = (
+        f"{cases_url}/%20{participant['case_id']}%20/attributes/"
+        f"%20{definition['attribute_definition_id']}%20"
+    )
+    padded_sources_url = (
+        f"{cases_url}/%20{participant['case_id']}%20/sources"
+    )
+    cleared = client.request(
+        "DELETE",
+        padded_attribute_url,
+        json={"researcher_id": researcher_id},
+    )
+    unlinked = client.request("DELETE", padded_sources_url, json=source_request)
+    assert replaced.status_code == 200
+    assert replaced.json()["attribute_value"]["value"] == "intervention"
+    assert cleared.status_code == 200
+    assert cleared.json() == {
+        "cleared": {
+            "case_id": participant["case_id"],
+            "attribute_definition_id": definition["attribute_definition_id"],
+        }
+    }
+    assert unlinked.status_code == 200
+    assert unlinked.json() == {
+        "unlinked": {
+            "case_id": participant["case_id"],
+            "project_source_id": source_id,
+        }
+    }
+
+
+def test_case_attribute_api_structural_validation_precedes_service() -> None:
+    client = TestClient(app)
+    base = "/api/studies/missing/qualitative"
+
+    responses = [
+        client.post(
+            f"{base}/cases",
+            json={"case_kind": "participant", "label": "P1"},
+        ),
+        client.post(
+            f"{base}/attribute-definitions",
+            json={
+                "researcher_id": "res_missing",
+                "attribute_key": "arm",
+                "label": "Arm",
+                "value_type": "categorical",
+                "allowed_values": ["control"],
+                "required": 1,
+            },
+        ),
+        client.post(
+            f"{base}/attribute-definitions",
+            json={
+                "researcher_id": "res_missing",
+                "attribute_key": "arm",
+                "label": "Arm",
+                "value_type": "categorical",
+                "allowed_values": ["control"],
+                "required": "true",
+            },
+        ),
+        client.post(
+            f"{base}/attribute-definitions",
+            json={
+                "researcher_id": "res_missing",
+                "attribute_key": "arm",
+                "label": "Arm",
+                "value_type": "categorical",
+                "allowed_values": {"choice": "control"},
+            },
+        ),
+        client.put(
+            f"{base}/cases/cas_missing/attributes/atr_missing",
+            json={"researcher_id": "res_missing"},
+        ),
+        client.put(
+            f"{base}/cases/cas_missing/sources",
+            json={"researcher_id": "res_missing"},
+        ),
+        client.request(
+            "DELETE",
+            f"{base}/cases/cas_missing/sources",
+            json={"researcher_id": "res_missing", "project_source_id": 1},
+        ),
+        client.post(
+            f"{base}/cases",
+            content="{not-json",
+            headers={"content-type": "application/json"},
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [422] * len(
+        responses
+    )
+
+
+def test_case_attribute_api_maps_domain_missing_and_conflict_errors(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id = client.post(
+        "/api/studies",
+        json={"name": "Case Attribute Error API"},
+    ).json()["study"]["id"]
+    cases_url = f"/api/studies/{study_id}/qualitative/cases"
+
+    assert client.get(cases_url).status_code == 404
+    study_id, researcher_id = _bootstrap_qualitative_project(
+        client,
+        name="Case Attribute Domain API",
+    )
+    cases_url = f"/api/studies/{study_id}/qualitative/cases"
+    invalid_kind = client.post(
+        cases_url,
+        json={
+            "researcher_id": researcher_id,
+            "case_kind": "unknown",
+            "label": "Invalid",
+        },
+    )
+    missing_researcher = client.post(
+        cases_url,
+        json={
+            "researcher_id": "res_unknown",
+            "case_kind": "participant",
+            "label": "Unknown actor",
+        },
+    )
+    assert invalid_kind.status_code == 400
+    assert missing_researcher.status_code == 404
+
+    case = client.post(
+        cases_url,
+        json={
+            "researcher_id": researcher_id,
+            "case_kind": "participant",
+            "label": "P1",
+        },
+    ).json()["case"]
+    database_path = tmp_path / "studies" / study_id / "qualitative.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.executemany(
+            """
+            insert into researchers (
+              researcher_id, project_id, display_name, role,
+              active, created_at, updated_at
+            ) values (?, ?, ?, 'researcher', ?, ?, ?)
+            """,
+            [
+                (
+                    "res_other_api",
+                    study_id,
+                    "Other API Researcher",
+                    1,
+                    "2026-08-01T12:00:00+00:00",
+                    "2026-08-01T12:00:00+00:00",
+                ),
+                (
+                    "res_inactive_api",
+                    study_id,
+                    "Inactive API Researcher",
+                    0,
+                    "2026-08-01T12:00:00+00:00",
+                    "2026-08-01T12:00:00+00:00",
+                ),
+            ],
+        )
+    inactive_researcher = client.post(
+        cases_url,
+        json={
+            "researcher_id": "res_inactive_api",
+            "case_kind": "participant",
+            "label": "Inactive actor",
+        },
+    )
+    assert inactive_researcher.status_code == 409
+
+    definitions_url = (
+        f"/api/studies/{study_id}/qualitative/attribute-definitions"
+    )
+    definition_request = {
+        "researcher_id": researcher_id,
+        "attribute_key": "score",
+        "label": "Score",
+        "value_type": "number",
+    }
+    invalid_definition_type = client.post(
+        definitions_url,
+        json={
+            **definition_request,
+            "attribute_key": "unknown_type",
+            "value_type": "unknown",
+        },
+    )
+    definition = client.post(
+        definitions_url,
+        json=definition_request,
+    ).json()["attribute_definition"]
+    duplicate = client.post(definitions_url, json=definition_request)
+    attribute_url = (
+        f"{cases_url}/{case['case_id']}/attributes/"
+        f"{definition['attribute_definition_id']}"
+    )
+    wrong_values = [
+        client.put(
+            attribute_url,
+            json={"researcher_id": researcher_id, "value": value},
+        )
+        for value in (True, None, [], {})
+    ]
+    missing_definition = client.put(
+        f"{cases_url}/{case['case_id']}/attributes/atr_missing",
+        json={"researcher_id": researcher_id, "value": 1},
+    )
+    missing_value = client.request(
+        "DELETE",
+        attribute_url,
+        json={"researcher_id": researcher_id},
+    )
+    assert invalid_definition_type.status_code == 400
+    assert duplicate.status_code == 409
+    assert [response.status_code for response in wrong_values] == [400] * 4
+    assert missing_definition.status_code == 404
+    assert missing_value.status_code == 404
+    assert client.get(f"{cases_url}/cas_missing").status_code == 404
+
+    sources_url = f"{cases_url}/{case['case_id']}/sources"
+    missing_source = client.put(
+        sources_url,
+        json={
+            "researcher_id": researcher_id,
+            "project_source_id": "psrc_missing",
+        },
+    )
+    normalized_source_id = client.put(
+        sources_url,
+        json={
+            "researcher_id": researcher_id,
+            "project_source_id": " psrc_missing ",
+        },
+    )
+    _record_api_project_source(
+        tmp_path,
+        project_source_id="psrc_foreign",
+        workspace_id="different-workspace",
+        suffix="foreign_case_api_source",
+    )
+    wrong_workspace = client.put(
+        sources_url,
+        json={
+            "researcher_id": researcher_id,
+            "project_source_id": "psrc_foreign",
+        },
+    )
+    _record_api_project_source(
+        tmp_path,
+        project_source_id="psrc_actor_conflict",
+        workspace_id=study_id,
+        suffix="actor_conflict_case_api_source",
+    )
+    actor_link = client.put(
+        sources_url,
+        json={
+            "researcher_id": researcher_id,
+            "project_source_id": "psrc_actor_conflict",
+        },
+    )
+    different_actor = client.put(
+        sources_url,
+        json={
+            "researcher_id": "res_other_api",
+            "project_source_id": "psrc_actor_conflict",
+        },
+    )
+    missing_link = client.request(
+        "DELETE",
+        sources_url,
+        json={
+            "researcher_id": researcher_id,
+            "project_source_id": "psrc_missing",
+        },
+    )
+    assert missing_source.status_code == 404
+    assert normalized_source_id.status_code == 400
+    assert missing_link.status_code == 404
+    assert wrong_workspace.status_code == 409
+    assert actor_link.status_code == 200
+    assert different_actor.status_code == 409
+
+    future_study = client.post(
+        "/api/studies",
+        json={"name": "Future Case Attribute API"},
+    ).json()["study"]["id"]
+    future_database = (
+        tmp_path / "studies" / future_study / "qualitative.sqlite3"
+    )
+    with sqlite3.connect(future_database) as connection:
+        connection.execute("pragma user_version = 99")
+    newer = client.get(
+        f"/api/studies/{future_study}/qualitative/cases"
+    )
+    assert newer.status_code == 409
+
+
+def test_case_attribute_api_contains_raw_missing_file_details(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    private_path = str(tmp_path / "private-study" / "qualitative.sqlite3")
+
+    def raise_private_missing_file(*_args, **_kwargs):
+        raise FileNotFoundError(private_path)
+
+    monkeypatch.setattr(
+        "backend.app.main.CaseService.list_cases",
+        raise_private_missing_file,
+    )
+    response = TestClient(app).get(
+        "/api/studies/study-private/qualitative/cases"
+    )
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "detail": "Qualitative project data was not found"
+    }
+    assert private_path not in response.text
 
 
 def test_analysis_operations_endpoint_reports_completed_and_incomplete(

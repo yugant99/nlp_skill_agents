@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
@@ -12,6 +13,7 @@ from typing import Any
 from uuid import uuid4
 
 from backend.storage.atomic import atomic_write_text
+from backend.storage.workspace_lock import workspace_mutation_lock
 
 
 _AUDIT_WRITE_LOCK = Lock()
@@ -54,7 +56,11 @@ class AuditLogStore:
             metadata=metadata or {},
         )
         event_line = json.dumps(asdict(event)) + "\n"
-        with _AUDIT_WRITE_LOCK, _audit_process_lock(self.lock_path):
+        with (
+            workspace_mutation_lock(self.root),
+            _AUDIT_WRITE_LOCK,
+            _audit_process_lock(self.lock_path),
+        ):
             existing_events = (
                 self.events_path.read_text(encoding="utf-8")
                 if self.events_path.exists()
@@ -66,8 +72,12 @@ class AuditLogStore:
         return event
 
     def list_events(self, limit: int | None = 100) -> list[dict[str, Any]]:
+        if self.events_path.is_symlink():
+            raise ValueError("Audit log is not a non-symlink regular file")
         if not self.events_path.exists():
             return []
+        if not stat.S_ISREG(self.events_path.lstat().st_mode):
+            raise ValueError("Audit log is not a non-symlink regular file")
         events = [
             json.loads(line)
             for line in self.events_path.read_text(encoding="utf-8").splitlines()
@@ -88,7 +98,11 @@ class AuditLogStore:
         ]
 
     def import_events(self, events: list[dict[str, Any]]) -> int:
-        with _AUDIT_WRITE_LOCK, _audit_process_lock(self.lock_path):
+        with (
+            workspace_mutation_lock(self.root),
+            _AUDIT_WRITE_LOCK,
+            _audit_process_lock(self.lock_path),
+        ):
             existing_text = (
                 self.events_path.read_text(encoding="utf-8")
                 if self.events_path.exists()

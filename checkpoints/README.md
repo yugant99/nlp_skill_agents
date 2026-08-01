@@ -78,6 +78,7 @@ Each checkpoint should record:
 - [2026-07-28 Phase 1 qualitative core contract](2026-07-28-phase1-qualitative-core-contract.md)
 - [2026-07-29 Phase 1 segmentation operation journal](2026-07-29-phase1-segmentation-operation-journal.md)
 - [2026-07-29 Phase 1 study batch operation journal](2026-07-29-phase1-study-batch-operation-journal.md)
+- [2026-07-31 Phase 1 study batch hardening](2026-07-31-phase1-study-batch-hardening.md)
 
 ## Completion Bar
 

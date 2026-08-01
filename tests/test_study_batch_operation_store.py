@@ -486,6 +486,42 @@ def test_study_batch_operations_serialize_concurrent_exact_starts(tmp_path) -> N
     assert store.list_operations(incomplete_only=True)[0]["attempt_count"] == 2
 
 
+def test_study_batch_operations_serialize_distinct_concurrent_cold_starts(
+    tmp_path,
+) -> None:
+    StudyWorkspaceStore(tmp_path).create_study(
+        {"id": "study-one", "name": "Study One"}
+    )
+    db_path = tmp_path / "studies" / "study-one" / "batch_operations.sqlite3"
+    assert not db_path.exists()
+    barrier = Barrier(2)
+    batch_ids = [
+        "batch_20260729000001_a1b2c3d4",
+        "batch_20260729000002_a1b2c3d4",
+    ]
+
+    def begin(batch_id: str) -> str:
+        barrier.wait(timeout=5)
+        return StudyBatchOperationStore(tmp_path, "study-one").begin(
+            batch_id=batch_id,
+            skill_pack_version_id="pack-1_0_0",
+            skill_pack_sha256="f" * 64,
+            request_sha256=sha256(batch_id.encode("utf-8")).hexdigest(),
+            item_count=0,
+            created_at=CREATED_AT,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(begin, batch_ids))
+
+    assert results == batch_ids
+    operations = StudyBatchOperationStore(
+        tmp_path,
+        "study-one",
+    ).list_operations()
+    assert {operation["batch_id"] for operation in operations} == set(batch_ids)
+
+
 def test_study_batch_operations_serialize_conflicting_concurrent_starts(
     tmp_path,
 ) -> None:

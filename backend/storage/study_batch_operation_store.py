@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -48,6 +49,7 @@ _SKILL_PACK_VERSION_ID = re.compile(r"^[a-z0-9_]+-[a-z0-9_]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ERROR_TYPE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,127}$")
 _PATH_SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+MAX_SKILL_PACK_VERSION_ID_LENGTH = 128
 _WINDOWS_DEVICE_NAME = re.compile(
     r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])$",
     re.IGNORECASE,
@@ -624,6 +626,19 @@ class StudyBatchOperationStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def completed_batch_ids(self) -> set[str]:
+        self._ensure_schema()
+        with self._connect() as connection:
+            return {
+                str(row[0])
+                for row in connection.execute(
+                    """
+                    select batch_id from study_batch_operations
+                    where status = 'completed'
+                    """
+                )
+            }
+
     def migration_status(self) -> list[dict[str, object]]:
         self._ensure_schema()
         with self._connect() as connection:
@@ -655,17 +670,37 @@ class StudyBatchOperationStore:
     def _ensure_schema(self) -> None:
         if not (self.study_dir / "study.json").is_file():
             raise FileNotFoundError(self.study_id)
-        with self._connect() as connection:
-            apply_migrations(
-                connection,
-                database_name="study batch operations",
-                migrations=STUDY_BATCH_OPERATION_MIGRATIONS,
-            )
+        try:
+            with self._connect() as connection:
+                apply_migrations(
+                    connection,
+                    database_name="study batch operations",
+                    migrations=STUDY_BATCH_OPERATION_MIGRATIONS,
+                )
+        except (OSError, sqlite3.Error) as exc:
+            raise StudyBatchOperationConflict(
+                "Study batch operation journal is invalid"
+            ) from exc
 
     def _connect(self, *, timeout: float = 30) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.db_path, timeout=timeout)
-        connection.execute("pragma foreign_keys = on")
-        return connection
+        try:
+            if self.db_path.exists() or self.db_path.is_symlink():
+                mode = self.db_path.lstat().st_mode
+                if not stat.S_ISREG(mode):
+                    raise OSError(
+                        "Study batch operation journal must be a regular file"
+                    )
+            connection = sqlite3.connect(self.db_path, timeout=timeout)
+            try:
+                connection.execute("pragma foreign_keys = on")
+            except BaseException:
+                connection.close()
+                raise
+            return connection
+        except (OSError, sqlite3.Error) as exc:
+            raise StudyBatchOperationConflict(
+                "Study batch operation journal is invalid"
+            ) from exc
 
     @contextmanager
     def _immediate_connection(
@@ -1304,8 +1339,7 @@ def _validate_operation_identity(
     created_at: str,
 ) -> None:
     validate_study_batch_id(batch_id)
-    if not _SKILL_PACK_VERSION_ID.fullmatch(skill_pack_version_id):
-        raise ValueError("skill_pack_version_id must be a normalized version identifier")
+    validate_study_skill_pack_version_id(skill_pack_version_id)
     _validate_sha256(skill_pack_sha256, "skill_pack_sha256")
     _validate_sha256(request_sha256, "request_sha256")
     if item_count < 0:
@@ -1347,6 +1381,17 @@ def _validate_item_identity(
 def validate_study_batch_id(batch_id: str) -> None:
     if not _BATCH_ID.fullmatch(batch_id):
         raise ValueError("batch_id must be a generated study batch identifier")
+
+
+def validate_study_skill_pack_version_id(skill_pack_version_id: str) -> None:
+    if (
+        not isinstance(skill_pack_version_id, str)
+        or len(skill_pack_version_id) > MAX_SKILL_PACK_VERSION_ID_LENGTH
+        or not _SKILL_PACK_VERSION_ID.fullmatch(skill_pack_version_id)
+    ):
+        raise ValueError(
+            "skill_pack_version_id must be a bounded normalized version identifier"
+        )
 
 
 def _validate_sha256(value: str, field_name: str) -> None:

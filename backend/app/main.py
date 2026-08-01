@@ -829,6 +829,14 @@ def list_study_batches(study_id: str) -> dict:
         batches = StudyWorkspaceStore(_local_data_root()).list_batches(study_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"batches": [_study_batch_summary_payload(batch) for batch in batches]}
 
 
@@ -841,7 +849,7 @@ def study_batch_operation_schema_status(study_id: str) -> dict:
         ).migration_status()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
-    except SchemaCompatibilityError as exc:
+    except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -869,7 +877,7 @@ def list_study_batch_operations(
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
-    except SchemaCompatibilityError as exc:
+    except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -880,9 +888,18 @@ def list_study_batch_operations(
 def get_study_batch(study_id: str, batch_id: str) -> dict:
     try:
         batch = StudyWorkspaceStore(_local_data_root()).load_batch(study_id, batch_id)
+        payload = _study_batch_payload(batch)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study batch not found") from exc
-    return _study_batch_payload(batch)
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return payload
 
 
 @app.get("/api/studies/{study_id}/batches/{batch_id}/runs")
@@ -894,6 +911,14 @@ def list_study_batch_runs(study_id: str, batch_id: str) -> dict:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study batch not found") from exc
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"runs": runs}
 
 
@@ -907,6 +932,14 @@ def get_study_batch_run(study_id: str, batch_id: str, run_id: str) -> dict:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study batch run not found") from exc
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"run": run}
 
 
@@ -946,6 +979,7 @@ def create_study_text_batch(study_id: str, request: StudyTextBatchRequest) -> di
         SourceBlobIntegrityError,
         StudyBatchOperationConflict,
         StudyBatchSnapshotConflict,
+        StudySkillPackVersionConflict,
     ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -991,6 +1025,7 @@ async def create_study_file_batch(
         SourceBlobIntegrityError,
         StudyBatchOperationConflict,
         StudyBatchSnapshotConflict,
+        StudySkillPackVersionConflict,
     ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (json.JSONDecodeError, ValueError) as exc:
@@ -1472,7 +1507,25 @@ def _study_batch_summary_payload(batch) -> dict:
 
 def _study_batch_payload(batch) -> dict:
     aggregate_results_json = batch.aggregate_dir / "aggregate_results.json"
-    aggregate_payload = json.loads(aggregate_results_json.read_text(encoding="utf-8"))
+    try:
+        aggregate_payload = json.loads(
+            aggregate_results_json.read_text(encoding="utf-8")
+        )
+        if (
+            not isinstance(aggregate_payload, dict)
+            or not isinstance(aggregate_payload.get("results"), list)
+            or not isinstance(aggregate_payload.get("failures", []), list)
+        ):
+            raise TypeError("aggregate payload shape is invalid")
+    except (
+        FileNotFoundError,
+        json.JSONDecodeError,
+        TypeError,
+        UnicodeDecodeError,
+    ) as exc:
+        raise StudyBatchSnapshotConflict(
+            "Completed study batch contains an invalid aggregate"
+        ) from exc
     exports = [
         {
             "metric_id": path.stem,

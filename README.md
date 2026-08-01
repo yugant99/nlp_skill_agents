@@ -38,10 +38,22 @@ deduplication, and every read used by the verification API rehashes the bytes.
 Study backups are portable ZIP archives with a versioned manifest covering every
 study file, workspace-scoped evidence record, referenced source blob, and
 study-scoped audit event. Restore verifies declared paths, sizes, and hashes before
-atomically exposing the staged study directory. Backup capture now holds the
-per-study mutation boundary, refuses a running batch, and validates the restored
-batch journal's canonical SQLite definition, content-safe row semantics, and
-completed aggregate bindings before importing evidence or audit records.
+atomically exposing the staged study directory. Archive handling rejects encrypted
+or unsupported ZIP members, non-portable Windows paths, path-prefix collisions,
+and malformed typed records before extraction. Backup capture holds the per-study
+mutation boundary, refuses a running batch, and validates both journal-backed and
+pre-journal completed batches, including manifests, run snapshots, aggregate JSON,
+CSV exports, audit events, skill packs, evidence rows, and source blobs. Restore
+preflights shared evidence state under a workspace mutation lock and rolls back
+catalog, audit, and newly introduced blob writes if final study publication fails.
+Legacy validation follows the persisted generation instead of imposing the newest
+contract retroactively. Current lineage-aware snapshots are bound to the exact
+catalog record and verified blob; the first import-catalog generation validates
+its deterministic transcript identity and any retained catalog row without
+requiring a blob that writer never stored. Earlier hash-only snapshots validate
+their deterministic source/revision IDs. Metadata-only and original pre-audit
+snapshots remain readable as explicitly reduced-trust history rather than
+receiving invented provenance or audit events.
 The analysis-run, evidence-catalog, segmentation-operation, per-study batch, and
 per-study qualitative databases use ordered, forward-only SQLite migration
 ledgers. Each migration is transactional, older supported database shapes are
@@ -77,7 +89,11 @@ them. Supported older journal shapes are upgraded transactionally, including
 repair of pre-hash completed rows from their persisted aggregate snapshot.
 `GET /api/studies/{study_id}/batch-operations` exposes content-safe operation
 status, and the adjacent `schema-status` endpoint reports the journal migration
-contract.
+contract. Pre-journal batch history remains readable through list, detail, and run
+drilldown routes, while journal-known running or failed batches stay hidden from
+completed history and return a conflict on direct reads. A malformed, directory,
+or symbolic-link journal also returns a controlled conflict across status and
+history endpoints instead of escaping as a storage error.
 
 The segmentation conflict guards cover the current same-root,
 shared-filesystem, single-host design only. Its root-global journal and list

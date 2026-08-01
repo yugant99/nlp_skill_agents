@@ -156,8 +156,17 @@ of caught failures, binds completed aggregate payloads, verifies completed outpu
 and reports content-safe status. Backups serialize the current managed study
 mutation paths, refuse live batch operations, and validate canonical journal
 schema, portable identifiers, row semantics, and aggregate identity before
-publishing a restore. A hard-stopped batch still remains `running`; there is no
-lease, takeover, abandon, or automatic startup-reconciliation workflow yet.
+publishing a restore. Completed pre-journal history is retained and validated at
+the manifest, run, aggregate, CSV, audit, evidence, and blob boundaries. Restore
+preflights shared destination state and rolls it back if final study publication
+fails. Legacy validation preserves the original writer contract: current
+lineage-aware snapshots require their exact catalog row and verified blob, the
+first import-catalog generation validates any retained row without inventing a
+blob, and earlier deterministic-hash, metadata-only, and pre-audit generations
+remain readable at explicitly reduced trust. Invalid journal filesystem objects
+fail as controlled conflicts. A hard-stopped batch still remains `running`; there
+is no lease, takeover, abandon, or automatic
+startup-reconciliation workflow yet.
 
 ## Gap Register
 

@@ -5,7 +5,7 @@ import os
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +44,14 @@ from backend.extensions.plugin_requests import (
 )
 from backend.llm.openrouter import OpenRouterError
 from backend.qualitative import QualitativeProjectDatabase
+from backend.qualitative.codebooks import (
+    CodebookConflictError,
+    CodebookImmutableError,
+    CodebookNotFoundError,
+    CodebookService,
+    CodebookValidationError,
+)
+from backend.qualitative.database import QualitativeDatabaseConflict
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import SyntheticSegmentationCase
 from backend.segmentation.pipeline import (
@@ -92,6 +100,18 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+_CODEBOOK_API_ERRORS = (
+    FileNotFoundError,
+    ValueError,
+    CodebookNotFoundError,
+    CodebookValidationError,
+    CodebookImmutableError,
+    CodebookConflictError,
+    SchemaCompatibilityError,
+    StudyBatchOperationConflict,
+    QualitativeDatabaseConflict,
 )
 
 
@@ -207,6 +227,58 @@ class StudyTextBatchRequest(BaseModel):
         default=None,
         pattern=STUDY_BATCH_ID_PATTERN,
     )
+
+
+class QualitativeProjectInitializeRequest(BaseModel):
+    researcher_id: str
+    researcher_name: str
+
+
+class CodebookCreateRequest(BaseModel):
+    researcher_id: str
+    title: str
+    description: str = ""
+
+
+class CodebookImportRequest(BaseModel):
+    researcher_id: str
+    document: dict[str, object]
+
+
+class CodebookVersionCreateRequest(BaseModel):
+    researcher_id: str
+    based_on_version_id: str | None = None
+
+
+class CodeCreateRequest(BaseModel):
+    researcher_id: str
+    stable_code_key: str
+    label: str
+    parent_code_id: str | None = None
+    definition: str = ""
+    inclusion_criteria: str = ""
+    exclusion_criteria: str = ""
+    examples: list[str] = Field(default_factory=list)
+    notes: str = ""
+    color: str = ""
+    sort_order: int = 0
+
+
+class CodeUpdateRequest(BaseModel):
+    researcher_id: str
+    label: str
+    parent_code_id: str | None = None
+    definition: str = ""
+    inclusion_criteria: str = ""
+    exclusion_criteria: str = ""
+    examples: list[str] = Field(default_factory=list)
+    notes: str = ""
+    color: str = ""
+    sort_order: int = 0
+
+
+class CodebookFreezeRequest(BaseModel):
+    researcher_id: str
 
 
 class LibraryApprovalRequest(BaseModel):
@@ -767,6 +839,41 @@ def create_study(request: StudyCreateRequest) -> dict:
     return {"study": _study_payload(study)}
 
 
+@app.put("/api/studies/{study_id}/qualitative/project")
+def initialize_qualitative_project(
+    study_id: str,
+    request: QualitativeProjectInitializeRequest,
+) -> dict:
+    try:
+        root = _local_data_root()
+        QualitativeProjectDatabase(root, study_id).initialize(
+            researcher_id=request.researcher_id,
+            researcher_name=request.researcher_name,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except QualitativeDatabaseConflict as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            raise HTTPException(status_code=404, detail="Study not found") from exc
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        status_code = 409 if "conflict" in str(exc).casefold() else 400
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    return {
+        "project": {
+            "project_id": study_id,
+            "researcher": {
+                "researcher_id": request.researcher_id,
+                "display_name": request.researcher_name.strip(),
+                "role": "researcher",
+                "active": True,
+            },
+        }
+    }
+
+
 @app.get("/api/studies/{study_id}/qualitative/schema-status")
 def qualitative_schema_status(study_id: str) -> dict:
     try:
@@ -779,6 +886,7 @@ def qualitative_schema_status(study_id: str) -> dict:
     except (
         SchemaCompatibilityError,
         StudyBatchOperationConflict,
+        QualitativeDatabaseConflict,
         ValueError,
     ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -788,6 +896,177 @@ def qualitative_schema_status(study_id: str) -> dict:
         "current_version": migrations[-1]["version"],
         "migrations": migrations,
     }
+
+
+@app.post("/api/studies/{study_id}/qualitative/codebooks")
+def create_codebook(study_id: str, request: CodebookCreateRequest) -> dict:
+    try:
+        codebook = CodebookService(_local_data_root(), study_id).create_codebook(
+            researcher_id=request.researcher_id,
+            title=request.title,
+            description=request.description,
+        )
+    except _CODEBOOK_API_ERRORS as exc:
+        _raise_codebook_http_error(exc)
+    return {"codebook": _codebook_payload(codebook)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/codebooks")
+def list_codebooks(study_id: str) -> dict:
+    try:
+        codebooks = CodebookService(_local_data_root(), study_id).list_codebooks()
+    except _CODEBOOK_API_ERRORS as exc:
+        _raise_codebook_http_error(exc)
+    return {"codebooks": [_codebook_payload(codebook) for codebook in codebooks]}
+
+
+@app.post("/api/studies/{study_id}/qualitative/codebooks/import")
+def import_codebook_version(
+    study_id: str,
+    request: CodebookImportRequest,
+) -> dict:
+    try:
+        snapshot = CodebookService(_local_data_root(), study_id).import_version(
+            researcher_id=request.researcher_id,
+            document=request.document,
+        )
+    except _CODEBOOK_API_ERRORS as exc:
+        _raise_codebook_http_error(exc)
+    return _codebook_snapshot_payload(snapshot)
+
+
+@app.post(
+    "/api/studies/{study_id}/qualitative/codebooks/{codebook_id}/versions"
+)
+def create_codebook_version(
+    study_id: str,
+    codebook_id: str,
+    request: CodebookVersionCreateRequest,
+) -> dict:
+    try:
+        service = CodebookService(_local_data_root(), study_id)
+        if request.based_on_version_id is None:
+            snapshot = service.create_draft(
+                researcher_id=request.researcher_id,
+                codebook_id=codebook_id,
+            )
+        else:
+            snapshot = service.derive_draft(
+                researcher_id=request.researcher_id,
+                codebook_id=codebook_id,
+                based_on_version_id=request.based_on_version_id,
+            )
+    except _CODEBOOK_API_ERRORS as exc:
+        _raise_codebook_http_error(exc)
+    return _codebook_snapshot_payload(snapshot)
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/codebooks/{codebook_id}/versions/"
+    "{codebook_version_id}"
+)
+def get_codebook_version(
+    study_id: str,
+    codebook_id: str,
+    codebook_version_id: str,
+) -> dict:
+    try:
+        snapshot = CodebookService(_local_data_root(), study_id).read_version(
+            codebook_id=codebook_id,
+            codebook_version_id=codebook_version_id,
+        )
+    except _CODEBOOK_API_ERRORS as exc:
+        _raise_codebook_http_error(exc)
+    return _codebook_snapshot_payload(snapshot)
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/codebooks/{codebook_id}/versions/"
+    "{codebook_version_id}/export"
+)
+def export_codebook_version(
+    study_id: str,
+    codebook_id: str,
+    codebook_version_id: str,
+) -> dict:
+    try:
+        return CodebookService(_local_data_root(), study_id).export_version(
+            codebook_id=codebook_id,
+            codebook_version_id=codebook_version_id,
+        )
+    except _CODEBOOK_API_ERRORS as exc:
+        _raise_codebook_http_error(exc)
+
+
+@app.post(
+    "/api/studies/{study_id}/qualitative/codebooks/{codebook_id}/versions/"
+    "{codebook_version_id}/codes"
+)
+def add_codebook_code(
+    study_id: str,
+    codebook_id: str,
+    codebook_version_id: str,
+    request: CodeCreateRequest,
+) -> dict:
+    values = request.model_dump()
+    researcher_id = values.pop("researcher_id")
+    try:
+        code = CodebookService(_local_data_root(), study_id).add_code(
+            researcher_id=researcher_id,
+            codebook_id=codebook_id,
+            codebook_version_id=codebook_version_id,
+            **values,
+        )
+    except _CODEBOOK_API_ERRORS as exc:
+        _raise_codebook_http_error(exc)
+    return {"code": _code_payload(code)}
+
+
+@app.put(
+    "/api/studies/{study_id}/qualitative/codebooks/{codebook_id}/versions/"
+    "{codebook_version_id}/codes/{code_id}"
+)
+def update_codebook_code(
+    study_id: str,
+    codebook_id: str,
+    codebook_version_id: str,
+    code_id: str,
+    request: CodeUpdateRequest,
+) -> dict:
+    values = request.model_dump()
+    researcher_id = values.pop("researcher_id")
+    try:
+        code = CodebookService(_local_data_root(), study_id).update_code(
+            researcher_id=researcher_id,
+            codebook_id=codebook_id,
+            codebook_version_id=codebook_version_id,
+            code_id=code_id,
+            **values,
+        )
+    except _CODEBOOK_API_ERRORS as exc:
+        _raise_codebook_http_error(exc)
+    return {"code": _code_payload(code)}
+
+
+@app.post(
+    "/api/studies/{study_id}/qualitative/codebooks/{codebook_id}/versions/"
+    "{codebook_version_id}/freeze"
+)
+def freeze_codebook_version(
+    study_id: str,
+    codebook_id: str,
+    codebook_version_id: str,
+    request: CodebookFreezeRequest,
+) -> dict:
+    try:
+        snapshot = CodebookService(_local_data_root(), study_id).freeze_version(
+            researcher_id=request.researcher_id,
+            codebook_id=codebook_id,
+            codebook_version_id=codebook_version_id,
+        )
+    except _CODEBOOK_API_ERRORS as exc:
+        _raise_codebook_http_error(exc)
+    return _codebook_snapshot_payload(snapshot)
 
 
 @app.get("/api/studies")
@@ -1435,6 +1714,70 @@ def _agent_job_api_payload(store: AgentJobStore, job: AgentJob) -> dict:
     return {
         **agent_job_to_payload(job),
         "available_transitions": store.available_transitions(job.id),
+    }
+
+
+def _raise_codebook_http_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, (FileNotFoundError, CodebookNotFoundError)):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, (ValueError, CodebookValidationError)):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _codebook_payload(codebook) -> dict:
+    return {
+        "codebook_id": codebook.codebook_id,
+        "project_id": codebook.project_id,
+        "title": codebook.title,
+        "description": codebook.description,
+        "created_by": codebook.created_by,
+        "updated_by": codebook.updated_by,
+        "created_at": codebook.created_at,
+        "updated_at": codebook.updated_at,
+    }
+
+
+def _codebook_version_payload(version) -> dict:
+    return {
+        "codebook_version_id": version.codebook_version_id,
+        "project_id": version.project_id,
+        "codebook_id": version.codebook_id,
+        "version_number": version.version_number,
+        "status": version.status,
+        "based_on_version_id": version.based_on_version_id,
+        "created_by": version.created_by,
+        "created_at": version.created_at,
+        "frozen_at": version.frozen_at,
+    }
+
+
+def _code_payload(code) -> dict:
+    return {
+        "code_id": code.code_id,
+        "project_id": code.project_id,
+        "codebook_version_id": code.codebook_version_id,
+        "stable_code_key": code.stable_code_key,
+        "parent_code_id": code.parent_code_id,
+        "label": code.label,
+        "definition": code.definition,
+        "inclusion_criteria": code.inclusion_criteria,
+        "exclusion_criteria": code.exclusion_criteria,
+        "examples": list(code.examples),
+        "notes": code.notes,
+        "color": code.color,
+        "sort_order": code.sort_order,
+        "created_by": code.created_by,
+        "created_at": code.created_at,
+        "updated_at": code.updated_at,
+    }
+
+
+def _codebook_snapshot_payload(snapshot) -> dict:
+    return {
+        "codebook": _codebook_payload(snapshot.codebook),
+        "version": _codebook_version_payload(snapshot.version),
+        "codes": [_code_payload(code) for code in snapshot.codes],
     }
 
 

@@ -134,15 +134,21 @@ prototype. It already has:
   lineage, exact batch retry identities, and conflict reporting;
 - a per-study qualitative SQLite contract for researcher identity, versioned
   codebooks, cases, typed attributes, source links, and transactional audit events;
+- a study-scoped codebook backend/API for attributable draft editing, hierarchy
+  validation, one-way freeze, stable-key-preserving derivation, and strict portable
+  JSON import/export;
 - basic audit events, approved-library artifacts, and bundle hashes;
 - agent-job prompts, statuses, runbooks, and evidence contracts.
 
 It is not yet a qualitative research platform because it lacks the central manual
 coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 
-The qualitative schema is an accepted Phase 1 foundation only. Its codebook and
-case services are assigned implementation slices; their APIs, researcher-facing
-controls, manual coding integration, and domain validation are not complete.
+The qualitative schema is an accepted Phase 1 foundation. Its versioned codebook
+service and API are implemented with explicit researcher bootstrap, active-actor
+checks, atomic audit events, deterministic hierarchy reads, frozen-state
+enforcement, strict storage validation, and portable import/export. The case and
+typed-attribute service, researcher-facing codebook controls, manual coding
+integration, and later qualitative domain entities remain incomplete.
 
 The segmentation journal is a root-level persistence-attempt ledger, not a resume
 worker. It does not retain run payloads, take over hard-stopped operations, roll
@@ -178,7 +184,7 @@ startup-reconciliation workflow yet.
 - [x] Immutable original-source hashes and import-instance IDs.
 - [x] Project-owned source records and transcript-revision lineage.
 - [ ] Manual source-span/C-unit coding and uncoding.
-- [ ] Hierarchical, versioned codebooks with definitions, inclusion criteria,
+- [x] Hierarchical, versioned codebooks with definitions, inclusion criteria,
       exclusion criteria, examples, notes, and colors.
 - [ ] Typed participant/case/session/dyad/condition/timepoint attributes.
 - [ ] Study-, source-, case-, code-, and excerpt-linked memos and annotations.

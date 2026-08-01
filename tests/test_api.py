@@ -18,6 +18,27 @@ from backend.storage.study_store import StudyWorkspaceStore
 from backend.storage.study_batch_operation_store import StudyBatchOperationStore
 
 
+def _bootstrap_qualitative_project(
+    client: TestClient,
+    *,
+    name: str,
+    researcher_id: str = "res_api_researcher",
+    researcher_name: str = "API Researcher",
+) -> tuple[str, str]:
+    study_response = client.post("/api/studies", json={"name": name})
+    assert study_response.status_code == 200
+    study_id = study_response.json()["study"]["id"]
+    bootstrap_response = client.put(
+        f"/api/studies/{study_id}/qualitative/project",
+        json={
+            "researcher_id": researcher_id,
+            "researcher_name": researcher_name,
+        },
+    )
+    assert bootstrap_response.status_code == 200
+    return study_id, researcher_id
+
+
 def test_health_endpoint() -> None:
     client = TestClient(app)
 
@@ -138,9 +159,404 @@ def test_qualitative_schema_status_rejects_missing_or_newer_project(
 
     newer = client.get(f"/api/studies/{study_id}/qualitative/schema-status")
 
+    tampered_study = client.post(
+        "/api/studies",
+        json={"name": "Tampered Qualitative"},
+    ).json()["study"]["id"]
+    tampered_path = (
+        tmp_path / "studies" / tampered_study / "qualitative.sqlite3"
+    )
+    assert client.get(
+        f"/api/studies/{tampered_study}/qualitative/schema-status"
+    ).status_code == 200
+    with sqlite3.connect(tampered_path) as connection:
+        connection.execute("drop trigger prevent_frozen_code_update")
+    tampered = client.get(
+        f"/api/studies/{tampered_study}/qualitative/schema-status"
+    )
+
     assert missing.status_code == 404
     assert newer.status_code == 409
     assert "newer than supported version 1" in newer.json()["detail"]
+    assert tampered.status_code == 409
+    assert tampered.json()["detail"] == "Qualitative database is invalid"
+
+
+def test_qualitative_project_bootstrap_is_fresh_and_idempotent(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    request = {
+        "researcher_id": "res_bootstrap_api",
+        "researcher_name": "  Bootstrap Researcher  ",
+    }
+
+    missing = client.put(
+        "/api/studies/missing/qualitative/project",
+        json=request,
+    )
+    malformed = client.put(
+        "/api/studies/missing/qualitative/project",
+        json={"researcher_id": "res_bootstrap_api"},
+    )
+    study = client.post("/api/studies", json={"name": "Bootstrap API"})
+    study_id = study.json()["study"]["id"]
+    first = client.put(
+        f"/api/studies/{study_id}/qualitative/project",
+        json=request,
+    )
+    repeated = client.put(
+        f"/api/studies/{study_id}/qualitative/project",
+        json=request,
+    )
+    conflict = client.put(
+        f"/api/studies/{study_id}/qualitative/project",
+        json={**request, "researcher_name": "Different Researcher"},
+    )
+    different_actor = client.put(
+        f"/api/studies/{study_id}/qualitative/project",
+        json={
+            "researcher_id": "res_second_bootstrap",
+            "researcher_name": "Second Researcher",
+        },
+    )
+
+    assert missing.status_code == 404
+    assert malformed.status_code == 422
+    assert first.status_code == 200
+    assert first.json() == {
+        "project": {
+            "project_id": study_id,
+            "researcher": {
+                "researcher_id": "res_bootstrap_api",
+                "display_name": "Bootstrap Researcher",
+                "role": "researcher",
+                "active": True,
+            },
+        }
+    }
+    assert repeated.status_code == 200
+    assert repeated.json() == first.json()
+    assert conflict.status_code == 409
+    assert different_actor.status_code == 409
+    with sqlite3.connect(
+        tmp_path / "studies" / study_id / "qualitative.sqlite3"
+    ) as connection:
+        assert connection.execute("select count(*) from researchers").fetchone() == (
+            1,
+        )
+        assert connection.execute(
+            """
+            select count(*) from qualitative_audit_events
+            where event_type = 'qualitative.project.initialized'
+            """
+        ).fetchone() == (1,)
+
+
+def test_codebook_api_happy_flow_hierarchy_freeze_and_derivation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id, researcher_id = _bootstrap_qualitative_project(
+        client,
+        name="Codebook Happy API",
+    )
+    base = f"/api/studies/{study_id}/qualitative/codebooks"
+
+    created = client.post(
+        base,
+        json={
+            "researcher_id": researcher_id,
+            "title": " Interview themes ",
+            "description": "Portable thematic codebook",
+        },
+    )
+    assert created.status_code == 200
+    codebook = created.json()["codebook"]
+    codebook_id = codebook["codebook_id"]
+    assert codebook["title"] == "Interview themes"
+    assert client.get(base).json()["codebooks"] == [codebook]
+
+    draft = client.post(
+        f"{base}/{codebook_id}/versions",
+        json={"researcher_id": researcher_id, "based_on_version_id": None},
+    )
+    assert draft.status_code == 200
+    version_id = draft.json()["version"]["codebook_version_id"]
+    assert draft.json()["version"]["version_number"] == 1
+    assert draft.json()["version"]["status"] == "draft"
+    assert draft.json()["codes"] == []
+
+    codes_url = f"{base}/{codebook_id}/versions/{version_id}/codes"
+    root = client.post(
+        codes_url,
+        json={
+            "researcher_id": researcher_id,
+            "stable_code_key": "support",
+            "label": "Support",
+            "sort_order": 0,
+        },
+    )
+    assert root.status_code == 200
+    root_code = root.json()["code"]
+    child = client.post(
+        codes_url,
+        json={
+            "researcher_id": researcher_id,
+            "stable_code_key": "peer_support",
+            "label": "Peer support",
+            "parent_code_id": root_code["code_id"],
+            "definition": "Help provided by peers",
+            "examples": ["A friend called me"],
+            "sort_order": 0,
+        },
+    )
+    assert child.status_code == 200
+    child_code = child.json()["code"]
+    updated = client.put(
+        f"{codes_url}/{child_code['code_id']}",
+        json={
+            "researcher_id": researcher_id,
+            "label": "Peer support revised",
+            "parent_code_id": root_code["code_id"],
+            "definition": "Revised peer help",
+            "inclusion_criteria": "Named peer assistance",
+            "exclusion_criteria": "Professional assistance",
+            "examples": ["A friend checked in"],
+            "notes": "Review during coding",
+            "color": "#336699",
+            "sort_order": 1,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["code"]["stable_code_key"] == "peer_support"
+    assert updated.json()["code"]["label"] == "Peer support revised"
+
+    read_url = f"{base}/{codebook_id}/versions/{version_id}"
+    read = client.get(read_url)
+    assert read.status_code == 200
+    assert [code["stable_code_key"] for code in read.json()["codes"]] == [
+        "support",
+        "peer_support",
+    ]
+
+    frozen = client.post(
+        f"{read_url}/freeze",
+        json={"researcher_id": researcher_id},
+    )
+    repeated = client.post(
+        f"{read_url}/freeze",
+        json={"researcher_id": researcher_id},
+    )
+    rejected = client.put(
+        f"{codes_url}/{child_code['code_id']}",
+        json={
+            "researcher_id": researcher_id,
+            "label": "Rejected frozen change",
+            "parent_code_id": root_code["code_id"],
+        },
+    )
+    assert frozen.status_code == 200
+    assert frozen.json()["version"]["status"] == "frozen"
+    assert repeated.status_code == 200
+    assert repeated.json() == frozen.json()
+    assert rejected.status_code == 409
+
+    derived = client.post(
+        f"{base}/{codebook_id}/versions",
+        json={
+            "researcher_id": researcher_id,
+            "based_on_version_id": version_id,
+        },
+    )
+    assert derived.status_code == 200
+    assert derived.json()["version"]["version_number"] == 2
+    assert derived.json()["version"]["status"] == "draft"
+    assert [code["stable_code_key"] for code in derived.json()["codes"]] == [
+        "support",
+        "peer_support",
+    ]
+    assert {
+        code["code_id"] for code in derived.json()["codes"]
+    }.isdisjoint({root_code["code_id"], child_code["code_id"]})
+    derived_by_key = {
+        code["stable_code_key"]: code for code in derived.json()["codes"]
+    }
+    assert (
+        derived_by_key["peer_support"]["parent_code_id"]
+        == derived_by_key["support"]["code_id"]
+    )
+
+
+def test_codebook_api_maps_structural_domain_missing_and_conflict_errors(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id = client.post(
+        "/api/studies",
+        json={"name": "Codebook Errors API"},
+    ).json()["study"]["id"]
+    base = f"/api/studies/{study_id}/qualitative/codebooks"
+
+    uninitialized_list = client.get(base)
+    missing_body = client.post(base, json={"title": "No actor"})
+    missing_researcher = client.post(
+        base,
+        json={"researcher_id": "res_unknown", "title": "No bootstrap"},
+    )
+    assert uninitialized_list.status_code == 404
+    assert missing_body.status_code == 422
+    assert missing_researcher.status_code == 404
+
+    bootstrap = client.put(
+        f"/api/studies/{study_id}/qualitative/project",
+        json={
+            "researcher_id": "res_error_api",
+            "researcher_name": "Error Researcher",
+        },
+    )
+    assert bootstrap.status_code == 200
+    blank = client.post(
+        base,
+        json={"researcher_id": "res_error_api", "title": "   "},
+    )
+    missing_codebook = client.post(
+        f"{base}/cbk_missing/versions",
+        json={"researcher_id": "res_error_api", "based_on_version_id": None},
+    )
+    assert blank.status_code == 400
+    assert missing_codebook.status_code == 404
+
+    created = client.post(
+        base,
+        json={"researcher_id": "res_error_api", "title": "Errors"},
+    ).json()["codebook"]
+    draft = client.post(
+        f"{base}/{created['codebook_id']}/versions",
+        json={"researcher_id": "res_error_api", "based_on_version_id": None},
+    ).json()
+    version_id = draft["version"]["codebook_version_id"]
+    freeze_empty = client.post(
+        f"{base}/{created['codebook_id']}/versions/{version_id}/freeze",
+        json={"researcher_id": "res_error_api"},
+    )
+    codes_url = f"{base}/{created['codebook_id']}/versions/{version_id}/codes"
+    first = client.post(
+        codes_url,
+        json={
+            "researcher_id": "res_error_api",
+            "stable_code_key": "duplicate",
+            "label": "First",
+        },
+    )
+    duplicate = client.post(
+        codes_url,
+        json={
+            "researcher_id": "res_error_api",
+            "stable_code_key": "duplicate",
+            "label": "Second",
+        },
+    )
+    assert freeze_empty.status_code == 400
+    assert first.status_code == 200
+    assert duplicate.status_code == 409
+
+
+def test_codebook_api_exports_imports_and_rejects_invalid_or_newer_documents(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id, researcher_id = _bootstrap_qualitative_project(
+        client,
+        name="Codebook Import API",
+    )
+    base = f"/api/studies/{study_id}/qualitative/codebooks"
+    codebook = client.post(
+        base,
+        json={
+            "researcher_id": researcher_id,
+            "title": "Portable",
+            "description": "Round trip",
+        },
+    ).json()["codebook"]
+    draft = client.post(
+        f"{base}/{codebook['codebook_id']}/versions",
+        json={"researcher_id": researcher_id, "based_on_version_id": None},
+    ).json()
+    version_id = draft["version"]["codebook_version_id"]
+    add = client.post(
+        f"{base}/{codebook['codebook_id']}/versions/{version_id}/codes",
+        json={
+            "researcher_id": researcher_id,
+            "stable_code_key": "portable_code",
+            "label": "Portable code",
+            "definition": "Survives export and import",
+            "examples": ["Example text"],
+        },
+    )
+    assert add.status_code == 200
+
+    export_url = (
+        f"{base}/{codebook['codebook_id']}/versions/{version_id}/export"
+    )
+    exported = client.get(export_url)
+    assert exported.status_code == 200
+    document = exported.json()
+    assert document["format"] == "nlp-skill-agents.codebook-version"
+    assert document["format_version"] == 1
+    assert document["codes"][0]["stable_code_key"] == "portable_code"
+
+    imported = client.post(
+        f"{base}/import",
+        json={"researcher_id": researcher_id, "document": document},
+    )
+    assert imported.status_code == 200
+    imported_payload = imported.json()
+    assert imported_payload["version"]["version_number"] == 1
+    assert imported_payload["version"]["status"] == "draft"
+    assert imported_payload["codebook"]["codebook_id"] != codebook["codebook_id"]
+    assert imported_payload["codes"][0]["stable_code_key"] == "portable_code"
+    assert imported_payload["codes"][0]["code_id"] != add.json()["code"]["code_id"]
+
+    invalid_document = {**document, "format_version": 99}
+    invalid = client.post(
+        f"{base}/import",
+        json={"researcher_id": researcher_id, "document": invalid_document},
+    )
+    malformed_json = client.post(
+        f"{base}/import",
+        content="{not-json",
+        headers={"content-type": "application/json"},
+    )
+    assert invalid.status_code == 400
+    assert malformed_json.status_code == 422
+    assert len(client.get(base).json()["codebooks"]) == 2
+
+    future_study = client.post(
+        "/api/studies",
+        json={"name": "Future Codebook API"},
+    ).json()["study"]["id"]
+    future_database = (
+        tmp_path / "studies" / future_study / "qualitative.sqlite3"
+    )
+    with sqlite3.connect(future_database) as connection:
+        connection.execute("pragma user_version = 99")
+    newer = client.put(
+        f"/api/studies/{future_study}/qualitative/project",
+        json={
+            "researcher_id": "res_future_api",
+            "researcher_name": "Future Researcher",
+        },
+    )
+    assert newer.status_code == 409
 
 
 def test_analysis_operations_endpoint_reports_completed_and_incomplete(

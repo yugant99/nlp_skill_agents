@@ -38,13 +38,32 @@ deduplication, and every read used by the verification API rehashes the bytes.
 Study backups are portable ZIP archives with a versioned manifest covering every
 study file, workspace-scoped evidence record, referenced source blob, and
 study-scoped audit event. Restore verifies declared paths, sizes, and hashes before
-atomically exposing the staged study directory.
-The analysis-run, evidence-catalog, and segmentation-operation databases use
-ordered, forward-only SQLite migration ledgers. Each migration is transactional,
-older supported database shapes are upgraded in place, and the application refuses
-a database created by a newer unsupported schema instead of guessing.
-`GET /api/storage/schema-status` reports the applied migration names and current
-version for all three databases.
+atomically exposing the staged study directory. Archive handling rejects encrypted
+or unsupported ZIP members, non-portable Windows paths, path-prefix collisions,
+and malformed typed records before extraction. Backup capture holds the per-study
+mutation boundary, refuses a running batch, and validates both journal-backed and
+pre-journal completed batches, including manifests, run snapshots, aggregate JSON,
+CSV exports, audit events, skill packs, evidence rows, and source blobs. Restore
+preflights shared evidence state under a workspace mutation lock and rolls back
+catalog, audit, and newly introduced blob writes if final study publication fails.
+Legacy validation follows the persisted generation instead of imposing the newest
+contract retroactively. Current lineage-aware snapshots are bound to the exact
+catalog record. Journal-backed snapshots always require their verified blob;
+pre-journal lineage snapshots verify it when retained because an intermediate
+writer generation predated blob storage. The first import-catalog generation
+validates its deterministic transcript identity, and backup promotes its migrated
+legacy catalog row into the study archive while explicitly recording the original
+blob as unretained. Earlier hash-only snapshots validate their deterministic
+source/revision IDs. Metadata-only and original pre-audit snapshots remain
+readable as explicitly reduced-trust history rather than receiving invented
+provenance or audit events.
+The analysis-run, evidence-catalog, segmentation-operation, per-study batch, and
+per-study qualitative databases use ordered, forward-only SQLite migration
+ledgers. Each migration is transactional, older supported database shapes are
+upgraded in place, and the application refuses a database created by a newer
+unsupported schema instead of guessing. `GET /api/storage/schema-status` reports
+the three root database contracts; study-scoped contracts have adjacent
+`schema-status` endpoints.
 Standalone analysis persistence uses a durable operation journal across source
 blob retention, evidence cataloging, result/CSV writes, and final run indexing.
 Failures retain the last completed stage and exception class without storing raw
@@ -63,16 +82,32 @@ exposes identifiers, hashes, stages, attempt counts, timestamps, and exception
 class without transcript content, filenames, specialist packets, or exception
 messages.
 
-These conflict guards cover the current same-root, shared-filesystem, single-host
-design only. The root-global journal and list endpoint are not study-scoped or
-access-controlled.
+Study batch persistence has its own per-study operation journal. A caller can keep
+and resubmit an explicit batch ID to retry the exact ordered inputs and skill-pack
+artifact. Reserved run, import, and project-source identities survive caught
+failures; completed rows bind the canonical aggregate hash, and replay verifies
+existing blobs, evidence rows, run snapshots, aggregate JSON, CSV exports, the
+batch manifest, and the stable completion audit event rather than duplicating
+them. Supported older journal shapes are upgraded transactionally, including
+repair of pre-hash completed rows from their persisted aggregate snapshot.
+`GET /api/studies/{study_id}/batch-operations` exposes content-safe operation
+status, and the adjacent `schema-status` endpoint reports the journal migration
+contract. Pre-journal batch history remains readable through list, detail, and run
+drilldown routes, while journal-known running or failed batches stay hidden from
+completed history and return a conflict on direct reads. A malformed, directory,
+or symbolic-link journal also returns a controlled conflict across status and
+history endpoints instead of escaping as a storage error.
 
-This journal provides recovery diagnostics, not automatic recovery. There is no
-replay endpoint or startup reconciler, and the journal does not retain the run
-payload. A hard stop leaves a `running` row that currently blocks exact replay.
-The multi-store write sequence does not roll back earlier side effects. Root-level
-segmentation runs, specialist artifacts, and `segmentation.sqlite3` are also not
-included in per-study project archives.
+The segmentation conflict guards cover the current same-root,
+shared-filesystem, single-host design only. Its root-global journal and list
+endpoint are not study-scoped or access-controlled.
+
+The segmentation journal provides recovery diagnostics, not automatic recovery.
+There is no replay endpoint or startup reconciler, and the journal does not retain
+the run payload. A hard stop leaves a `running` row that currently blocks exact
+replay. The multi-store write sequence does not roll back earlier side effects.
+Root-level segmentation runs, specialist artifacts, and `segmentation.sqlite3`
+are also not included in per-study project archives.
 
 Each study can now initialize a versioned `qualitative.sqlite3` contract inside
 its study directory. The contract reserves one transactional boundary for named

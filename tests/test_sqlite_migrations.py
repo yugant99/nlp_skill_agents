@@ -1,4 +1,6 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -41,6 +43,73 @@ def test_sqlite_migrations_apply_once_in_order_and_record_status(tmp_path) -> No
             "add-record-label",
         ]
         assert connection.execute("pragma user_version").fetchone()[0] == 2
+
+
+def test_sqlite_migrations_serialize_concurrent_cold_start(tmp_path) -> None:
+    path = tmp_path / "concurrent.sqlite3"
+    barrier = Barrier(2)
+    migration = Migration(
+        1,
+        "create-records",
+        lambda connection: connection.execute(
+            "create table records (id text primary key)"
+        ),
+    )
+
+    def migrate() -> int:
+        with sqlite3.connect(path, timeout=5) as connection:
+            barrier.wait(timeout=5)
+            return apply_migrations(
+                connection,
+                database_name="concurrent",
+                migrations=[migration],
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: migrate(), range(2)))
+
+    assert results == [1, 1]
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 1
+        assert schema_status(connection)[0]["name"] == "create-records"
+
+
+@pytest.mark.parametrize(
+    "applied_at",
+    ["", "2026-07-29T12:00:00", "PRIVATE-CONTENT-NEVER-REPORT"],
+)
+def test_sqlite_migrations_reject_invalid_ledger_timestamps_without_echoing_them(
+    tmp_path,
+    applied_at,
+) -> None:
+    path = tmp_path / "invalid-timestamp.sqlite3"
+    migration = Migration(
+        1,
+        "create-records",
+        lambda connection: connection.execute("create table records (id text)"),
+    )
+    with sqlite3.connect(path) as connection:
+        apply_migrations(
+            connection,
+            database_name="invalid timestamp",
+            migrations=[migration],
+        )
+        connection.execute(
+            "update schema_migrations set applied_at = ? where version = 1",
+            (applied_at,),
+        )
+
+        with pytest.raises(
+            SchemaCompatibilityError,
+            match="migration 1 has invalid applied_at",
+        ) as error:
+            apply_migrations(
+                connection,
+                database_name="invalid timestamp",
+                migrations=[migration],
+            )
+
+        assert applied_at not in str(error.value) or not applied_at
 
 
 def test_sqlite_migration_failure_rolls_back_schema_version_and_ledger(tmp_path) -> None:

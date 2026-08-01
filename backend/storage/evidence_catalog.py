@@ -10,6 +10,7 @@ from backend.storage.sqlite_migrations import (
     apply_migrations,
     schema_status,
 )
+from backend.storage.workspace_lock import workspace_mutation_lock
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,10 @@ class EvidenceCatalog:
         self.db_path = self.root / "evidence.sqlite3"
 
     def record_import(self, record: EvidenceImportRecord) -> None:
+        with workspace_mutation_lock(self.root):
+            self._record_import(record)
+
+    def _record_import(self, record: EvidenceImportRecord) -> None:
         self._ensure_schema()
         project_source_id = record.project_source_id or _legacy_source_id(
             record.import_id

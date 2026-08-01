@@ -4,6 +4,7 @@ from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from docx import Document
 from fastapi.testclient import TestClient
 
@@ -14,6 +15,7 @@ from backend.storage.source_blob_store import (
     SourceBlobStore,
 )
 from backend.storage.study_store import StudyWorkspaceStore
+from backend.storage.study_batch_operation_store import StudyBatchOperationStore
 
 
 def test_health_endpoint() -> None:
@@ -937,6 +939,356 @@ def test_study_workspace_batch_api_creates_aggregate_outputs(tmp_path, monkeypat
     ]
 
 
+def test_study_api_rejects_duplicate_identity_without_overwrite(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    original = client.post(
+        "/api/studies",
+        json={"name": "Same Study", "description": "keep me"},
+    )
+    duplicate = client.post(
+        "/api/studies",
+        json={"name": "Same Study", "description": "replace me"},
+    )
+
+    assert original.status_code == 200
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "Study already exists"
+    studies = client.get("/api/studies").json()["studies"]
+    assert len(studies) == 1
+    assert studies[0]["description"] == "keep me"
+
+
+def test_study_batch_api_retries_exact_request_and_reports_conflicts(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Retry API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "retry_api_pack",
+            "name": "Retry API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    client = TestClient(app)
+    batch_id = "batch_20260729050505_aaaabbbb"
+    request_payload = {
+        "batch_id": batch_id,
+        "skill_pack_version_id": version.version_id,
+        "transcripts": [
+            {
+                "source_filename": "retry.txt",
+                "content": "P1_c: Hello.\nP1_p: Hi.",
+                "metadata": {"participant_id": "P1"},
+            }
+        ],
+    }
+
+    created = client.post(
+        f"/api/studies/{study.id}/batches/text",
+        json=request_payload,
+    )
+    replayed = client.post(
+        f"/api/studies/{study.id}/batches/text",
+        json=request_payload,
+    )
+    changed = client.post(
+        f"/api/studies/{study.id}/batches/text",
+        json={
+            **request_payload,
+            "transcripts": [
+                {
+                    **request_payload["transcripts"][0],
+                    "content": "P1_c: Changed.\nP1_p: Changed.",
+                }
+            ],
+        },
+    )
+
+    assert created.status_code == 200
+    assert replayed.status_code == 200
+    assert created.json()["batch"]["batch_id"] == batch_id
+    assert replayed.json()["batch"] == created.json()["batch"]
+    assert changed.status_code == 409
+    assert "identity conflicts" in changed.json()["detail"]
+    operation = StudyBatchOperationStore(tmp_path, study.id).get_operation(batch_id)
+    assert operation["attempt_count"] == 1
+    assert len(store.list_batches(study.id)) == 1
+    assert len(
+        [
+            event
+            for event in store.audit_log.list_events(limit=None)
+            if event["event_type"] == "batch.completed"
+        ]
+    ) == 1
+
+    aggregate_path = (
+        tmp_path
+        / "studies"
+        / study.id
+        / "batches"
+        / batch_id
+        / "aggregate_results.json"
+    )
+    aggregate_path.write_text("{}", encoding="utf-8")
+    tampered = client.post(
+        f"/api/studies/{study.id}/batches/text",
+        json=request_payload,
+    )
+    assert tampered.status_code == 409
+    assert "Completed study batch" in tampered.json()["detail"]
+
+
+def test_study_skill_pack_version_api_is_idempotent_and_rejects_mutation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id = client.post(
+        "/api/studies",
+        json={"name": "Immutable Pack API Study"},
+    ).json()["study"]["id"]
+    payload = {
+        "id": "immutable_api_pack",
+        "name": "Immutable API Pack",
+        "version": "1.0.0",
+        "metrics": ["base_metrics"],
+    }
+
+    created = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json=payload,
+    )
+    repeated = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json=dict(payload),
+    )
+    conflicting = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json={**payload, "name": "Mutated API Pack"},
+    )
+
+    assert created.status_code == 200
+    assert repeated.status_code == 200
+    assert repeated.json() == created.json()
+    assert conflicting.status_code == 409
+    assert "already exists with different content" in conflicting.json()["detail"]
+
+
+def test_study_skill_pack_version_api_rejects_empty_derived_identifier(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id = client.post(
+        "/api/studies",
+        json={"name": "Invalid Pack Identifier API Study"},
+    ).json()["study"]["id"]
+
+    response = client.post(
+        f"/api/studies/{study_id}/skill-pack-versions",
+        json={
+            "id": "---",
+            "name": "Invalid Identifier Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "normalized identifier text" in response.json()["detail"]
+    assert not (tmp_path / "studies" / study_id / "skill_packs").exists()
+
+
+def test_study_batch_operation_api_is_bounded_and_content_safe(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Operation API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "operation_api_pack",
+            "name": "Operation API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    store.run_text_batch(
+        study.id,
+        version.version_id,
+        [
+            {
+                "source_filename": "PRIVATE-FILENAME-NEVER-JOURNAL.txt",
+                "content": "PRIVATE-CONTENT-NEVER-JOURNAL",
+                "metadata": {"note": "PRIVATE-METADATA-NEVER-JOURNAL"},
+            }
+        ],
+        batch_id="batch_20260729060606_11112222",
+    )
+    StudyBatchOperationStore(tmp_path, study.id).begin(
+        batch_id="batch_20260729060607_33334444",
+        skill_pack_version_id=version.version_id,
+        skill_pack_sha256="a" * 64,
+        request_sha256="b" * 64,
+        item_count=0,
+        created_at="2026-07-29T06:06:07+00:00",
+    )
+    client = TestClient(app)
+
+    response = client.get(f"/api/studies/{study.id}/batch-operations")
+    incomplete = client.get(
+        f"/api/studies/{study.id}/batch-operations",
+        params={"incomplete_only": "true"},
+    )
+    limited = client.get(
+        f"/api/studies/{study.id}/batch-operations",
+        params={"limit": 0},
+    )
+    schema = client.get(
+        f"/api/studies/{study.id}/batch-operations/schema-status"
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["operations"]) == 2
+    assert [
+        operation["status"] for operation in incomplete.json()["operations"]
+    ] == ["running"]
+    assert len(limited.json()["operations"]) == 1
+    assert "PRIVATE-FILENAME-NEVER-JOURNAL" not in response.text
+    assert "PRIVATE-CONTENT-NEVER-JOURNAL" not in response.text
+    assert "PRIVATE-METADATA-NEVER-JOURNAL" not in response.text
+    assert schema.status_code == 200
+    assert schema.json()["compatible"] is True
+    assert schema.json()["study_id"] == study.id
+    assert schema.json()["current_version"] == 3
+    assert [item["name"] for item in schema.json()["migrations"]] == [
+        "create-study-batch-operations",
+        "add-study-batch-aggregate-hash",
+        "repair-study-batch-aggregate-hashes",
+    ]
+
+    missing = client.get(
+        "/api/studies/missing/batch-operations/schema-status"
+    )
+    invalid_list = client.get("/api/studies/INVALID/batch-operations")
+    invalid_schema = client.get(
+        "/api/studies/INVALID/batch-operations/schema-status"
+    )
+    with sqlite3.connect(
+        tmp_path / "studies" / study.id / "batch_operations.sqlite3"
+    ) as connection:
+        connection.execute("pragma user_version = 99")
+    newer = client.get(
+        f"/api/studies/{study.id}/batch-operations/schema-status"
+    )
+    newer_batch_list = client.get(f"/api/studies/{study.id}/batches")
+    newer_batch = client.get(
+        f"/api/studies/{study.id}/batches/batch_20260729060606_11112222"
+    )
+    newer_backup = client.post(f"/api/studies/{study.id}/backup")
+    assert missing.status_code == 404
+    assert invalid_list.status_code == 400
+    assert invalid_schema.status_code == 400
+    assert "normalized study identifier" in invalid_list.json()["detail"]
+    assert "normalized study identifier" in invalid_schema.json()["detail"]
+    assert newer.status_code == 409
+    assert newer_batch_list.status_code == 409
+    assert newer_batch.status_code == 409
+    assert "newer than supported version 3" in newer.json()["detail"]
+    assert newer_backup.status_code == 409
+
+
+def test_study_file_batch_api_accepts_explicit_retry_identity(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "File Retry API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "file_retry_api_pack",
+            "name": "File Retry API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    client = TestClient(app)
+    batch_id = "batch_20260729070707_55556666"
+
+    response = client.post(
+        f"/api/studies/{study.id}/batches/files",
+        data={
+            "skill_pack_version_id": version.version_id,
+            "batch_id": batch_id,
+        },
+        files={"files": ("session.txt", b"P1_c: Hello.\nP1_p: Hi.", "text/plain")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["batch"]["batch_id"] == batch_id
+    assert StudyBatchOperationStore(tmp_path, study.id).get_operation(batch_id)[
+        "status"
+    ] == "completed"
+
+
+def test_study_batch_api_declares_and_enforces_retry_identity_pattern(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    text_response = client.post(
+        "/api/studies/any-study/batches/text",
+        json={
+            "skill_pack_version_id": "pack-1_0_0",
+            "batch_id": "ordinary-client-key",
+            "transcripts": [
+                {"source_filename": "session.txt", "content": "CG: Hello."}
+            ],
+        },
+    )
+    file_response = client.post(
+        "/api/studies/any-study/batches/files",
+        data={
+            "skill_pack_version_id": "pack-1_0_0",
+            "batch_id": "ordinary-client-key",
+        },
+        files={"files": ("session.txt", b"CG: Hello.", "text/plain")},
+    )
+    openapi = client.get("/openapi.json").json()
+    text_pattern = openapi["components"]["schemas"]["StudyTextBatchRequest"][
+        "properties"
+    ]["batch_id"]["anyOf"][0]["pattern"]
+    multipart_schema_name = next(
+        name
+        for name in openapi["components"]["schemas"]
+        if name.startswith("Body_create_study_file_batch")
+    )
+    file_pattern = openapi["components"]["schemas"][multipart_schema_name][
+        "properties"
+    ]["batch_id"]["anyOf"][0]["pattern"]
+
+    assert text_response.status_code == 422
+    assert file_response.status_code == 422
+    assert text_pattern == r"^batch_[0-9]{14}_[0-9a-f]{8}$"
+    assert file_pattern == text_pattern
+
+
 def test_study_workspace_file_batch_api_accepts_txt_and_docx(
     tmp_path,
     monkeypatch,
@@ -1089,6 +1441,67 @@ def test_study_backup_and_restore_api_round_trips_project(tmp_path, monkeypatch)
     assert conflict_response.status_code == 409
 
 
+def test_study_backup_api_reports_running_batch_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Backup Conflict Study"})
+    StudyBatchOperationStore(tmp_path, study.id).begin(
+        batch_id="batch_20260729090909_9999aaaa",
+        skill_pack_version_id="backup_pack-1_0_0",
+        skill_pack_sha256="a" * 64,
+        request_sha256="b" * 64,
+        item_count=0,
+        created_at="2026-07-29T09:09:09+00:00",
+    )
+    client = TestClient(app)
+
+    response = client.post(f"/api/studies/{study.id}/backup")
+
+    assert response.status_code == 409
+    assert "running batch" in response.json()["detail"]
+    assert not list((tmp_path / "backups").glob("*.nlpstudy.zip"))
+
+
+@pytest.mark.parametrize("blob_state", ["missing", "corrupt"])
+def test_study_backup_api_reports_evidence_blob_integrity_conflict(
+    tmp_path,
+    monkeypatch,
+    blob_state,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": f"{blob_state.title()} Blob Backup Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": f"{blob_state}_blob_backup_pack",
+            "name": f"{blob_state.title()} Blob Backup Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "session.txt", "content": "CG: One.\nP: Two."}],
+    )
+    item = StudyBatchOperationStore(tmp_path, study.id).list_items(batch.batch_id)[0]
+    blob_path = SourceBlobStore(tmp_path).blob_path(item["source_blob_sha256"])
+    if blob_state == "missing":
+        blob_path.unlink()
+    else:
+        blob_path.write_bytes(b"corrupt source blob")
+
+    response = TestClient(app).post(f"/api/studies/{study.id}/backup")
+
+    assert response.status_code == 409
+    assert "source blob" in response.json()["detail"]
+    assert not list((tmp_path / "backups").glob("*.nlpstudy.zip"))
+
+
 def test_study_schema_api_persists_casebook_design(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
     client = TestClient(app)
@@ -1185,6 +1598,160 @@ def test_study_batch_history_api_lists_and_loads_results(tmp_path, monkeypatch) 
     assert loaded["results"][0]["rows"][0]["source_filename"] == "one.txt"
 
 
+def test_pre_journal_study_batch_api_lists_loads_and_drills_down(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Legacy API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "legacy_api_pack",
+            "name": "Legacy API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [
+            {
+                "source_filename": "legacy.txt",
+                "metadata": {"participant_id": "P1"},
+                "content": "CG: Legacy prompt.\nP: Legacy response.",
+            }
+        ],
+    )
+    study_id = study.id
+    batch_id = batch.batch_id
+    study_dir = tmp_path / "studies" / study_id
+    batch_dir = batch.aggregate_dir
+    aggregate_payload = json.loads(
+        (batch_dir / "aggregate_results.json").read_text(encoding="utf-8")
+    )
+    run_path = next((batch_dir / "runs").glob("*.json"))
+    run_payload = json.loads(run_path.read_text(encoding="utf-8"))
+    run_id = run_payload["run_id"]
+    created_at = run_payload["created_at"]
+    for field_name in (
+        "import_id",
+        "project_source_id",
+        "parent_transcript_revision_id",
+        "workspace_id",
+        "source_blob_sha256",
+        "source_media_type",
+        "source_id",
+        "transcript_sha256",
+        "transcript_revision_id",
+    ):
+        run_payload.pop(field_name)
+    run_path.write_text(json.dumps(run_payload), encoding="utf-8")
+    journal_path = study_dir / "batch_operations.sqlite3"
+    journal_path.unlink()
+    assert not journal_path.exists()
+    client = TestClient(app)
+
+    list_response = client.get(f"/api/studies/{study_id}/batches")
+    detail_response = client.get(f"/api/studies/{study_id}/batches/{batch_id}")
+    runs_response = client.get(f"/api/studies/{study_id}/batches/{batch_id}/runs")
+    run_response = client.get(
+        f"/api/studies/{study_id}/batches/{batch_id}/runs/{run_id}"
+    )
+
+    assert list_response.status_code == 200
+    assert [batch["batch_id"] for batch in list_response.json()["batches"]] == [
+        batch_id
+    ]
+    assert detail_response.status_code == 200
+    assert detail_response.json()["batch"]["batch_id"] == batch_id
+    assert detail_response.json()["results"] == aggregate_payload["results"]
+    assert runs_response.status_code == 200
+    assert runs_response.json()["runs"] == [
+        {
+            "run_id": run_id,
+            "import_id": "",
+            "project_source_id": "",
+            "parent_transcript_revision_id": "",
+            "workspace_id": "",
+            "source_blob_sha256": "",
+            "source_media_type": "",
+            "source_id": "",
+            "transcript_sha256": "",
+            "transcript_revision_id": "",
+            "source_filename": "legacy.txt",
+            "metadata": {"participant_id": "P1"},
+            "created_at": created_at,
+            "turn_count": run_payload["turn_count"],
+            "metric_ids": ["base_metrics"],
+        }
+    ]
+    assert run_response.status_code == 200
+    assert run_response.json()["run"] == run_payload
+
+
+def test_incomplete_journal_batches_are_hidden_and_direct_reads_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Incomplete Batch Visibility Study"})
+    journal = StudyBatchOperationStore(tmp_path, study.id)
+    batch_ids = {
+        "running": "batch_20260728020202_aaaabbbb",
+        "failed": "batch_20260728020203_ccccdddd",
+    }
+    for status, batch_id in batch_ids.items():
+        journal.begin(
+            batch_id=batch_id,
+            skill_pack_version_id="incomplete_pack-1_0_0",
+            skill_pack_sha256="a" * 64,
+            request_sha256=("b" if status == "running" else "c") * 64,
+            item_count=0,
+            created_at="2026-07-28T02:02:02+00:00",
+        )
+        if status == "failed":
+            journal.fail(batch_id, error_type="RuntimeError")
+        batch_dir = tmp_path / "studies" / study.id / "batches" / batch_id
+        batch_dir.mkdir(parents=True)
+        (batch_dir / "batch.json").write_text(
+            json.dumps(
+                {
+                    "study_id": study.id,
+                    "batch_id": batch_id,
+                    "skill_pack_version_id": "incomplete_pack-1_0_0",
+                    "run_count": 0,
+                    "failure_count": 0,
+                    "aggregate_dir": str(batch_dir),
+                    "created_at": "2026-07-28T02:02:02+00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+    client = TestClient(app)
+
+    list_response = client.get(f"/api/studies/{study.id}/batches")
+
+    assert list_response.status_code == 200
+    assert list_response.json()["batches"] == []
+    for batch_id in batch_ids.values():
+        responses = [
+            client.get(f"/api/studies/{study.id}/batches/{batch_id}"),
+            client.get(f"/api/studies/{study.id}/batches/{batch_id}/runs"),
+            client.get(
+                f"/api/studies/{study.id}/batches/{batch_id}/runs/blocked_run"
+            ),
+        ]
+        assert [response.status_code for response in responses] == [409, 409, 409]
+        assert all(
+            "has not reached the completed boundary" in response.json()["detail"]
+            for response in responses
+        )
+
+
 def test_study_batch_run_drilldown_api_lists_and_loads_one_run(
     tmp_path,
     monkeypatch,
@@ -1256,6 +1823,283 @@ def test_study_batch_run_drilldown_api_lists_and_loads_one_run(
     }
     assert loaded["turns"][0]["passage_id"].startswith("psg_")
     assert loaded["results"][0]["metric_id"] == "base_metrics"
+
+
+def test_completed_study_batch_reader_apis_report_missing_manifest_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Missing Manifest API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "missing_manifest_api_pack",
+            "name": "Missing Manifest API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "one.txt", "content": "CG: Hello.\nP: Hi."}],
+    )
+    run_id = store.list_batch_runs(study.id, batch.batch_id)[0]["run_id"]
+    (batch.aggregate_dir / "batch.json").unlink()
+    client = TestClient(app)
+
+    responses = [
+        client.get(f"/api/studies/{study.id}/batches"),
+        client.get(f"/api/studies/{study.id}/batches/{batch.batch_id}"),
+        client.get(f"/api/studies/{study.id}/batches/{batch.batch_id}/runs"),
+        client.get(
+            f"/api/studies/{study.id}/batches/{batch.batch_id}/runs/{run_id}"
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [409, 409, 409, 409]
+    assert all(
+        "missing its manifest" in response.json()["detail"]
+        for response in responses
+    )
+
+
+def test_completed_study_batch_reader_apis_report_corrupt_blob_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Corrupt Blob API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "corrupt_blob_api_pack",
+            "name": "Corrupt Blob API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "one.txt", "content": "CG: Hello.\nP: Hi."}],
+    )
+    item = StudyBatchOperationStore(tmp_path, study.id).list_items(
+        batch.batch_id
+    )[0]
+    SourceBlobStore(tmp_path).blob_path(item["source_blob_sha256"]).write_bytes(
+        b"corrupt"
+    )
+    client = TestClient(app)
+
+    responses = [
+        client.get(f"/api/studies/{study.id}/batches/{batch.batch_id}"),
+        client.get(f"/api/studies/{study.id}/batches/{batch.batch_id}/runs"),
+        client.get(
+            f"/api/studies/{study.id}/batches/{batch.batch_id}/runs/{item['run_id']}"
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [409, 409, 409]
+    assert all(
+        "source blob conflicts" in response.json()["detail"]
+        for response in responses
+    )
+
+
+@pytest.mark.parametrize("dependency_kind", ["blob", "audit", "evidence"])
+def test_completed_study_batch_reader_apis_report_dependency_io_conflict(
+    tmp_path,
+    monkeypatch,
+    dependency_kind: str,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Dependency IO API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "dependency_io_api_pack",
+            "name": "Dependency IO API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "one.txt", "content": "CG: Hello.\nP: Hi."}],
+    )
+    item = StudyBatchOperationStore(tmp_path, study.id).list_items(
+        batch.batch_id
+    )[0]
+    if dependency_kind == "blob":
+        dependency_path = SourceBlobStore(tmp_path).blob_path(
+            item["source_blob_sha256"]
+        )
+    elif dependency_kind == "audit":
+        dependency_path = tmp_path / "audit" / "events.jsonl"
+    else:
+        dependency_path = tmp_path / "evidence.sqlite3"
+    dependency_path.unlink()
+    dependency_path.mkdir()
+    client = TestClient(app)
+
+    responses = [
+        client.get(f"/api/studies/{study.id}/batches/{batch.batch_id}"),
+        client.get(f"/api/studies/{study.id}/batches/{batch.batch_id}/runs"),
+        client.get(
+            f"/api/studies/{study.id}/batches/{batch.batch_id}/runs/{item['run_id']}"
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [409, 409, 409]
+    assert all(
+        "completed study batch" in response.json()["detail"].lower()
+        for response in responses
+    )
+
+
+@pytest.mark.parametrize(
+    "journal_state",
+    ["directory", "corrupt", "symlink", "missing-table"],
+)
+def test_study_batch_apis_report_invalid_journal_conflict(
+    tmp_path,
+    monkeypatch,
+    journal_state: str,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Invalid Journal API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "invalid_journal_api_pack",
+            "name": "Invalid Journal API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [{"source_filename": "one.txt", "content": "CG: Hello.\nP: Hi."}],
+    )
+    run_id = store.list_batch_runs(study.id, batch.batch_id)[0]["run_id"]
+    journal_path = tmp_path / "studies" / study.id / "batch_operations.sqlite3"
+    if journal_state == "missing-table":
+        with sqlite3.connect(journal_path) as connection:
+            connection.execute("drop table study_batch_operation_items")
+    else:
+        journal_path.unlink()
+    if journal_state == "directory":
+        journal_path.mkdir()
+    elif journal_state == "corrupt":
+        journal_path.write_bytes(b"not a sqlite database")
+    elif journal_state == "symlink":
+        target = tmp_path / "journal-target.sqlite3"
+        target.write_bytes(b"not a sqlite database")
+        journal_path.symlink_to(target)
+    client = TestClient(app)
+
+    responses = [
+        client.get(f"/api/studies/{study.id}/batch-operations/schema-status"),
+        client.get(f"/api/studies/{study.id}/batch-operations"),
+        client.get(f"/api/studies/{study.id}/batches"),
+        client.get(f"/api/studies/{study.id}/batches/{batch.batch_id}"),
+        client.get(f"/api/studies/{study.id}/batches/{batch.batch_id}/runs"),
+        client.get(
+            f"/api/studies/{study.id}/batches/{batch.batch_id}/runs/{run_id}"
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [409] * 6
+    assert all(
+        "journal is invalid" in response.json()["detail"].lower()
+        for response in responses
+    )
+
+
+def test_study_batch_apis_reject_hash_aligned_incomplete_current_evidence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study({"name": "Incomplete Current Evidence API Study"})
+    version = store.add_skill_pack_version(
+        study.id,
+        {
+            "id": "incomplete_current_evidence_api_pack",
+            "name": "Incomplete Current Evidence API Pack",
+            "version": "1.0.0",
+            "metrics": ["base_metrics"],
+        },
+    )
+    batch_id = "batch_20260731151515_aabbccdd"
+    transcript = {
+        "source_filename": "one.txt",
+        "content": "CG: Hello.\nP: Hi.",
+        "metadata": {},
+        "project_source_id": "",
+        "parent_transcript_revision_id": "",
+    }
+    batch = store.run_text_batch(
+        study.id,
+        version.version_id,
+        [transcript],
+        batch_id=batch_id,
+    )
+    journal = StudyBatchOperationStore(tmp_path, study.id)
+    item = journal.list_items(batch_id)[0]
+    run_path = batch.aggregate_dir / "runs" / f"{item['run_id']}.json"
+    run_payload = json.loads(run_path.read_text(encoding="utf-8"))
+    run_payload.pop("workspace_id")
+    run_path.write_text(json.dumps(run_payload), encoding="utf-8")
+    aligned_hash = sha256(
+        json.dumps(
+            run_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    with sqlite3.connect(journal.db_path) as connection:
+        connection.execute(
+            """
+            update study_batch_operation_items
+            set run_payload_sha256 = ?
+            where batch_id = ? and item_index = ?
+            """,
+            (aligned_hash, batch_id, item["item_index"]),
+        )
+    client = TestClient(app)
+
+    responses = [
+        client.get(f"/api/studies/{study.id}/batches/{batch_id}"),
+        client.get(f"/api/studies/{study.id}/batches/{batch_id}/runs"),
+        client.get(
+            f"/api/studies/{study.id}/batches/{batch_id}/runs/{item['run_id']}"
+        ),
+        client.post(
+            f"/api/studies/{study.id}/batches/text",
+            json={
+                "skill_pack_version_id": version.version_id,
+                "batch_id": batch_id,
+                "transcripts": [transcript],
+            },
+        ),
+    ]
+
+    assert [response.status_code for response in responses] == [409] * 4
+    assert all(
+        "completed study batch" in response.json()["detail"].lower()
+        for response in responses
+    )
 
 
 def test_study_batch_api_includes_failed_file_details(tmp_path, monkeypatch) -> None:

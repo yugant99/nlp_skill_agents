@@ -129,9 +129,9 @@ prototype. It already has:
 - C-unit segmentation, specialist patch contracts, deterministic merge/evaluation,
   human-review flags, run history, and evidence exports;
 - local JSON/CSV/SQLite artifacts;
-- metadata-only operation journals for standalone analysis and segmentation
-  persistence attempts, including segmentation payload-hash lineage and conflict
-  reporting;
+- metadata-only operation journals for standalone analysis, segmentation, and
+  per-study batch persistence attempts, including segmentation payload-hash
+  lineage, exact batch retry identities, and conflict reporting;
 - a per-study qualitative SQLite contract for researcher identity, versioned
   codebooks, cases, typed attributes, source links, and transactional audit events;
 - basic audit events, approved-library artifacts, and bundle hashes;
@@ -149,6 +149,26 @@ worker. It does not retain run payloads, take over hard-stopped operations, roll
 back earlier cross-store side effects, or include root-level segmentation data in
 per-study archives. The ledger and its list endpoint are not study-scoped or
 access-controlled.
+
+The study-batch journal is study-scoped and included in portable project backups.
+It reserves child identities before analysis, supports caller-driven exact replay
+of caught failures, binds completed aggregate payloads, verifies completed outputs,
+and reports content-safe status. Backups serialize the current managed study
+mutation paths, refuse live batch operations, and validate canonical journal
+schema, portable identifiers, row semantics, and aggregate identity before
+publishing a restore. Completed pre-journal history is retained and validated at
+the manifest, run, aggregate, CSV, audit, evidence, and blob boundaries. Restore
+preflights shared destination state and rolls it back if final study publication
+fails. Legacy validation preserves the original writer contract: current
+lineage-aware snapshots require their exact catalog row, journal-backed snapshots
+require a verified blob, and pre-journal lineage validates that blob when the
+writer retained it. Backup preserves first-generation import-catalog rows and
+marks their never-retained blobs explicitly instead of dropping evidence. Earlier
+deterministic-hash, metadata-only, and pre-audit generations remain readable at
+explicitly reduced trust. Invalid journal filesystem objects and structurally
+invalid current-ledger databases fail as controlled conflicts. A hard-stopped
+batch still remains `running`; there is no lease, takeover, abandon, or automatic
+startup-reconciliation workflow yet.
 
 ## Gap Register
 
@@ -194,8 +214,8 @@ access-controlled.
 - [x] Content-addressed original-source blob retention and read-time integrity
       verification.
 - [x] SQLite schema migrations, referential integrity, and compatibility policy.
-- [x] Metadata-only operation journals for standalone analysis and segmentation
-      persistence attempts.
+- [x] Metadata-only operation journals for standalone analysis, segmentation, and
+      study-batch persistence attempts.
 - [ ] Reconciliation or explicit operator takeover for hard-stopped persistence
       operations.
 - [ ] Atomic artifact writes and transactional workflow boundaries.

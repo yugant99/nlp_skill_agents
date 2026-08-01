@@ -62,6 +62,7 @@ from backend.storage.evidence_catalog import EvidenceCatalog
 from backend.storage.library_store import LibraryStore
 from backend.storage.project_archive import (
     MAX_ARCHIVE_FILE_BYTES,
+    ProjectArchiveConflict,
     ProjectArchiveError,
     ProjectArchiveStore,
 )
@@ -71,7 +72,17 @@ from backend.storage.segmentation_operation_store import (
 )
 from backend.storage.source_blob_store import SourceBlobIntegrityError, SourceBlobStore
 from backend.storage.sqlite_migrations import SchemaCompatibilityError
-from backend.storage.study_store import MAX_STUDY_PARTICIPANTS, StudyWorkspaceStore
+from backend.storage.study_batch_operation_store import (
+    STUDY_BATCH_ID_PATTERN,
+    StudyBatchOperationConflict,
+    StudyBatchOperationStore,
+)
+from backend.storage.study_store import (
+    MAX_STUDY_PARTICIPANTS,
+    StudyBatchSnapshotConflict,
+    StudySkillPackVersionConflict,
+    StudyWorkspaceStore,
+)
 
 
 app = FastAPI(title="NLP Skill Agents", version="0.1.0")
@@ -192,6 +203,10 @@ class StudyTextTranscript(BaseModel):
 class StudyTextBatchRequest(BaseModel):
     skill_pack_version_id: str = Field(min_length=1)
     transcripts: list[StudyTextTranscript] = Field(min_length=1)
+    batch_id: str | None = Field(
+        default=None,
+        pattern=STUDY_BATCH_ID_PATTERN,
+    )
 
 
 class LibraryApprovalRequest(BaseModel):
@@ -743,7 +758,12 @@ def download_segmentation_specialist_packet(run_id: str, filename: str) -> FileR
 
 @app.post("/api/studies")
 def create_study(request: StudyCreateRequest) -> dict:
-    study = StudyWorkspaceStore(_local_data_root()).create_study(request.model_dump())
+    try:
+        study = StudyWorkspaceStore(_local_data_root()).create_study(
+            request.model_dump()
+        )
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="Study already exists") from exc
     return {"study": _study_payload(study)}
 
 
@@ -756,7 +776,11 @@ def qualitative_schema_status(study_id: str) -> dict:
         ).migration_status()
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
-    except (SchemaCompatibilityError, ValueError) as exc:
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        ValueError,
+    ) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {
         "compatible": True,
@@ -785,6 +809,8 @@ def update_study_schema(study_id: str, request: StudySchemaRequest) -> dict:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"schema": _study_schema_payload(schema)}
 
 
@@ -803,16 +829,77 @@ def list_study_batches(study_id: str) -> dict:
         batches = StudyWorkspaceStore(_local_data_root()).list_batches(study_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"batches": [_study_batch_summary_payload(batch) for batch in batches]}
+
+
+@app.get("/api/studies/{study_id}/batch-operations/schema-status")
+def study_batch_operation_schema_status(study_id: str) -> dict:
+    try:
+        migrations = StudyBatchOperationStore(
+            _local_data_root(),
+            study_id,
+        ).migration_status()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "compatible": True,
+        "study_id": study_id,
+        "current_version": migrations[-1]["version"],
+        "migrations": migrations,
+    }
+
+
+@app.get("/api/studies/{study_id}/batch-operations")
+def list_study_batch_operations(
+    study_id: str,
+    incomplete_only: bool = False,
+    limit: int = 100,
+) -> dict:
+    try:
+        operations = StudyBatchOperationStore(
+            _local_data_root(),
+            study_id,
+        ).list_operations(
+            incomplete_only=incomplete_only,
+            limit=limit,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (SchemaCompatibilityError, StudyBatchOperationConflict) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"operations": operations}
 
 
 @app.get("/api/studies/{study_id}/batches/{batch_id}")
 def get_study_batch(study_id: str, batch_id: str) -> dict:
     try:
         batch = StudyWorkspaceStore(_local_data_root()).load_batch(study_id, batch_id)
+        payload = _study_batch_payload(batch)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study batch not found") from exc
-    return _study_batch_payload(batch)
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return payload
 
 
 @app.get("/api/studies/{study_id}/batches/{batch_id}/runs")
@@ -824,6 +911,14 @@ def list_study_batch_runs(study_id: str, batch_id: str) -> dict:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study batch not found") from exc
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"runs": runs}
 
 
@@ -837,6 +932,14 @@ def get_study_batch_run(study_id: str, batch_id: str, run_id: str) -> dict:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study batch run not found") from exc
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"run": run}
 
 
@@ -849,6 +952,12 @@ def create_study_skill_pack_version(study_id: str, payload: dict) -> dict:
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
+    except (
+        SchemaCompatibilityError,
+        StudyBatchOperationConflict,
+        StudySkillPackVersionConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (SkillPackValidationError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"version": _study_skill_pack_version_payload(version)}
@@ -861,9 +970,18 @@ def create_study_text_batch(study_id: str, request: StudyTextBatchRequest) -> di
             study_id,
             request.skill_pack_version_id,
             [item.model_dump() for item in request.transcripts],
+            batch_id=request.batch_id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study artifact not found") from exc
+    except (
+        SchemaCompatibilityError,
+        SourceBlobIntegrityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+        StudySkillPackVersionConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _study_batch_payload(batch)
@@ -875,6 +993,10 @@ async def create_study_file_batch(
     skill_pack_version_id: Annotated[str, Form()],
     files: Annotated[list[UploadFile], File()],
     metadata: Annotated[str, Form()] = "{}",
+    batch_id: Annotated[
+        str | None,
+        Form(pattern=STUDY_BATCH_ID_PATTERN),
+    ] = None,
 ) -> dict:
     try:
         parsed_metadata = _batch_metadata_from_json(metadata)
@@ -894,9 +1016,18 @@ async def create_study_file_batch(
             study_id,
             skill_pack_version_id,
             transcripts,
+            batch_id=batch_id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study artifact not found") from exc
+    except (
+        SchemaCompatibilityError,
+        SourceBlobIntegrityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+        StudySkillPackVersionConflict,
+    ) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except (json.JSONDecodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _study_batch_payload(batch)
@@ -917,6 +1048,8 @@ def backup_study(study_id: str) -> dict:
         backup = ProjectArchiveStore(_local_data_root()).create_archive(study_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
+    except ProjectArchiveConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectArchiveError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -944,6 +1077,8 @@ async def restore_study(file: Annotated[UploadFile, File()]) -> dict:
         )
     except FileExistsError as exc:
         raise HTTPException(status_code=409, detail="Study already exists") from exc
+    except ProjectArchiveConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectArchiveError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
@@ -1372,7 +1507,25 @@ def _study_batch_summary_payload(batch) -> dict:
 
 def _study_batch_payload(batch) -> dict:
     aggregate_results_json = batch.aggregate_dir / "aggregate_results.json"
-    aggregate_payload = json.loads(aggregate_results_json.read_text(encoding="utf-8"))
+    try:
+        aggregate_payload = json.loads(
+            aggregate_results_json.read_text(encoding="utf-8")
+        )
+        if (
+            not isinstance(aggregate_payload, dict)
+            or not isinstance(aggregate_payload.get("results"), list)
+            or not isinstance(aggregate_payload.get("failures", []), list)
+        ):
+            raise TypeError("aggregate payload shape is invalid")
+    except (
+        FileNotFoundError,
+        json.JSONDecodeError,
+        TypeError,
+        UnicodeDecodeError,
+    ) as exc:
+        raise StudyBatchSnapshotConflict(
+            "Completed study batch contains an invalid aggregate"
+        ) from exc
     exports = [
         {
             "metric_id": path.stem,

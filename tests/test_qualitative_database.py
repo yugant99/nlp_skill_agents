@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -6,6 +7,7 @@ import pytest
 
 import backend.qualitative.database as qualitative_database
 from backend.qualitative.database import (
+    QualitativeDatabaseConflict,
     QualitativeProjectDatabase,
     new_qualitative_id,
 )
@@ -66,6 +68,212 @@ def test_qualitative_database_initializes_once_with_attributable_identity(
         ]
 
 
+def test_qualitative_initialization_retry_uses_persisted_bootstrap_identity(
+    tmp_path: Path,
+) -> None:
+    _, database = _create_project(tmp_path)
+    now = datetime.now(UTC).isoformat()
+    with database.transaction() as connection:
+        connection.execute(
+            """
+            insert into researchers (
+              researcher_id, project_id, display_name, role,
+              active, created_at, updated_at
+            ) values ('res_future_reviewer', ?, 'Future Reviewer', 'reviewer',
+                      1, ?, ?)
+            """,
+            (database.project_id, now, now),
+        )
+
+    database.initialize(
+        researcher_id=RESEARCHER_ID,
+        researcher_name="Project Owner",
+    )
+
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute("select count(*) from researchers").fetchone() == (
+            2,
+        )
+        assert connection.execute(
+            """
+            select actor_id from qualitative_audit_events
+            where event_type = 'qualitative.project.initialized'
+            """
+        ).fetchall() == [(RESEARCHER_ID,)]
+
+
+def test_qualitative_read_is_guarded_query_only_and_returns_rows(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+
+    with database.read() as connection:
+        assert connection.execute("pragma query_only").fetchone()[0] == 1
+        project = connection.execute(
+            "select project_id, created_at from qualitative_projects"
+        ).fetchone()
+        assert isinstance(project, sqlite3.Row)
+        assert project["project_id"] == project_id
+        with pytest.raises(sqlite3.OperationalError):
+            connection.execute(
+                "insert into qualitative_projects values ('other-project', 'now')"
+            )
+
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute(
+            "select project_id from qualitative_projects"
+        ).fetchall() == [(project_id,)]
+
+
+@pytest.mark.parametrize(
+    "tamper_sql",
+    [
+        "drop table cases",
+        "drop trigger prevent_frozen_code_update",
+        "drop index cases_by_kind",
+        "create table unexpected_qualitative_state (value text)",
+    ],
+)
+def test_qualitative_database_rejects_tampered_schema_objects(
+    tmp_path: Path,
+    tamper_sql: str,
+) -> None:
+    _, database = _create_project(tmp_path)
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute(tamper_sql)
+
+    with pytest.raises(
+        QualitativeDatabaseConflict,
+        match="Qualitative database is invalid",
+    ):
+        database.migration_status()
+
+
+@pytest.mark.parametrize("path_kind", ["directory", "symlink"])
+def test_qualitative_database_rejects_non_regular_paths(
+    tmp_path: Path,
+    path_kind: str,
+) -> None:
+    study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": f"Qualitative {path_kind.title()} Path"}
+    )
+    database = QualitativeProjectDatabase(tmp_path, study.id)
+    if path_kind == "directory":
+        database.db_path.mkdir()
+    else:
+        target = tmp_path / "qualitative-target.sqlite3"
+        target.write_bytes(b"")
+        database.db_path.symlink_to(target)
+
+    with pytest.raises(
+        QualitativeDatabaseConflict,
+        match="Qualitative database is invalid",
+    ):
+        database.migration_status()
+
+
+def test_qualitative_database_rejects_symlinked_project_directory(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside-study"
+    outside.mkdir()
+    (outside / "study.json").write_text("{}", encoding="utf-8")
+    studies_dir = tmp_path / "studies"
+    studies_dir.mkdir()
+    project_id = "symlinked-study"
+    (studies_dir / project_id).symlink_to(outside, target_is_directory=True)
+    database = QualitativeProjectDatabase(tmp_path, project_id)
+
+    with pytest.raises(
+        QualitativeDatabaseConflict,
+        match="study directory is invalid",
+    ):
+        database.migration_status()
+
+    assert not (outside / "qualitative.sqlite3").exists()
+    assert not (outside / "batch_operations.sqlite3").exists()
+
+
+def test_qualitative_database_rejects_foreign_project_binding(
+    tmp_path: Path,
+) -> None:
+    study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Foreign Qualitative Project"}
+    )
+    database = QualitativeProjectDatabase(tmp_path, study.id)
+    database.migration_status()
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute(
+            "insert into qualitative_projects values ('foreign-project', ?)",
+            (datetime.now(UTC).isoformat(),),
+        )
+
+    with pytest.raises(
+        QualitativeDatabaseConflict,
+        match="Qualitative database is invalid",
+    ):
+        with database.read():
+            pass
+
+
+def test_qualitative_database_rejects_foreign_key_violations(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute(
+            """
+            insert into cases (
+              case_id, project_id, case_kind, label, description,
+              created_by, updated_by, created_at, updated_at
+            ) values ('cas_invalid_actor', ?, 'participant', 'P1', '',
+                      'res_missing', 'res_missing', ?, ?)
+            """,
+            (project_id, now, now),
+        )
+
+    with pytest.raises(
+        QualitativeDatabaseConflict,
+        match="Qualitative database is invalid",
+    ):
+        database.migration_status()
+
+
+def test_qualitative_database_errors_are_content_safe_and_bootstrap_contained(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    private_text = "PRIVATE-QUALITATIVE-STORAGE-CONTENT"
+    study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Content Safe Qualitative Failure"}
+    )
+    database = QualitativeProjectDatabase(tmp_path, study.id)
+    database.db_path.write_bytes(private_text.encode("utf-8"))
+
+    with pytest.raises(QualitativeDatabaseConflict) as corrupt_error:
+        database.migration_status()
+    assert private_text not in str(corrupt_error.value)
+
+    database.db_path.unlink()
+
+    class BrokenConnection:
+        def execute(self, *_args, **_kwargs):
+            raise sqlite3.DatabaseError(private_text)
+
+    @contextmanager
+    def broken_transaction():
+        yield BrokenConnection()
+
+    monkeypatch.setattr(database, "transaction", broken_transaction)
+    with pytest.raises(QualitativeDatabaseConflict) as bootstrap_error:
+        database.initialize(
+            researcher_id=RESEARCHER_ID,
+            researcher_name="Project Owner",
+        )
+    assert private_text not in str(bootstrap_error.value)
+
+
 def test_qualitative_database_refuses_missing_projects_and_identity_conflicts(
     tmp_path: Path,
 ) -> None:
@@ -83,6 +291,11 @@ def test_qualitative_database_refuses_missing_projects_and_identity_conflicts(
     with pytest.raises(ValueError, match="identity conflicts"):
         database.initialize(
             researcher_id=RESEARCHER_ID,
+            researcher_name="Different Person",
+        )
+    with pytest.raises(ValueError, match="identity conflicts"):
+        database.initialize(
+            researcher_id="res_different_owner",
             researcher_name="Different Person",
         )
     with pytest.raises(ValueError, match="stable lowercase identifier"):

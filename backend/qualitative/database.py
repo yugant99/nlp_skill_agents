@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -11,6 +12,7 @@ from uuid import uuid4
 
 from backend.storage.sqlite_migrations import (
     Migration,
+    SchemaCompatibilityError,
     apply_migrations,
     schema_status,
 )
@@ -28,6 +30,10 @@ _ID_PREFIXES = {
     "attribute_definition": "atr",
     "audit_event": "qae",
 }
+
+
+class QualitativeDatabaseConflict(RuntimeError):
+    pass
 
 
 class QualitativeProjectDatabase:
@@ -59,107 +65,230 @@ class QualitativeProjectDatabase:
             raise ValueError("researcher_name must be non-empty")
         now = _utc_now()
         bootstrap_event_id = _bootstrap_event_id(self.project_id, researcher_id)
-        with self.transaction() as connection:
-            connection.execute(
-                """
-                insert or ignore into qualitative_projects (project_id, created_at)
-                values (?, ?)
-                """,
-                (self.project_id, now),
-            )
-            connection.execute(
-                """
-                insert or ignore into researchers (
-                  researcher_id, project_id, display_name, role,
-                  active, created_at, updated_at
-                ) values (?, ?, ?, 'researcher', 1, ?, ?)
-                """,
-                (researcher_id, self.project_id, display_name, now, now),
-            )
-            stored = connection.execute(
-                """
-                select project_id, display_name, role, active
-                from researchers where researcher_id = ?
-                """,
-                (researcher_id,),
-            ).fetchone()
-            if stored != (self.project_id, display_name, "researcher", 1):
-                raise ValueError("Researcher identity conflicts with qualitative project")
-            connection.execute(
-                """
-                insert or ignore into qualitative_audit_events (
-                  event_id, project_id, actor_id, event_type,
-                  subject_type, subject_id, metadata_json, created_at
-                ) values (?, ?, ?, 'qualitative.project.initialized',
-                          'project', ?, '{}', ?)
-                """,
-                (
-                    bootstrap_event_id,
+        try:
+            with self.transaction() as connection:
+                connection.execute(
+                    """
+                    insert or ignore into qualitative_projects (project_id, created_at)
+                    values (?, ?)
+                    """,
+                    (self.project_id, now),
+                )
+                bootstrap_actors = connection.execute(
+                    """
+                    select actor_id from qualitative_audit_events
+                    where project_id = ?
+                      and event_type = 'qualitative.project.initialized'
+                      and subject_type = 'project'
+                      and subject_id = ?
+                    order by event_id
+                    """,
+                    (self.project_id, self.project_id),
+                ).fetchall()
+                existing_researchers = connection.execute(
+                    """
+                    select researcher_id, display_name, role, active
+                    from researchers where project_id = ?
+                    order by researcher_id
+                    """,
+                    (self.project_id,),
+                ).fetchall()
+                if bootstrap_actors:
+                    identity_matches = bootstrap_actors == [(researcher_id,)]
+                else:
+                    identity_matches = not existing_researchers or (
+                        existing_researchers
+                        == [(researcher_id, display_name, "researcher", 1)]
+                    )
+                if not identity_matches:
+                    raise ValueError(
+                        "Researcher identity conflicts with qualitative project"
+                    )
+                connection.execute(
+                    """
+                    insert or ignore into researchers (
+                      researcher_id, project_id, display_name, role,
+                      active, created_at, updated_at
+                    ) values (?, ?, ?, 'researcher', 1, ?, ?)
+                    """,
+                    (researcher_id, self.project_id, display_name, now, now),
+                )
+                stored = connection.execute(
+                    """
+                    select project_id, display_name, role, active
+                    from researchers where researcher_id = ?
+                    """,
+                    (researcher_id,),
+                ).fetchone()
+                if stored != (self.project_id, display_name, "researcher", 1):
+                    raise ValueError(
+                        "Researcher identity conflicts with qualitative project"
+                    )
+                connection.execute(
+                    """
+                    insert or ignore into qualitative_audit_events (
+                      event_id, project_id, actor_id, event_type,
+                      subject_type, subject_id, metadata_json, created_at
+                    ) values (?, ?, ?, 'qualitative.project.initialized',
+                              'project', ?, '{}', ?)
+                    """,
+                    (
+                        bootstrap_event_id,
+                        self.project_id,
+                        researcher_id,
+                        self.project_id,
+                        now,
+                    ),
+                )
+                stored_event = connection.execute(
+                    """
+                    select project_id, actor_id, event_type, subject_type,
+                           subject_id, metadata_json
+                    from qualitative_audit_events where event_id = ?
+                    """,
+                    (bootstrap_event_id,),
+                ).fetchone()
+                if stored_event != (
                     self.project_id,
                     researcher_id,
+                    "qualitative.project.initialized",
+                    "project",
                     self.project_id,
-                    now,
-                ),
-            )
-            stored_event = connection.execute(
-                """
-                select project_id, actor_id, event_type, subject_type,
-                       subject_id, metadata_json
-                from qualitative_audit_events where event_id = ?
-                """,
-                (bootstrap_event_id,),
-            ).fetchone()
-            if stored_event != (
-                self.project_id,
-                researcher_id,
-                "qualitative.project.initialized",
-                "project",
-                self.project_id,
-                "{}",
-            ):
-                raise ValueError("Initialization audit identity conflicts")
+                    "{}",
+                ):
+                    raise ValueError("Initialization audit identity conflicts")
+        except FileNotFoundError:
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            raise QualitativeDatabaseConflict(
+                "Qualitative project initialization failed"
+            ) from exc
+
+    @contextmanager
+    def read(self) -> Iterator[sqlite3.Connection]:
+        """Yield one guarded, query-only qualitative database connection."""
+
+        self._require_study()
+        with StudyBatchOperationStore(
+            self.root,
+            self.project_id,
+        ).study_mutation_guard():
+            with self._prepared_connection() as connection:
+                try:
+                    connection.row_factory = sqlite3.Row
+                    connection.execute("pragma query_only = on")
+                except (OSError, sqlite3.Error) as exc:
+                    raise QualitativeDatabaseConflict(
+                        "Qualitative database is invalid"
+                    ) from exc
+                yield connection
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         """Yield one immediate transaction with foreign-key enforcement enabled."""
 
+        self._require_study()
         with StudyBatchOperationStore(
             self.root,
             self.project_id,
         ).study_mutation_guard():
-            self._ensure_schema()
-            with sqlite3.connect(self.db_path, timeout=30) as connection:
-                connection.execute("pragma foreign_keys = on")
-                connection.execute("begin immediate")
+            with self._prepared_connection() as connection:
+                try:
+                    connection.execute("begin immediate")
+                except (OSError, sqlite3.Error) as exc:
+                    raise QualitativeDatabaseConflict(
+                        "Qualitative database transaction could not start"
+                    ) from exc
                 try:
                     yield connection
                 except BaseException:
                     connection.rollback()
                     raise
                 else:
-                    connection.commit()
+                    try:
+                        connection.commit()
+                    except (OSError, sqlite3.Error) as exc:
+                        connection.rollback()
+                        raise QualitativeDatabaseConflict(
+                            "Qualitative database transaction could not commit"
+                        ) from exc
 
     def migration_status(self) -> list[dict[str, object]]:
-        with StudyBatchOperationStore(
-            self.root,
-            self.project_id,
-        ).study_mutation_guard():
-            self._ensure_schema()
-            with sqlite3.connect(self.db_path) as connection:
-                return schema_status(connection)
+        with self.read() as connection:
+            return schema_status(connection)
 
-    def _ensure_schema(self) -> None:
+    @contextmanager
+    def _prepared_connection(self) -> Iterator[sqlite3.Connection]:
         self._require_study()
-        with sqlite3.connect(self.db_path, timeout=30) as connection:
+        connection: sqlite3.Connection | None = None
+        try:
+            if self.db_path.exists() or self.db_path.is_symlink():
+                mode = self.db_path.lstat().st_mode
+                if not stat.S_ISREG(mode):
+                    raise OSError(
+                        "Qualitative database must be a non-symlink regular file"
+                    )
+            connection = sqlite3.connect(self.db_path, timeout=30)
             connection.execute("pragma foreign_keys = on")
+            connection.execute("pragma trusted_schema = off")
+            current_version = int(
+                connection.execute("pragma user_version").fetchone()[0]
+            )
+            if current_version < 0:
+                raise ValueError("Qualitative database schema version is invalid")
+            if current_version > len(QUALITATIVE_MIGRATIONS):
+                apply_migrations(
+                    connection,
+                    database_name=f"qualitative project {self.project_id}",
+                    migrations=QUALITATIVE_MIGRATIONS,
+                )
+            _validate_schema_definition(connection, current_version)
+            _validate_database_integrity(connection)
+            _validate_project_ownership(
+                connection,
+                self.project_id,
+                schema_version=current_version,
+            )
             apply_migrations(
                 connection,
                 database_name=f"qualitative project {self.project_id}",
                 migrations=QUALITATIVE_MIGRATIONS,
             )
+            supported_version = len(QUALITATIVE_MIGRATIONS)
+            _validate_schema_definition(connection, supported_version)
+            _validate_database_integrity(connection)
+            _validate_project_ownership(
+                connection,
+                self.project_id,
+                schema_version=supported_version,
+            )
+        except SchemaCompatibilityError:
+            if connection is not None:
+                connection.close()
+            raise
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            if connection is not None:
+                connection.close()
+            raise QualitativeDatabaseConflict(
+                "Qualitative database is invalid"
+            ) from exc
+
+        if connection is None:
+            raise QualitativeDatabaseConflict("Qualitative database is invalid")
+        try:
+            yield connection
+        finally:
+            connection.close()
 
     def _require_study(self) -> None:
-        if not (self.project_dir / "study.json").is_file():
+        if self.project_dir.is_symlink():
+            raise QualitativeDatabaseConflict(
+                "Qualitative study directory is invalid"
+            )
+        study_path = self.project_dir / "study.json"
+        if study_path.is_symlink():
+            raise QualitativeDatabaseConflict("Qualitative study record is invalid")
+        if not study_path.is_file():
             raise FileNotFoundError(self.project_id)
 
 
@@ -467,6 +596,74 @@ def _execute_schema_script(
             statement = ""
     if statement.strip():
         raise ValueError("Qualitative schema contains an incomplete SQL statement")
+
+
+def _validate_schema_definition(
+    connection: sqlite3.Connection,
+    version: int,
+) -> None:
+    if version > len(QUALITATIVE_MIGRATIONS):
+        raise SchemaCompatibilityError(
+            f"qualitative project schema version {version} is newer than "
+            f"supported version {len(QUALITATIVE_MIGRATIONS)}"
+        )
+    with sqlite3.connect(":memory:") as expected:
+        expected.execute("pragma trusted_schema = off")
+        apply_migrations(
+            expected,
+            database_name="expected qualitative project",
+            migrations=QUALITATIVE_MIGRATIONS[:version],
+        )
+        expected_signature = _schema_signature(expected)
+    if _schema_signature(connection) != expected_signature:
+        raise ValueError("Qualitative database schema definition is invalid")
+
+
+def _schema_signature(
+    connection: sqlite3.Connection,
+) -> tuple[tuple[str, str, str, str], ...]:
+    return tuple(
+        (
+            str(row[0]),
+            str(row[1]),
+            str(row[2]),
+            " ".join(str(row[3] or "").split()),
+        )
+        for row in connection.execute(
+            """
+            select type, name, tbl_name, sql from sqlite_master
+            where name not like 'sqlite_%'
+            order by type, name
+            """
+        )
+    )
+
+
+def _validate_database_integrity(connection: sqlite3.Connection) -> None:
+    integrity_rows = connection.execute("pragma integrity_check").fetchall()
+    if integrity_rows != [("ok",)]:
+        raise ValueError("Qualitative database failed integrity check")
+    if connection.execute("pragma foreign_key_check").fetchone() is not None:
+        raise ValueError("Qualitative database failed foreign-key validation")
+
+
+def _validate_project_ownership(
+    connection: sqlite3.Connection,
+    project_id: str,
+    *,
+    schema_version: int,
+) -> None:
+    if schema_version == 0:
+        return
+    mismatched_project = connection.execute(
+        """
+        select 1 from qualitative_projects
+        where project_id != ? limit 1
+        """,
+        (project_id,),
+    ).fetchone()
+    if mismatched_project is not None:
+        raise ValueError("Qualitative database belongs to another project")
 
 
 QUALITATIVE_MIGRATIONS = (

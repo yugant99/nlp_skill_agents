@@ -15,6 +15,13 @@ from pathlib import Path, PurePosixPath
 from uuid import uuid4
 from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile, ZipInfo
 
+from backend.qualitative.cases import (
+    CaseConflictError,
+    CaseNotFoundError,
+    CaseService,
+    CaseValidationError,
+)
+from backend.qualitative.database import QualitativeDatabaseConflict
 from backend.storage.atomic import atomic_binary_writer, atomic_write_bytes
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
@@ -381,6 +388,8 @@ class ProjectArchiveStore:
                 raise ProjectArchiveError(
                     "Archive completed batch artifacts are invalid"
                 ) from exc
+
+            _validate_staged_qualitative_project(stage_root, study_id)
 
             with workspace_mutation_lock(self.root):
                 if study_dir.exists() or study_dir.is_symlink():
@@ -902,6 +911,47 @@ def _restore_imports(
         if not progress:
             raise ProjectArchiveError("Archive revision lineage cannot be restored")
         pending = deferred
+
+
+def _validate_staged_qualitative_project(
+    stage_root: Path,
+    study_id: str,
+) -> None:
+    database_path = stage_root / "studies" / study_id / "qualitative.sqlite3"
+    if not database_path.exists() and not database_path.is_symlink():
+        return
+    try:
+        CaseService(stage_root, study_id).validate_project_state()
+    except SchemaCompatibilityError as exc:
+        raise ProjectArchiveConflict(str(exc)) from exc
+    except (
+        CaseConflictError,
+        CaseNotFoundError,
+        CaseValidationError,
+        QualitativeDatabaseConflict,
+        StudyBatchOperationConflict,
+        sqlite3.Error,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        schema_error = _schema_compatibility_cause(exc)
+        if schema_error is not None:
+            raise ProjectArchiveConflict(str(schema_error)) from exc
+        raise ProjectArchiveError("Archive qualitative project is invalid") from exc
+
+
+def _schema_compatibility_cause(
+    exc: BaseException,
+) -> SchemaCompatibilityError | None:
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        if isinstance(current, SchemaCompatibilityError):
+            return current
+        visited.add(id(current))
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _enforce_archive_budget(members: dict[str, bytes]) -> None:

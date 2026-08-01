@@ -56,6 +56,8 @@ research records, or starting the Phase 2 editor.
 - Rejected invalid import formats, versions, source metadata, duplicate keys,
   missing parents, cycles, booleans as integers, and non-string examples before a
   transaction or partial codebook write.
+- Rejected boolean, string, and floating-point `sort_order` values structurally
+  on both code creation and update instead of accepting Pydantic coercion.
 - Rejected direct and indirect hierarchy cycles, cross-version parents, duplicate
   stable keys, empty freezes, draft mutation after freeze, and derivation from a
   non-frozen source.
@@ -82,8 +84,8 @@ research records, or starting the Phase 2 editor.
 
 ## CLI Verification
 
-- Focused qualitative database/service/API suite passed: 51/51.
-- Complete backend suite passed: 439/439.
+- Focused qualitative database/service/API suite passed: 54/54.
+- Complete backend suite passed: 442/442.
 - Frontend production build passed with 1,710 modules transformed.
 - All eight frontend helper suites passed: 30/30.
 - Python compilation passed for the database, service, and FastAPI modules.

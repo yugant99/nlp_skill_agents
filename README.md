@@ -113,9 +113,20 @@ Each study can now initialize a versioned `qualitative.sqlite3` contract inside
 its study directory. The contract reserves one transactional boundary for named
 researchers, versioned hierarchical codebooks, cases, typed attributes,
 source-to-case links, and append-only qualitative audit events. Frozen codebook
-versions are immutable at the database boundary. This is architecture for the
-next contributor slices, not yet a codebook or case-management workflow.
-`GET /api/studies/{study_id}/qualitative/schema-status` reports compatibility.
+versions are immutable at the database boundary.
+
+The backend now exposes the first working codebook workflow: bootstrap the named
+project researcher, create and list codebooks, edit deterministic draft
+hierarchies, freeze a version, derive a later draft with preserved stable keys,
+and import or export portable JSON without trusting database or actor IDs. The
+shared database boundary rejects symlinks, schema/trigger drift, integrity or
+foreign-key failures, and foreign project ownership before reads or writes.
+`GET /api/studies/{study_id}/qualitative/schema-status` reports compatibility;
+the remaining endpoints live under
+`/api/studies/{study_id}/qualitative/codebooks`.
+
+This is a backend/API Phase 1 service, not yet a researcher-facing codebook
+editor, case-management workflow, manual-coding surface, or identity system.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

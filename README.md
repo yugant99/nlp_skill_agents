@@ -128,9 +128,10 @@ the codebook endpoints live under
 The same backend now exposes attributable case and typed-attribute workflows for
 participant, session, dyad, condition, and timepoint records. Researchers can
 define immutable typed attributes, set or clear validated scalar values, and link
-an existing project-owned evidence source without copying its content or identity
-metadata. Project restore validates this qualitative state and every source link
-against the staged evidence catalog before publication.
+an existing project-owned evidence source without copying evidence content or
+catalog metadata beyond the stable source ID. Project restore validates this
+qualitative state and every source link against the staged evidence catalog before
+publication.
 
 This is a backend/API Phase 1 service, not yet a researcher-facing codebook
 or case editor, manual-coding surface, or identity system. The existing JSON

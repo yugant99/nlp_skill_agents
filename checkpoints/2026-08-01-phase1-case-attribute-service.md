@@ -67,6 +67,8 @@ replacing the existing JSON `StudySchema` and casebook CSV behavior.
 - Proved archive round-trip of a real case, numeric value, and source link, plus
   pre-publication rejection for missing/foreign sources, corrupt stored values,
   and newer qualitative schemas.
+- Rejected a directory or FIFO at the reserved qualitative database path before
+  archive walking, proving backup cannot silently omit accepted qualitative state.
 
 ## API Boundary
 
@@ -78,10 +80,10 @@ replacing the existing JSON `StudySchema` and casebook CSV behavior.
 
 ## CLI Verification
 
-- Focused case-service suite passed: 42/42.
+- Focused case-service suite passed: 49/49.
 - Integrated qualitative database, codebook, case, API, and archive slice passed.
-- Complete backend suite passed: 493/493.
-- Complete project-archive module passed.
+- Complete backend suite passed: 502/502.
+- Complete project-archive module passed: 101/101.
 - Frontend production build passed with 1,710 modules transformed.
 - All eight frontend helper suites passed: 30/30.
 - Python compilation passed for every changed Python file.

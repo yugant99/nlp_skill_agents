@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from hashlib import sha256
 from pathlib import Path
@@ -315,6 +316,35 @@ def test_project_archive_round_trips_qualitative_case_state(tmp_path: Path) -> N
     assert restored_snapshot == source_snapshot
     assert restored_value.value == 3
     assert restored_snapshot.project_source_ids == (project_source_id,)
+
+
+@pytest.mark.parametrize("object_kind", ["directory", "fifo"])
+def test_project_archive_rejects_non_regular_qualitative_database(
+    tmp_path: Path,
+    object_kind: str,
+) -> None:
+    study_id, _ = _build_study(tmp_path)
+    database = QualitativeProjectDatabase(tmp_path, study_id)
+    database.initialize(
+        researcher_id="res_non_regular_archive",
+        researcher_name="Non-Regular Archive Researcher",
+    )
+    database.db_path.unlink()
+    if object_kind == "directory":
+        database.db_path.mkdir()
+    else:
+        mkfifo = getattr(os, "mkfifo", None)
+        if mkfifo is None:
+            pytest.skip("FIFO filesystem objects are unavailable")
+        mkfifo(database.db_path)
+
+    with pytest.raises(
+        ProjectArchiveConflict,
+        match="Qualitative database must be a non-symlink regular file",
+    ):
+        ProjectArchiveStore(tmp_path).create_archive(study_id)
+
+    assert not list((tmp_path / "backups").glob("*.nlpstudy.zip"))
 
 
 def test_project_archive_rejects_missing_qualitative_source_before_publish(

@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import tempfile
 import unicodedata
 import zlib
@@ -179,6 +180,19 @@ class ProjectArchiveStore:
             raise ProjectArchiveError(
                 "Study archive dependencies cannot contain symbolic links"
             )
+        qualitative_database_path = study_dir / "qualitative.sqlite3"
+        try:
+            if (
+                qualitative_database_path.exists()
+                or qualitative_database_path.is_symlink()
+            ) and not stat.S_ISREG(qualitative_database_path.lstat().st_mode):
+                raise ProjectArchiveError(
+                    "Qualitative database must be a non-symlink regular file"
+                )
+        except OSError as exc:
+            raise ProjectArchiveError(
+                "Qualitative database path is unavailable or invalid"
+            ) from exc
         created_at = datetime.now(UTC).isoformat()
         members: dict[str, bytes] = {}
         for path in sorted(study_dir.rglob("*")):

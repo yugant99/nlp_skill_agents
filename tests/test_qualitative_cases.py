@@ -105,6 +105,23 @@ def _audit_rows(database: QualitativeProjectDatabase) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def _domain_and_audit_snapshot(
+    database: QualitativeProjectDatabase,
+) -> dict[str, tuple[tuple[object, ...], ...]]:
+    tables = (
+        "cases",
+        "attribute_definitions",
+        "case_attribute_values",
+        "source_case_links",
+        "qualitative_audit_events",
+    )
+    with sqlite3.connect(database.db_path) as connection:
+        return {
+            table: tuple(connection.execute(f"select * from {table} order by rowid"))
+            for table in tables
+        }
+
+
 def _add_second_researcher(database: QualitativeProjectDatabase) -> None:
     now = datetime.now(UTC).isoformat()
     with database.transaction() as connection:
@@ -466,21 +483,106 @@ def test_each_repeated_value_set_is_an_attributed_mutation(tmp_path: Path) -> No
     assert "note" not in rows[0]["metadata_json"]
 
 
-def test_audit_failure_rolls_back_the_paired_domain_write(
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "create_case",
+        "update_case",
+        "create_definition",
+        "value_insert",
+        "value_replace",
+        "value_clear",
+        "source_link",
+        "source_unlink",
+    ],
+)
+def test_audit_failure_rolls_back_every_paired_domain_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
 ) -> None:
-    _, database, service = _create_service(tmp_path)
+    project_id, database, service = _create_service(tmp_path)
+    case = None
+    definition = None
+    source_id = "psrc_audit_rollback"
+
+    if mutation in {
+        "update_case",
+        "value_insert",
+        "value_replace",
+        "value_clear",
+        "source_link",
+        "source_unlink",
+    }:
+        case = _create_case(service)
+    if mutation in {"value_insert", "value_replace", "value_clear"}:
+        definition = _create_definition(service, key="rollback", value_type="text")
+    if mutation in {"value_replace", "value_clear"}:
+        service.set_attribute_value(
+            researcher_id=RESEARCHER_ID,
+            case_id=case.case_id,
+            attribute_definition_id=definition.attribute_definition_id,
+            value="before",
+        )
+    if mutation in {"source_link", "source_unlink"}:
+        _record_source(
+            tmp_path,
+            project_source_id=source_id,
+            workspace_id=project_id,
+        )
+    if mutation == "source_unlink":
+        service.link_source(
+            researcher_id=RESEARCHER_ID,
+            case_id=case.case_id,
+            project_source_id=source_id,
+        )
+
+    before = _domain_and_audit_snapshot(database)
 
     def fail_audit(*args, **kwargs):
         raise sqlite3.IntegrityError("UNIQUE constraint failed")
 
     monkeypatch.setattr(service, "_append_audit", fail_audit)
     with pytest.raises(CaseConflictError, match="conflicts"):
-        _create_case(service)
+        if mutation == "create_case":
+            _create_case(service)
+        elif mutation == "update_case":
+            service.update_case(
+                researcher_id=RESEARCHER_ID,
+                case_id=case.case_id,
+                case_kind="session",
+                label="Changed",
+                description="changed",
+            )
+        elif mutation == "create_definition":
+            _create_definition(service, key="rollback", value_type="text")
+        elif mutation in {"value_insert", "value_replace"}:
+            service.set_attribute_value(
+                researcher_id=RESEARCHER_ID,
+                case_id=case.case_id,
+                attribute_definition_id=definition.attribute_definition_id,
+                value="after",
+            )
+        elif mutation == "value_clear":
+            service.clear_attribute_value(
+                researcher_id=RESEARCHER_ID,
+                case_id=case.case_id,
+                attribute_definition_id=definition.attribute_definition_id,
+            )
+        elif mutation == "source_link":
+            service.link_source(
+                researcher_id=RESEARCHER_ID,
+                case_id=case.case_id,
+                project_source_id=source_id,
+            )
+        else:
+            service.unlink_source(
+                researcher_id=RESEARCHER_ID,
+                case_id=case.case_id,
+                project_source_id=source_id,
+            )
 
-    with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("select count(*) from cases").fetchone() == (0,)
+    assert _domain_and_audit_snapshot(database) == before
 
 
 def test_source_link_retry_actor_conflict_unlink_and_audit_safety(

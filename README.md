@@ -122,11 +122,21 @@ and import or export portable JSON without trusting database or actor IDs. The
 shared database boundary rejects symlinks, schema/trigger drift, integrity or
 foreign-key failures, and foreign project ownership before reads or writes.
 `GET /api/studies/{study_id}/qualitative/schema-status` reports compatibility;
-the remaining endpoints live under
+the codebook endpoints live under
 `/api/studies/{study_id}/qualitative/codebooks`.
 
+The same backend now exposes attributable case and typed-attribute workflows for
+participant, session, dyad, condition, and timepoint records. Researchers can
+define immutable typed attributes, set or clear validated scalar values, and link
+an existing project-owned evidence source without copying evidence content or
+catalog metadata beyond the stable source ID. Project restore validates this
+qualitative state and every source link against the staged evidence catalog before
+publication.
+
 This is a backend/API Phase 1 service, not yet a researcher-facing codebook
-editor, case-management workflow, manual-coding surface, or identity system.
+or case editor, manual-coding surface, or identity system. The existing JSON
+`StudySchema` and casebook CSV helpers continue unchanged until a separately
+reviewed migration is defined.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

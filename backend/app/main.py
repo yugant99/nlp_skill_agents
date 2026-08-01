@@ -44,6 +44,12 @@ from backend.extensions.plugin_requests import (
 )
 from backend.llm.openrouter import OpenRouterError
 from backend.qualitative import QualitativeProjectDatabase
+from backend.qualitative.cases import (
+    CaseConflictError,
+    CaseNotFoundError,
+    CaseService,
+    CaseValidationError,
+)
 from backend.qualitative.codebooks import (
     CodebookConflictError,
     CodebookImmutableError,
@@ -109,6 +115,16 @@ _CODEBOOK_API_ERRORS = (
     CodebookValidationError,
     CodebookImmutableError,
     CodebookConflictError,
+    SchemaCompatibilityError,
+    StudyBatchOperationConflict,
+    QualitativeDatabaseConflict,
+)
+
+_CASE_API_ERRORS = (
+    FileNotFoundError,
+    CaseNotFoundError,
+    CaseValidationError,
+    CaseConflictError,
     SchemaCompatibilityError,
     StudyBatchOperationConflict,
     QualitativeDatabaseConflict,
@@ -279,6 +295,43 @@ class CodeUpdateRequest(BaseModel):
 
 class CodebookFreezeRequest(BaseModel):
     researcher_id: str
+
+
+class CaseCreateRequest(BaseModel):
+    researcher_id: str
+    case_kind: str
+    label: str
+    description: str = ""
+
+
+class CaseUpdateRequest(BaseModel):
+    researcher_id: str
+    case_kind: str
+    label: str
+    description: str = ""
+
+
+class AttributeDefinitionCreateRequest(BaseModel):
+    researcher_id: str
+    attribute_key: str
+    label: str
+    value_type: str
+    allowed_values: list[str] = Field(default_factory=list)
+    required: Annotated[bool, Field(strict=True)] = False
+
+
+class AttributeValueSetRequest(BaseModel):
+    researcher_id: str
+    value: object
+
+
+class ResearcherActionRequest(BaseModel):
+    researcher_id: str
+
+
+class SourceLinkActionRequest(BaseModel):
+    researcher_id: str
+    project_source_id: str
 
 
 class LibraryApprovalRequest(BaseModel):
@@ -895,6 +948,188 @@ def qualitative_schema_status(study_id: str) -> dict:
         "project_id": study_id,
         "current_version": migrations[-1]["version"],
         "migrations": migrations,
+    }
+
+
+@app.post("/api/studies/{study_id}/qualitative/cases")
+def create_qualitative_case(study_id: str, request: CaseCreateRequest) -> dict:
+    try:
+        case = CaseService(_local_data_root(), study_id).create_case(
+            researcher_id=request.researcher_id,
+            case_kind=request.case_kind,
+            label=request.label,
+            description=request.description,
+        )
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return {"case": _case_payload(case)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/cases")
+def list_qualitative_cases(study_id: str) -> dict:
+    try:
+        cases = CaseService(_local_data_root(), study_id).list_cases()
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return {"cases": [_case_payload(case) for case in cases]}
+
+
+@app.get("/api/studies/{study_id}/qualitative/cases/{case_id}")
+def get_qualitative_case(study_id: str, case_id: str) -> dict:
+    try:
+        snapshot = CaseService(_local_data_root(), study_id).read_case(
+            case_id=case_id,
+        )
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return _case_snapshot_payload(snapshot)
+
+
+@app.put("/api/studies/{study_id}/qualitative/cases/{case_id}")
+def update_qualitative_case(
+    study_id: str,
+    case_id: str,
+    request: CaseUpdateRequest,
+) -> dict:
+    try:
+        case = CaseService(_local_data_root(), study_id).update_case(
+            researcher_id=request.researcher_id,
+            case_id=case_id,
+            case_kind=request.case_kind,
+            label=request.label,
+            description=request.description,
+        )
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return {"case": _case_payload(case)}
+
+
+@app.post("/api/studies/{study_id}/qualitative/attribute-definitions")
+def create_qualitative_attribute_definition(
+    study_id: str,
+    request: AttributeDefinitionCreateRequest,
+) -> dict:
+    try:
+        definition = CaseService(
+            _local_data_root(),
+            study_id,
+        ).create_attribute_definition(
+            researcher_id=request.researcher_id,
+            attribute_key=request.attribute_key,
+            label=request.label,
+            value_type=request.value_type,
+            allowed_values=request.allowed_values,
+            required=request.required,
+        )
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return {"attribute_definition": _attribute_definition_payload(definition)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/attribute-definitions")
+def list_qualitative_attribute_definitions(study_id: str) -> dict:
+    try:
+        definitions = CaseService(
+            _local_data_root(),
+            study_id,
+        ).list_attribute_definitions()
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return {
+        "attribute_definitions": [
+            _attribute_definition_payload(definition)
+            for definition in definitions
+        ]
+    }
+
+
+@app.put(
+    "/api/studies/{study_id}/qualitative/cases/{case_id}/attributes/"
+    "{attribute_definition_id}"
+)
+def set_qualitative_case_attribute(
+    study_id: str,
+    case_id: str,
+    attribute_definition_id: str,
+    request: AttributeValueSetRequest,
+) -> dict:
+    try:
+        attribute_value = CaseService(
+            _local_data_root(),
+            study_id,
+        ).set_attribute_value(
+            researcher_id=request.researcher_id,
+            case_id=case_id,
+            attribute_definition_id=attribute_definition_id,
+            value=request.value,
+        )
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return {"attribute_value": _case_attribute_value_payload(attribute_value)}
+
+
+@app.delete(
+    "/api/studies/{study_id}/qualitative/cases/{case_id}/attributes/"
+    "{attribute_definition_id}"
+)
+def clear_qualitative_case_attribute(
+    study_id: str,
+    case_id: str,
+    attribute_definition_id: str,
+    request: ResearcherActionRequest,
+) -> dict:
+    try:
+        CaseService(_local_data_root(), study_id).clear_attribute_value(
+            researcher_id=request.researcher_id,
+            case_id=case_id,
+            attribute_definition_id=attribute_definition_id,
+        )
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return {
+        "cleared": {
+            "case_id": case_id.strip(),
+            "attribute_definition_id": attribute_definition_id.strip(),
+        }
+    }
+
+
+@app.put("/api/studies/{study_id}/qualitative/cases/{case_id}/sources")
+def link_qualitative_case_source(
+    study_id: str,
+    case_id: str,
+    request: SourceLinkActionRequest,
+) -> dict:
+    try:
+        source_link = CaseService(_local_data_root(), study_id).link_source(
+            researcher_id=request.researcher_id,
+            case_id=case_id,
+            project_source_id=request.project_source_id,
+        )
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return {"source_link": _source_case_link_payload(source_link)}
+
+
+@app.delete("/api/studies/{study_id}/qualitative/cases/{case_id}/sources")
+def unlink_qualitative_case_source(
+    study_id: str,
+    case_id: str,
+    request: SourceLinkActionRequest,
+) -> dict:
+    try:
+        CaseService(_local_data_root(), study_id).unlink_source(
+            researcher_id=request.researcher_id,
+            case_id=case_id,
+            project_source_id=request.project_source_id,
+        )
+    except _CASE_API_ERRORS as exc:
+        _raise_case_http_error(exc)
+    return {
+        "unlinked": {
+            "case_id": case_id.strip(),
+            "project_source_id": request.project_source_id,
+        }
     }
 
 
@@ -1714,6 +1949,84 @@ def _agent_job_api_payload(store: AgentJobStore, job: AgentJob) -> dict:
     return {
         **agent_job_to_payload(job),
         "available_transitions": store.available_transitions(job.id),
+    }
+
+
+def _raise_case_http_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, FileNotFoundError):
+        raise HTTPException(
+            status_code=404,
+            detail="Qualitative project data was not found",
+        ) from exc
+    if isinstance(exc, CaseNotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, CaseValidationError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _case_payload(case) -> dict:
+    return {
+        "case_id": case.case_id,
+        "project_id": case.project_id,
+        "case_kind": case.case_kind,
+        "label": case.label,
+        "description": case.description,
+        "created_by": case.created_by,
+        "updated_by": case.updated_by,
+        "created_at": case.created_at,
+        "updated_at": case.updated_at,
+    }
+
+
+def _attribute_definition_payload(definition) -> dict:
+    return {
+        "attribute_definition_id": definition.attribute_definition_id,
+        "project_id": definition.project_id,
+        "attribute_key": definition.attribute_key,
+        "label": definition.label,
+        "value_type": definition.value_type,
+        "allowed_values": list(definition.allowed_values),
+        "required": definition.required,
+        "created_by": definition.created_by,
+        "updated_by": definition.updated_by,
+        "created_at": definition.created_at,
+        "updated_at": definition.updated_at,
+    }
+
+
+def _case_attribute_value_payload(attribute_value) -> dict:
+    return {
+        "project_id": attribute_value.project_id,
+        "case_id": attribute_value.case_id,
+        "attribute_definition_id": attribute_value.attribute_definition_id,
+        "attribute_key": attribute_value.attribute_key,
+        "value_type": attribute_value.value_type,
+        "value": attribute_value.value,
+        "updated_by": attribute_value.updated_by,
+        "created_at": attribute_value.created_at,
+        "updated_at": attribute_value.updated_at,
+    }
+
+
+def _source_case_link_payload(source_link) -> dict:
+    return {
+        "project_id": source_link.project_id,
+        "project_source_id": source_link.project_source_id,
+        "case_id": source_link.case_id,
+        "linked_by": source_link.linked_by,
+        "created_at": source_link.created_at,
+    }
+
+
+def _case_snapshot_payload(snapshot) -> dict:
+    return {
+        "case": _case_payload(snapshot.case),
+        "attribute_values": [
+            _case_attribute_value_payload(attribute_value)
+            for attribute_value in snapshot.attribute_values
+        ],
+        "project_source_ids": list(snapshot.project_source_ids),
     }
 
 

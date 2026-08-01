@@ -137,6 +137,9 @@ prototype. It already has:
 - a study-scoped codebook backend/API for attributable draft editing, hierarchy
   validation, one-way freeze, stable-key-preserving derivation, and strict portable
   JSON import/export;
+- a study-scoped case backend/API for attributable participant/session/dyad/
+  condition/timepoint records, immutable typed attributes, validated values, and
+  project-owned evidence links;
 - basic audit events, approved-library artifacts, and bundle hashes;
 - agent-job prompts, statuses, runbooks, and evidence contracts.
 
@@ -144,11 +147,11 @@ It is not yet a qualitative research platform because it lacks the central manua
 coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 
 The qualitative schema is an accepted Phase 1 foundation. Its versioned codebook
-service and API are implemented with explicit researcher bootstrap, active-actor
-checks, atomic audit events, deterministic hierarchy reads, frozen-state
-enforcement, strict storage validation, and portable import/export. The case and
-typed-attribute service, researcher-facing codebook controls, manual coding
-integration, and later qualitative domain entities remain incomplete.
+and case/typed-attribute services are implemented with explicit researcher
+bootstrap, active-actor checks, atomic audit events, deterministic reads, strict
+storage validation, staged archive-restore preflight, and stable source ownership.
+Researcher-facing editors, manual coding integration, and later qualitative
+domain entities remain incomplete.
 
 The segmentation journal is a root-level persistence-attempt ledger, not a resume
 worker. It does not retain run payloads, take over hard-stopped operations, roll
@@ -186,7 +189,7 @@ startup-reconciliation workflow yet.
 - [ ] Manual source-span/C-unit coding and uncoding.
 - [x] Hierarchical, versioned codebooks with definitions, inclusion criteria,
       exclusion criteria, examples, notes, and colors.
-- [ ] Typed participant/case/session/dyad/condition/timepoint attributes.
+- [x] Typed participant/case/session/dyad/condition/timepoint attributes.
 - [ ] Study-, source-, case-, code-, and excerpt-linked memos and annotations.
 - [ ] Researcher identity on every coding and decision.
 - [ ] Evidence search, filters, and saved coding queries.

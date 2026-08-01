@@ -1,5 +1,16 @@
 """Canonical qualitative-research persistence contracts."""
 
+from backend.qualitative.cases import (
+    AttributeDefinitionRecord,
+    CaseAttributeValueRecord,
+    CaseConflictError,
+    CaseNotFoundError,
+    CaseRecord,
+    CaseService,
+    CaseSnapshot,
+    CaseValidationError,
+    SourceCaseLinkRecord,
+)
 from backend.qualitative.codebooks import (
     CodebookConflictError,
     CodebookImmutableError,
@@ -17,6 +28,14 @@ from backend.qualitative.database import (
 )
 
 __all__ = [
+    "AttributeDefinitionRecord",
+    "CaseAttributeValueRecord",
+    "CaseConflictError",
+    "CaseNotFoundError",
+    "CaseRecord",
+    "CaseService",
+    "CaseSnapshot",
+    "CaseValidationError",
     "CodebookConflictError",
     "CodebookImmutableError",
     "CodebookNotFoundError",
@@ -27,5 +46,6 @@ __all__ = [
     "CodebookVersionSnapshot",
     "CodeRecord",
     "QualitativeProjectDatabase",
+    "SourceCaseLinkRecord",
     "new_qualitative_id",
 ]

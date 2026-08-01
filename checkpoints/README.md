@@ -80,6 +80,7 @@ Each checkpoint should record:
 - [2026-07-29 Phase 1 study batch operation journal](2026-07-29-phase1-study-batch-operation-journal.md)
 - [2026-07-31 Phase 1 study batch hardening](2026-07-31-phase1-study-batch-hardening.md)
 - [2026-08-01 Phase 1 versioned codebook service](2026-08-01-phase1-versioned-codebook-service.md)
+- [2026-08-01 Phase 1 case and typed-attribute service](2026-08-01-phase1-case-attribute-service.md)
 
 ## Completion Bar
 

@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from hashlib import sha256
 from pathlib import Path
@@ -6,6 +7,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
+from backend.qualitative.cases import CaseService
+from backend.qualitative.database import QualitativeProjectDatabase
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.project_archive import (
@@ -37,6 +40,71 @@ def _build_study(root: Path) -> tuple[str, str]:
     )
     run = store.list_batch_runs(study.id, batch.batch_id)[0]
     return study.id, run["source_blob_sha256"]
+
+
+def _build_qualitative_archive(root: Path):
+    study_id, _ = _build_study(root)
+    researcher_id = "res_archive_researcher"
+    QualitativeProjectDatabase(root, study_id).initialize(
+        researcher_id=researcher_id,
+        researcher_name="Archive Researcher",
+    )
+    service = CaseService(root, study_id)
+    case = service.create_case(
+        researcher_id=researcher_id,
+        case_kind="participant",
+        label="Participant 1",
+        description="Round-trip participant",
+    )
+    definition = service.create_attribute_definition(
+        researcher_id=researcher_id,
+        attribute_key="session_count",
+        label="Session count",
+        value_type="number",
+        required=True,
+    )
+    service.set_attribute_value(
+        researcher_id=researcher_id,
+        case_id=case.case_id,
+        attribute_definition_id=definition.attribute_definition_id,
+        value=3,
+    )
+    project_source_id = EvidenceCatalog(root).workspace_import_records(study_id)[
+        0
+    ].project_source_id
+    service.link_source(
+        researcher_id=researcher_id,
+        case_id=case.case_id,
+        project_source_id=project_source_id,
+    )
+    exported = ProjectArchiveStore(root).create_archive(study_id)
+    return (
+        study_id,
+        case.case_id,
+        definition.attribute_definition_id,
+        project_source_id,
+        exported,
+    )
+
+
+def _rewrite_qualitative_database(
+    archive_path: Path,
+    output_path: Path,
+    database_path: Path,
+    tamper_sql: str,
+) -> None:
+    with ZipFile(archive_path) as archive:
+        database_path.write_bytes(archive.read("study/qualitative.sqlite3"))
+    with sqlite3.connect(database_path) as connection:
+        connection.executescript(tamper_sql)
+    _rewrite_archive_members(
+        archive_path,
+        output_path,
+        lambda members: members.__setitem__(
+            "study/qualitative.sqlite3",
+            database_path.read_bytes(),
+        ),
+    )
 
 
 def _rewrite_archive_journal(
@@ -153,6 +221,7 @@ def test_project_archive_round_trips_study_evidence_and_source_blobs(tmp_path) -
     exported = ProjectArchiveStore(source_root).create_archive(study_id)
     with ZipFile(exported.archive_path) as archive:
         assert "study/batch_operations.sqlite3" in archive.namelist()
+        assert "study/qualitative.sqlite3" not in archive.namelist()
     restored = ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
 
     restored_store = StudyWorkspaceStore(restore_root)
@@ -191,6 +260,9 @@ def test_project_archive_round_trips_study_evidence_and_source_blobs(tmp_path) -
     )
     assert restored_journal.get_operation(source_batch.batch_id) == source_operation
     assert restored_journal.list_items(source_batch.batch_id) == source_items
+    assert not (
+        restore_root / "studies" / study_id / "qualitative.sqlite3"
+    ).exists()
 
     replayed = restored_store.run_text_batch(
         study_id,
@@ -217,6 +289,169 @@ def test_project_archive_round_trips_study_evidence_and_source_blobs(tmp_path) -
 
     with pytest.raises(FileExistsError):
         ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+
+def test_project_archive_round_trips_qualitative_case_state(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    (
+        study_id,
+        case_id,
+        attribute_definition_id,
+        project_source_id,
+        exported,
+    ) = _build_qualitative_archive(source_root)
+    source_snapshot = CaseService(source_root, study_id).read_case(case_id)
+
+    with ZipFile(exported.archive_path) as archive:
+        assert "study/qualitative.sqlite3" in archive.namelist()
+    ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    restored_service = CaseService(restore_root, study_id)
+    restored_snapshot = restored_service.read_case(case_id)
+    restored_value = restored_service.read_attribute_value(
+        case_id=case_id,
+        attribute_definition_id=attribute_definition_id,
+    )
+    assert restored_snapshot == source_snapshot
+    assert restored_value.value == 3
+    assert restored_snapshot.project_source_ids == (project_source_id,)
+
+
+@pytest.mark.parametrize("object_kind", ["directory", "fifo"])
+def test_project_archive_rejects_non_regular_qualitative_database(
+    tmp_path: Path,
+    object_kind: str,
+) -> None:
+    study_id, _ = _build_study(tmp_path)
+    database = QualitativeProjectDatabase(tmp_path, study_id)
+    database.initialize(
+        researcher_id="res_non_regular_archive",
+        researcher_name="Non-Regular Archive Researcher",
+    )
+    database.db_path.unlink()
+    if object_kind == "directory":
+        database.db_path.mkdir()
+    else:
+        mkfifo = getattr(os, "mkfifo", None)
+        if mkfifo is None:
+            pytest.skip("FIFO filesystem objects are unavailable")
+        mkfifo(database.db_path)
+
+    with pytest.raises(
+        ProjectArchiveConflict,
+        match="Qualitative database must be a non-symlink regular file",
+    ):
+        ProjectArchiveStore(tmp_path).create_archive(study_id)
+
+    assert not list((tmp_path / "backups").glob("*.nlpstudy.zip"))
+
+
+def test_project_archive_rejects_missing_qualitative_source_before_publish(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, exported = _build_qualitative_archive(source_root)
+    forged_archive = tmp_path / "missing-qualitative-source.nlpstudy.zip"
+    _rewrite_qualitative_database(
+        exported.archive_path,
+        forged_archive,
+        tmp_path / "missing-source.sqlite3",
+        """
+        update source_case_links
+        set project_source_id = 'psrc_missing_from_archive'
+        """,
+    )
+
+    with pytest.raises(
+        ProjectArchiveError,
+        match="Archive qualitative project is invalid",
+    ):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert not (restore_root / "studies" / study_id).exists()
+    assert _destination_files(restore_root) == {}
+
+
+def test_project_archive_rejects_foreign_qualitative_source_before_publish(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, project_source_id, exported = _build_qualitative_archive(
+        source_root
+    )
+    original_source_history = EvidenceCatalog.source_history
+
+    def foreign_source_history(catalog, requested_source_id):
+        history = original_source_history(catalog, requested_source_id)
+        if requested_source_id == project_source_id:
+            history["source"] = {
+                **history["source"],
+                "workspace_id": "foreign-study",
+            }
+        return history
+
+    monkeypatch.setattr(EvidenceCatalog, "source_history", foreign_source_history)
+
+    with pytest.raises(
+        ProjectArchiveError,
+        match="Archive qualitative project is invalid",
+    ):
+        ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert not (restore_root / "studies" / study_id).exists()
+    assert _destination_files(restore_root) == {}
+
+
+def test_project_archive_rejects_invalid_qualitative_rows_before_publish(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, exported = _build_qualitative_archive(source_root)
+    forged_archive = tmp_path / "invalid-qualitative-row.nlpstudy.zip"
+    _rewrite_qualitative_database(
+        exported.archive_path,
+        forged_archive,
+        tmp_path / "invalid-row.sqlite3",
+        """
+        update case_attribute_values set value_json = '"private-value"'
+        """,
+    )
+
+    with pytest.raises(
+        ProjectArchiveError,
+        match="Archive qualitative project is invalid",
+    ) as error:
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert "private-value" not in str(error.value)
+    assert not (restore_root / "studies" / study_id).exists()
+    assert _destination_files(restore_root) == {}
+
+
+def test_project_archive_rejects_newer_qualitative_schema_before_publish(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, exported = _build_qualitative_archive(source_root)
+    forged_archive = tmp_path / "newer-qualitative-schema.nlpstudy.zip"
+    _rewrite_qualitative_database(
+        exported.archive_path,
+        forged_archive,
+        tmp_path / "newer-qualitative.sqlite3",
+        "pragma user_version = 99",
+    )
+
+    with pytest.raises(ProjectArchiveConflict, match="newer than supported"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert not (restore_root / "studies" / study_id).exists()
+    assert _destination_files(restore_root) == {}
 
 
 def test_project_archive_refuses_running_study_batch(tmp_path) -> None:

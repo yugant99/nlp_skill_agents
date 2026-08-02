@@ -685,6 +685,9 @@ def _add_coding_references(connection: sqlite3.Connection) -> None:
           or old.removed_at is not null
           or new.removed_by is null
           or new.removed_at is null
+          or julianday(new.removed_at) is null
+          or julianday(old.created_at) is null
+          or julianday(new.removed_at) < julianday(old.created_at)
         begin
           select raise(abort, 'coding reference update is not an initial removal');
         end;

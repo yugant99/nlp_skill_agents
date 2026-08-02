@@ -355,6 +355,68 @@ def test_create_read_list_remove_and_reapply_are_attributable_and_idempotent(
     assert PASSAGE_TEXT not in "".join(row["metadata_json"] for row in audits)
 
 
+def test_removal_cannot_predate_creation_at_trigger_or_strict_read_boundary(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_fixture(tmp_path)
+    created = _create_reference(fixture)
+    earlier = "2000-01-01T00:00:00+00:00"
+
+    with sqlite3.connect(fixture.database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        with pytest.raises(sqlite3.IntegrityError, match="initial removal"):
+            connection.execute(
+                """
+                update coding_references
+                set removed_by = ?, removed_at = ?
+                where coding_reference_id = ?
+                """,
+                (SECOND_ID, earlier, created.coding_reference_id),
+            )
+
+    assert fixture.service.read_reference(created.coding_reference_id) == created
+
+    with sqlite3.connect(fixture.database.db_path) as connection:
+        trigger_sql = connection.execute(
+            """
+            select sql from sqlite_master
+            where type = 'trigger' and name = 'restrict_coding_reference_update'
+            """
+        ).fetchone()[0]
+        assert isinstance(trigger_sql, str)
+        connection.execute("drop trigger restrict_coding_reference_update")
+        connection.execute(
+            """
+            update coding_references
+            set removed_by = ?, removed_at = ?
+            where coding_reference_id = ?
+            """,
+            (SECOND_ID, earlier, created.coding_reference_id),
+        )
+        connection.execute(trigger_sql)
+        connection.execute(
+            """
+            insert into qualitative_audit_events (
+              event_id, project_id, actor_id, event_type,
+              subject_type, subject_id, metadata_json, created_at
+            ) values (?, ?, ?, 'coding_reference.removed',
+                      'coding_reference', ?, '{}', ?)
+            """,
+            (
+                f"qae_{'7' * 32}",
+                fixture.project_id,
+                SECOND_ID,
+                created.coding_reference_id,
+                earlier,
+            ),
+        )
+
+    with pytest.raises(CodingReferenceConflictError, match="removal timestamp"):
+        fixture.service.read_reference(created.coding_reference_id)
+    with pytest.raises(CodingReferenceConflictError, match="removal timestamp"):
+        fixture.service.validate_project_state()
+
+
 def test_unicode_cunit_spans_round_trip_without_persisting_excerpt(tmp_path: Path) -> None:
     fixture = _create_fixture(tmp_path)
     created = _create_reference(

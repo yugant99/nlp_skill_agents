@@ -536,14 +536,27 @@ class CodingReferenceService:
             if removed_by_value is None
             else _stored_entity_id(removed_by_value, "removed_by")
         )
-        removed_at = (
-            None
-            if removed_at_value is None
-            else _stored_timestamp(removed_at_value, "removed_at")
-        )
+        removed_at: str | None = None
+        removed_at_instant: datetime | None = None
+        if removed_at_value is not None:
+            removed_at, removed_at_instant = _stored_timestamp_with_instant(
+                removed_at_value,
+                "removed_at",
+            )
         if (removed_by is None) != (removed_at is None):
             raise CodingReferenceConflictError(
                 "Stored coding reference removal state is invalid"
+            )
+        created_at, created_at_instant = _stored_timestamp_with_instant(
+            row["created_at"],
+            "created_at",
+        )
+        if (
+            removed_at_instant is not None
+            and removed_at_instant < created_at_instant
+        ):
+            raise CodingReferenceConflictError(
+                "Stored coding reference removal timestamp is invalid"
             )
         record = CodingReferenceRecord(
             coding_reference_id=_stored_coding_reference_id(
@@ -570,7 +583,7 @@ class CodingReferenceService:
             ),
             code_id=_stored_entity_id(row["code_id"], "code_id"),
             created_by=_stored_entity_id(row["created_by"], "created_by"),
-            created_at=_stored_timestamp(row["created_at"], "created_at"),
+            created_at=created_at,
             removed_by=removed_by,
             removed_at=removed_at,
         )
@@ -1004,6 +1017,14 @@ def _stored_integer(value: object, field_name: str) -> int:
 
 
 def _stored_timestamp(value: object, field_name: str) -> str:
+    stored, _ = _stored_timestamp_with_instant(value, field_name)
+    return stored
+
+
+def _stored_timestamp_with_instant(
+    value: object,
+    field_name: str,
+) -> tuple[str, datetime]:
     stored = _stored_text(value, field_name)
     if (
         not stored
@@ -1024,7 +1045,7 @@ def _stored_timestamp(value: object, field_name: str) -> str:
         raise CodingReferenceConflictError(
             f"Stored coding reference {field_name} is invalid"
         )
-    return stored
+    return stored, parsed
 
 
 def _utc_now() -> str:

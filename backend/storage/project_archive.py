@@ -1360,18 +1360,18 @@ def _reject_v1_target_references(
 
 
 def _contains_nonempty_evidence_set_id(value: object) -> bool:
-    if isinstance(value, dict):
-        if (
-            "evidence_set_id" in value
-            and value["evidence_set_id"] not in (None, "")
-        ):
-            return True
-        return any(
-            _contains_nonempty_evidence_set_id(item)
-            for item in value.values()
-        )
-    if isinstance(value, list):
-        return any(_contains_nonempty_evidence_set_id(item) for item in value)
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            if (
+                "evidence_set_id" in current
+                and current["evidence_set_id"] not in (None, "")
+            ):
+                return True
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
     return False
 
 

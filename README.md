@@ -35,9 +35,18 @@ lineage is rejected before run artifacts are created.
 Original source blobs are retained locally at content-addressed SHA-256 paths.
 New writes verify their expected digest, existing blobs are reverified before
 deduplication, and every read used by the verification API rehashes the bytes.
-Study backups are portable ZIP archives with a versioned manifest covering every
-study file, workspace-scoped evidence record, referenced source blob, and
-study-scoped audit event. Restore verifies declared paths, sizes, and hashes before
+Persisted analysis runs and current-lineage, pipeline-verified segmentation runs
+using the C-unit text contract also register immutable evidence target sets. Each
+set binds its producer, source and transcript revision, canonical passage/C-unit
+identities, exact UTF-8 text digest, and content-addressed target-set ID without
+copying transcript text into qualitative coding rows. Coding therefore depends on
+a persisted, revalidated evidence set rather than accepting a merely derivable
+identifier as proof that evidence exists.
+
+Study backups are portable ZIP archives. Current format-2 manifests cover every
+study file, workspace-scoped evidence record and target set, referenced source and
+evidence-text blob, and study-scoped audit event. Restore verifies declared paths,
+sizes, hashes, canonical target identities, and qualitative references before
 atomically exposing the staged study directory. Archive handling rejects encrypted
 or unsupported ZIP members, non-portable Windows paths, path-prefix collisions,
 and malformed typed records before extraction. Backup capture holds the per-study
@@ -45,7 +54,9 @@ mutation boundary, refuses a running batch, and validates both journal-backed an
 pre-journal completed batches, including manifests, run snapshots, aggregate JSON,
 CSV exports, audit events, skill packs, evidence rows, and source blobs. Restore
 preflights shared evidence state under a workspace mutation lock and rolls back
-catalog, audit, and newly introduced blob writes if final study publication fails.
+catalog, audit, newly introduced source/evidence-text blobs, and filesystem state if
+final study publication fails. Format-1 archives remain readable under their exact
+historical contract and cannot smuggle format-2 evidence references.
 Legacy validation follows the persisted generation instead of imposing the newest
 contract retroactively. Current lineage-aware snapshots are bound to the exact
 catalog record. Journal-backed snapshots always require their verified blob;
@@ -112,8 +123,8 @@ are also not included in per-study project archives.
 Each study can now initialize a versioned `qualitative.sqlite3` contract inside
 its study directory. The contract reserves one transactional boundary for named
 researchers, versioned hierarchical codebooks, cases, typed attributes,
-source-to-case links, and append-only qualitative audit events. Frozen codebook
-versions are immutable at the database boundary.
+source-to-case links, coding references, and append-only qualitative audit events.
+Frozen codebook versions are immutable at the database boundary.
 
 The backend now exposes the first working codebook workflow: bootstrap the named
 project researcher, create and list codebooks, edit deterministic draft
@@ -133,10 +144,19 @@ catalog metadata beyond the stable source ID. Project restore validates this
 qualitative state and every source link against the staged evidence catalog before
 publication.
 
-This is a backend/API Phase 1 service, not yet a researcher-facing codebook
-or case editor, manual-coding surface, or identity system. The existing JSON
-`StudySchema` and casebook CSV helpers continue unchanged until a separately
-reviewed migration is defined.
+The coding-reference API can apply, read, list, and remove attributable codings
+against exact passages or C-units and exact codes from frozen codebook versions.
+Every accepted mutation and its privacy-minimized audit event commit atomically.
+Reads strictly revalidate stored rows against the qualitative database, evidence
+catalog, target registry, evidence-text blob, and canonical identifier functions.
+The adjacent study-scoped segmentation routes create the persisted evidence sets
+required for coding without exposing one study's runs through another study.
+
+These are backend/API Phase 1 services, not yet a researcher-facing codebook, case,
+or manual-coding workbench. Source selection, coding stripes, retrieval, undo,
+memos, annotations, search, and identity/role administration remain later slices.
+The existing JSON `StudySchema` and casebook CSV helpers continue unchanged until a
+separately reviewed migration is defined.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

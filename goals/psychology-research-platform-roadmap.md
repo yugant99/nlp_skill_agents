@@ -140,18 +140,22 @@ prototype. It already has:
 - a study-scoped case backend/API for attributable participant/session/dyad/
   condition/timepoint records, immutable typed attributes, validated values, and
   project-owned evidence links;
+- immutable analysis and study-segmentation evidence target sets with canonical
+  passage/C-unit identities and content-addressed UTF-8 evidence text;
+- a study-scoped coding-reference backend/API for attributable apply, read, list,
+  and remove operations against exact frozen codes and persisted evidence targets;
 - basic audit events, approved-library artifacts, and bundle hashes;
 - agent-job prompts, statuses, runbooks, and evidence contracts.
 
 It is not yet a qualitative research platform because it lacks the central manual
 coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 
-The qualitative schema is an accepted Phase 1 foundation. Its versioned codebook
-and case/typed-attribute services are implemented with explicit researcher
-bootstrap, active-actor checks, atomic audit events, deterministic reads, strict
-storage validation, staged archive-restore preflight, and stable source ownership.
-Researcher-facing editors, manual coding integration, and later qualitative
-domain entities remain incomplete.
+The qualitative schema is an accepted Phase 1 foundation. Its versioned codebook,
+case/typed-attribute, and coding-reference services are implemented with explicit
+researcher bootstrap, active-actor checks, atomic audit events, deterministic
+reads, strict cross-store validation, staged archive-restore preflight, and stable
+source ownership. Researcher-facing editors, manual coding interaction, and later
+qualitative domain entities remain incomplete.
 
 The segmentation journal is a root-level persistence-attempt ledger, not a resume
 worker. It does not retain run payloads, take over hard-stopped operations, roll
@@ -186,7 +190,9 @@ startup-reconciliation workflow yet.
 - [x] Stable content-addressed transcript-revision, passage, and C-unit identifiers.
 - [x] Immutable original-source hashes and import-instance IDs.
 - [x] Project-owned source records and transcript-revision lineage.
-- [ ] Manual source-span/C-unit coding and uncoding.
+- [x] Durable, attributable source-span/C-unit coding and uncoding records/API.
+- [ ] Researcher-facing manual source selection, coding/uncoding, retrieval, and
+      undo.
 - [x] Hierarchical, versioned codebooks with definitions, inclusion criteria,
       exclusion criteria, examples, notes, and colors.
 - [x] Typed participant/case/session/dyad/condition/timepoint attributes.

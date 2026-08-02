@@ -1818,6 +1818,33 @@ def test_project_archive_rejects_v1_nested_study_artifact_target_reference(
     assert _destination_tree(restore_root) == {}
 
 
+def test_project_archive_rejects_deep_v1_target_reference_without_recursion_leak(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _ = _build_study(source_root)
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    forged_archive = tmp_path / "deep-v1-study-target-reference.nlpstudy.zip"
+
+    def add_deep_target_reference(members):
+        target = b'{"evidence_set_id":"evs_0123456789abcdef0123456789abcdef"}'
+        members["study/deep-legacy-metadata.json"] = (
+            b"[" * 600 + target + b"]" * 600
+        )
+
+    _rewrite_archive_as_v1(
+        exported.archive_path,
+        forged_archive,
+        add_deep_target_reference,
+    )
+
+    with pytest.raises(ProjectArchiveError, match="cannot reference evidence"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
+
+
 def test_project_archive_rejects_v1_qualitative_coding_reference_row(
     tmp_path: Path,
 ) -> None:

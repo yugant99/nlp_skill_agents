@@ -3,6 +3,7 @@ import sqlite3
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from docx import Document
@@ -14,6 +15,11 @@ from backend.qualitative.notes import (
     NoteConflictError,
     NoteNotFoundError,
     NoteValidationError,
+)
+from backend.qualitative.research_reviews import (
+    ReviewConflictError,
+    ReviewNotFoundError,
+    ReviewValidationError,
 )
 from backend.segmentation.pipeline import SegmentationRunStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
@@ -237,7 +243,7 @@ def test_qualitative_schema_status_reports_per_study_contract(
     assert response.json() == {
         "compatible": True,
         "project_id": study_id,
-        "current_version": 3,
+        "current_version": 4,
         "migrations": [
             {
                 "version": 1,
@@ -253,6 +259,11 @@ def test_qualitative_schema_status_reports_per_study_contract(
                 "version": 3,
                 "name": "add-memo-annotation-contract",
                 "applied_at": response.json()["migrations"][2]["applied_at"],
+            },
+            {
+                "version": 4,
+                "name": "add-coder-suggestion-review-contract",
+                "applied_at": response.json()["migrations"][3]["applied_at"],
             },
         ],
     }
@@ -295,7 +306,7 @@ def test_qualitative_schema_status_rejects_missing_or_newer_project(
 
     assert missing.status_code == 404
     assert newer.status_code == 409
-    assert "newer than supported version 3" in newer.json()["detail"]
+    assert "newer than supported version 4" in newer.json()["detail"]
     assert tampered.status_code == 409
     assert tampered.json()["detail"] == "Qualitative database is invalid"
 
@@ -1068,6 +1079,397 @@ def test_coding_reference_api_maps_domain_errors_without_private_details(
         "detail": "Coding reference state conflicts with stored data"
     }
     assert private_detail not in private_conflict.text
+
+
+def test_research_review_api_exact_routes_envelopes_and_queries(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id = client.post(
+        "/api/studies",
+        json={"name": "Research Review API Contract"},
+    ).json()["study"]["id"]
+    suggestion_id = "ags_" + "a" * 32
+    decision_id = "rvd_" + "b" * 32
+    timestamp = "2026-08-01T12:00:00+00:00"
+    researcher = SimpleNamespace(
+        project_id=study_id,
+        researcher_id="res_review_api",
+        display_name="Review API Researcher",
+        role="reviewer",
+        active=True,
+        created_at=timestamp,
+        updated_at=timestamp,
+        provenance_classification="registered",
+        provenance_actor_id="res_bootstrap_api",
+    )
+    suggestion = SimpleNamespace(
+        agent_suggestion_id=suggestion_id,
+        project_id=study_id,
+        origin_kind="synthetic_fixture",
+        origin_id="fixture:review-api",
+        origin_suggestion_key="candidate-1",
+        project_source_id="psrc_review_api",
+        transcript_revision_id="trv_" + "c" * 32,
+        evidence_set_id="evs_" + "d" * 32,
+        target_kind="passage",
+        passage_id="psg_" + "e" * 32,
+        cunit_id="",
+        start_offset=0,
+        end_offset=4,
+        codebook_version_id="cbv_review_api",
+        code_id="cod_review_api",
+        created_by="res_bootstrap_api",
+        created_at=timestamp,
+    )
+    snapshot = SimpleNamespace(
+        suggestion=suggestion,
+        current_decision=None,
+        review_status="unreviewed",
+    )
+    decision = SimpleNamespace(
+        reviewer_decision_id=decision_id,
+        project_id=study_id,
+        agent_suggestion_id=suggestion_id,
+        decision_number=1,
+        decision="accepted",
+        coding_reference_id="cdr_" + "f" * 32,
+        reviewed_by="res_review_api",
+        created_at=timestamp,
+    )
+    calls: dict[str, object] = {}
+
+    class FakeReviewService:
+        def create_researcher(self, **kwargs):
+            calls["create_researcher"] = kwargs
+            return researcher
+
+        def read_researcher(self, researcher_id):
+            calls["read_researcher"] = researcher_id
+            return researcher
+
+        def list_researchers(self, **kwargs):
+            calls["list_researchers"] = kwargs
+            return SimpleNamespace(researchers=(researcher,), next_cursor="res-cur")
+
+        def create_agent_suggestion(self, **kwargs):
+            calls["create_agent_suggestion"] = kwargs
+            return snapshot
+
+        def read_agent_suggestion(self, agent_suggestion_id):
+            calls["read_agent_suggestion"] = agent_suggestion_id
+            return snapshot
+
+        def list_agent_suggestions(self, **kwargs):
+            calls["list_agent_suggestions"] = kwargs
+            return SimpleNamespace(
+                agent_suggestions=(snapshot,), next_cursor="ags-cur"
+            )
+
+        def append_reviewer_decision(self, **kwargs):
+            calls["append_reviewer_decision"] = kwargs
+            return decision
+
+        def list_reviewer_decisions(self, agent_suggestion_id, **kwargs):
+            calls["list_reviewer_decisions"] = (agent_suggestion_id, kwargs)
+            return SimpleNamespace(
+                reviewer_decisions=(decision,), next_cursor="rvd-cur"
+            )
+
+    service = FakeReviewService()
+    monkeypatch.setattr(
+        "backend.app.main.ResearchReviewService",
+        lambda _root, _project_id: service,
+    )
+    researchers_url = f"/api/studies/{study_id}/qualitative/researchers"
+    researcher_body = {
+        "actor_id": "res_bootstrap_api",
+        "display_name": "Review API Researcher",
+        "role": "reviewer",
+    }
+    registered = client.put(
+        f"{researchers_url}/res_review_api", json=researcher_body
+    )
+    fetched_researcher = client.get(f"{researchers_url}/res_review_api")
+    listed_researchers = client.get(
+        researchers_url,
+        params={
+            "role": "reviewer",
+            "active": "false",
+            "limit": "5",
+            "cursor": "res-input",
+        },
+    )
+    assert registered.status_code == fetched_researcher.status_code == 200
+    assert listed_researchers.status_code == 200
+    assert registered.json() == fetched_researcher.json()
+    assert set(registered.json()) == {"researcher"}
+    assert set(registered.json()["researcher"]) == set(vars(researcher))
+    assert listed_researchers.json() == {
+        "researchers": [registered.json()["researcher"]],
+        "next_cursor": "res-cur",
+    }
+    assert calls["create_researcher"] == {
+        "researcher_id": "res_review_api",
+        **researcher_body,
+    }
+    assert calls["read_researcher"] == "res_review_api"
+    assert calls["list_researchers"] == {
+        "role": "reviewer",
+        "active": False,
+        "limit": 5,
+        "cursor": "res-input",
+    }
+
+    suggestions_url = f"/api/studies/{study_id}/qualitative/agent-suggestions"
+    suggestion_body = {
+        "agent_suggestion_id": suggestion_id,
+        "origin_kind": "synthetic_fixture",
+        "origin_id": "fixture:review-api",
+        "origin_suggestion_key": "candidate-1",
+        "researcher_id": "res_bootstrap_api",
+        "project_source_id": "psrc_review_api",
+        "transcript_revision_id": "trv_" + "c" * 32,
+        "evidence_set_id": "evs_" + "d" * 32,
+        "target_kind": "passage",
+        "passage_id": "psg_" + "e" * 32,
+        "cunit_id": "",
+        "start_offset": 0,
+        "end_offset": 4,
+        "codebook_version_id": "cbv_review_api",
+        "code_id": "cod_review_api",
+    }
+    created_suggestion = client.post(suggestions_url, json=suggestion_body)
+    fetched_suggestion = client.get(f"{suggestions_url}/{suggestion_id}")
+    listed_suggestions = client.get(
+        suggestions_url,
+        params={
+            "project_source_id": "psrc_review_api",
+            "codebook_version_id": "cbv_review_api",
+            "code_id": "cod_review_api",
+            "created_by": "res_bootstrap_api",
+            "origin_kind": "synthetic_fixture",
+            "limit": "7",
+            "cursor": "ags-input",
+        },
+    )
+    assert created_suggestion.status_code == fetched_suggestion.status_code == 200
+    assert listed_suggestions.status_code == 200
+    assert created_suggestion.json() == fetched_suggestion.json()
+    suggestion_snapshot = created_suggestion.json()["agent_suggestion"]
+    assert set(suggestion_snapshot) == {
+        "suggestion",
+        "current_decision",
+        "review_status",
+    }
+    assert set(suggestion_snapshot["suggestion"]) == set(vars(suggestion))
+    assert suggestion_snapshot["current_decision"] is None
+    assert listed_suggestions.json() == {
+        "agent_suggestions": [suggestion_snapshot],
+        "next_cursor": "ags-cur",
+    }
+    assert calls["create_agent_suggestion"] == suggestion_body
+    assert calls["read_agent_suggestion"] == suggestion_id
+    assert calls["list_agent_suggestions"] == {
+        "project_source_id": "psrc_review_api",
+        "codebook_version_id": "cbv_review_api",
+        "code_id": "cod_review_api",
+        "created_by": "res_bootstrap_api",
+        "origin_kind": "synthetic_fixture",
+        "limit": 7,
+        "cursor": "ags-input",
+    }
+
+    decisions_url = f"{suggestions_url}/{suggestion_id}/decisions"
+    decision_body = {
+        "reviewer_decision_id": decision_id,
+        "researcher_id": "res_review_api",
+        "expected_decision_number": 0,
+        "decision": "accepted",
+        "coding_reference_id": "cdr_" + "f" * 32,
+    }
+    appended = client.post(decisions_url, json=decision_body)
+    listed_decisions = client.get(
+        decisions_url,
+        params={"limit": "9", "cursor": "rvd-input"},
+    )
+    assert appended.status_code == listed_decisions.status_code == 200
+    assert set(appended.json()) == {"reviewer_decision"}
+    assert set(appended.json()["reviewer_decision"]) == set(vars(decision))
+    assert listed_decisions.json() == {
+        "reviewer_decisions": [appended.json()["reviewer_decision"]],
+        "next_cursor": "rvd-cur",
+    }
+    assert calls["append_reviewer_decision"] == {
+        "agent_suggestion_id": suggestion_id,
+        **decision_body,
+    }
+    assert calls["list_reviewer_decisions"] == (
+        suggestion_id,
+        {"limit": 9, "cursor": "rvd-input"},
+    )
+
+
+def test_research_review_api_strict_validation_and_safe_errors(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id = client.post(
+        "/api/studies",
+        json={"name": "Research Review API Validation"},
+    ).json()["study"]["id"]
+    researchers_url = f"/api/studies/{study_id}/qualitative/researchers"
+    suggestions_url = f"/api/studies/{study_id}/qualitative/agent-suggestions"
+    suggestion_id = "ags_" + "a" * 32
+    decisions_url = f"{suggestions_url}/{suggestion_id}/decisions"
+
+    class EmptyReviewService:
+        def list_researchers(self, **_kwargs):
+            return SimpleNamespace(researchers=(), next_cursor=None)
+
+        def list_agent_suggestions(self, **_kwargs):
+            return SimpleNamespace(agent_suggestions=(), next_cursor=None)
+
+        def list_reviewer_decisions(self, _suggestion_id, **_kwargs):
+            return SimpleNamespace(reviewer_decisions=(), next_cursor=None)
+
+    monkeypatch.setattr(
+        "backend.app.main.ResearchReviewService",
+        lambda _root, _project_id: EmptyReviewService(),
+    )
+    private = "PRIVATE-REVIEW /private/review/path"
+    suggestion_body = {
+        "agent_suggestion_id": suggestion_id,
+        "origin_kind": "synthetic_fixture",
+        "origin_id": "fixture:review-api",
+        "origin_suggestion_key": "candidate-1",
+        "researcher_id": "res_bootstrap_api",
+        "project_source_id": "psrc_review_api",
+        "transcript_revision_id": "trv_" + "c" * 32,
+        "evidence_set_id": "evs_" + "d" * 32,
+        "target_kind": "passage",
+        "passage_id": "psg_" + "e" * 32,
+        "cunit_id": "",
+        "start_offset": 0,
+        "end_offset": 4,
+        "codebook_version_id": "cbv_review_api",
+        "code_id": "cod_review_api",
+    }
+    decision_body = {
+        "reviewer_decision_id": "rvd_" + "b" * 32,
+        "researcher_id": "res_review_api",
+        "expected_decision_number": 0,
+        "decision": "accepted",
+    }
+    structural = [
+        client.put(
+            f"{researchers_url}/res_review_api",
+            json={
+                "actor_id": "res_bootstrap_api",
+                "display_name": "Reviewer",
+                "role": "reviewer",
+                "private": private,
+            },
+        ),
+        client.post(
+            suggestions_url,
+            json={**suggestion_body, "start_offset": True},
+        ),
+        client.post(decisions_url, json=decision_body),
+        client.post(
+            decisions_url,
+            json={**decision_body, "coding_reference_id": None},
+        ),
+        client.post(
+            decisions_url,
+            json={
+                **decision_body,
+                "decision": "invalid-decision",
+                "coding_reference_id": None,
+            },
+        ),
+        client.post(
+            decisions_url,
+            json={
+                **decision_body,
+                "decision": "rejected",
+                "coding_reference_id": "cdr_" + "f" * 32,
+            },
+        ),
+        client.post(
+            suggestions_url,
+            content="{not-json " + private,
+            headers={"content-type": "application/json"},
+        ),
+    ]
+    for response in structural:
+        assert response.status_code == 422
+        assert response.json() == {"detail": "Request validation failed"}
+        assert private not in response.text
+
+    for invalid_active in ("TRUE", "1", " false "):
+        response = client.get(
+            researchers_url,
+            params={"active": invalid_active},
+        )
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Review request is invalid"}
+    for invalid_limit in ("0", "01", "+1", "1.0", "51", "true"):
+        response = client.get(
+            suggestions_url,
+            params={"limit": invalid_limit},
+        )
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Review request is invalid"}
+
+    query_failures = (
+        client.get(f"{researchers_url}?role=reviewer&role=reviewer"),
+        client.get(suggestions_url, params={"review_status": private}),
+        client.get(f"{decisions_url}?cursor=one&cursor=two"),
+    )
+    for response in query_failures:
+        assert response.status_code == 422
+        assert response.json() == {"detail": "Request validation failed"}
+        assert private not in response.text
+
+    error_cases = (
+        (
+            ReviewValidationError(private),
+            400,
+            "Review request is invalid",
+        ),
+        (
+            ReviewNotFoundError(private),
+            404,
+            "Review dependency was not found",
+        ),
+        (
+            ReviewConflictError(private),
+            409,
+            "Review state conflicts with stored data",
+        ),
+    )
+    for domain_error, status, detail in error_cases:
+        class FailingReviewService:
+            def read_researcher(self, _researcher_id):
+                raise domain_error
+
+        monkeypatch.setattr(
+            "backend.app.main.ResearchReviewService",
+            lambda _root, _project_id: FailingReviewService(),
+        )
+        response = client.get(f"{researchers_url}/res_private")
+        assert response.status_code == status
+        assert response.json() == {"detail": detail}
+        assert private not in response.text
+
+    missing = client.get("/api/studies/missing/qualitative/agent-suggestions")
+    assert missing.status_code == 404
+    assert missing.json() == {"detail": "Review dependency was not found"}
 
 
 def _assert_note_api_snapshot(

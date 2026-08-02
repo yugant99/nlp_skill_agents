@@ -9,6 +9,8 @@ from docx import Document
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.qualitative.coding_references import CodingReferenceConflictError
+from backend.segmentation.pipeline import SegmentationRunStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.segmentation_operation_store import SegmentationOperationStore
 from backend.storage.source_blob_store import (
@@ -65,6 +67,80 @@ def _record_api_project_source(
     )
 
 
+def _bootstrap_coding_reference_api(
+    client: TestClient,
+    *,
+    name: str,
+) -> dict[str, object]:
+    study_id, researcher_id = _bootstrap_qualitative_project(
+        client,
+        name=name,
+    )
+    codebooks_url = f"/api/studies/{study_id}/qualitative/codebooks"
+    codebook_response = client.post(
+        codebooks_url,
+        json={
+            "researcher_id": researcher_id,
+            "title": "Coding reference codebook",
+        },
+    )
+    assert codebook_response.status_code == 200
+    codebook = codebook_response.json()["codebook"]
+    version_response = client.post(
+        f"{codebooks_url}/{codebook['codebook_id']}/versions",
+        json={"researcher_id": researcher_id, "based_on_version_id": None},
+    )
+    assert version_response.status_code == 200
+    version = version_response.json()["version"]
+    codes_url = (
+        f"{codebooks_url}/{codebook['codebook_id']}/versions/"
+        f"{version['codebook_version_id']}/codes"
+    )
+    code_response = client.post(
+        codes_url,
+        json={
+            "researcher_id": researcher_id,
+            "stable_code_key": "arrival",
+            "label": "Arrival",
+        },
+    )
+    assert code_response.status_code == 200
+    code = code_response.json()["code"]
+    freeze_response = client.post(
+        f"{codebooks_url}/{codebook['codebook_id']}/versions/"
+        f"{version['codebook_version_id']}/freeze",
+        json={"researcher_id": researcher_id},
+    )
+    assert freeze_response.status_code == 200
+
+    segmentation_response = client.post(
+        f"/api/studies/{study_id}/segmentation/runs",
+        json={
+            "source_filename": "coding-reference.txt",
+            "descript_text": "[00:00:00] P: I came and I stayed.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    assert segmentation_response.status_code == 200
+    run = segmentation_response.json()["run"]
+    assert run["status"] == "verified"
+    assert run["evidence_set_id"].startswith("evs_")
+    assert run["cunit_adjudication"]["cunit_text_contract_version"] == 1
+    decision = run["cunit_adjudication"]["decisions"][0]
+    assert decision["cunit_ids"]
+    assert decision["cunit_texts"][0]
+
+    return {
+        "study_id": study_id,
+        "researcher_id": researcher_id,
+        "codebook_id": codebook["codebook_id"],
+        "codebook_version_id": version["codebook_version_id"],
+        "code_id": code["code_id"],
+        "codes_url": codes_url,
+        "run": run,
+    }
+
+
 def test_health_endpoint() -> None:
     client = TestClient(app)
 
@@ -95,7 +171,7 @@ def test_storage_schema_status_reports_applied_migrations(tmp_path, monkeypatch)
         "index-analysis-run-history",
         "create-analysis-operation-journal",
     ]
-    assert payload["databases"]["evidence_catalog"]["current_version"] == 3
+    assert payload["databases"]["evidence_catalog"]["current_version"] == 4
     assert [
         migration["name"]
         for migration in payload["databases"]["evidence_catalog"]["migrations"]
@@ -103,6 +179,7 @@ def test_storage_schema_status_reports_applied_migrations(tmp_path, monkeypatch)
         "create-import-catalog",
         "add-project-source-lineage",
         "index-workspace-history",
+        "add-canonical-evidence-targets",
     ]
     assert payload["databases"]["segmentation_operations"]["current_version"] == 1
     assert [
@@ -122,7 +199,7 @@ def test_storage_schema_status_rejects_newer_database(tmp_path, monkeypatch) -> 
     response = client.get("/api/storage/schema-status")
 
     assert response.status_code == 409
-    assert "newer than supported version 3" in response.json()["detail"]
+    assert "newer than supported version 4" in response.json()["detail"]
 
 
 def test_storage_schema_status_rejects_newer_segmentation_database(
@@ -155,13 +232,18 @@ def test_qualitative_schema_status_reports_per_study_contract(
     assert response.json() == {
         "compatible": True,
         "project_id": study_id,
-        "current_version": 1,
+        "current_version": 2,
         "migrations": [
             {
                 "version": 1,
                 "name": "create-qualitative-core-contract",
                 "applied_at": response.json()["migrations"][0]["applied_at"],
-            }
+            },
+            {
+                "version": 2,
+                "name": "add-coding-reference-contract",
+                "applied_at": response.json()["migrations"][1]["applied_at"],
+            },
         ],
     }
     assert (
@@ -203,7 +285,7 @@ def test_qualitative_schema_status_rejects_missing_or_newer_project(
 
     assert missing.status_code == 404
     assert newer.status_code == 409
-    assert "newer than supported version 1" in newer.json()["detail"]
+    assert "newer than supported version 2" in newer.json()["detail"]
     assert tampered.status_code == 409
     assert tampered.json()["detail"] == "Qualitative database is invalid"
 
@@ -640,6 +722,342 @@ def test_codebook_api_exports_imports_and_rejects_invalid_or_newer_documents(
         },
     )
     assert newer.status_code == 409
+
+
+def test_coding_reference_api_lifecycle_exact_envelopes_and_strict_queries(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    fixture = _bootstrap_coding_reference_api(
+        client,
+        name="Coding Reference Lifecycle API",
+    )
+    study_id = fixture["study_id"]
+    researcher_id = fixture["researcher_id"]
+    run = fixture["run"]
+    assert isinstance(study_id, str)
+    assert isinstance(researcher_id, str)
+    assert isinstance(run, dict)
+    base = f"/api/studies/{study_id}/qualitative/coding-references"
+    event = run["events"][0]
+    decision = run["cunit_adjudication"]["decisions"][0]
+    passage_request = {
+        "researcher_id": researcher_id,
+        "project_source_id": run["project_source_id"],
+        "transcript_revision_id": run["transcript_revision_id"],
+        "evidence_set_id": run["evidence_set_id"],
+        "target_kind": "passage",
+        "passage_id": event["passage_id"],
+        "cunit_id": "",
+        "start_offset": 0,
+        "end_offset": 1,
+        "codebook_version_id": fixture["codebook_version_id"],
+        "code_id": fixture["code_id"],
+    }
+
+    created = client.post(base, json=passage_request)
+    repeated = client.post(base, json=passage_request)
+
+    assert created.status_code == 200
+    assert repeated.status_code == 200
+    assert repeated.json() == created.json()
+    passage_reference = created.json()["coding_reference"]
+    assert set(passage_reference) == {
+        "coding_reference_id",
+        "project_id",
+        "project_source_id",
+        "transcript_revision_id",
+        "evidence_set_id",
+        "target_kind",
+        "passage_id",
+        "cunit_id",
+        "start_offset",
+        "end_offset",
+        "codebook_version_id",
+        "code_id",
+        "created_by",
+        "created_at",
+        "removed_by",
+        "removed_at",
+    }
+    assert passage_reference["project_id"] == study_id
+    assert passage_reference["removed_by"] is None
+    assert passage_reference["removed_at"] is None
+    assert "I came" not in created.text
+    assert "Arrival" not in created.text
+
+    cunit_request = {
+        **passage_request,
+        "target_kind": "cunit",
+        "cunit_id": decision["cunit_ids"][0],
+    }
+    cunit_created = client.post(base, json=cunit_request)
+    assert cunit_created.status_code == 200
+    cunit_reference = cunit_created.json()["coding_reference"]
+    assert cunit_reference["coding_reference_id"] != passage_reference[
+        "coding_reference_id"
+    ]
+
+    fetched = client.get(
+        f"{base}/{passage_reference['coding_reference_id']}"
+    )
+    filtered = client.get(
+        base,
+        params={
+            "project_source_id": run["project_source_id"],
+            "codebook_version_id": fixture["codebook_version_id"],
+            "code_id": fixture["code_id"],
+            "created_by": researcher_id,
+        },
+    )
+    assert fetched.status_code == 200
+    assert fetched.json() == created.json()
+    assert filtered.status_code == 200
+    assert filtered.json()["coding_references"] == [
+        passage_reference,
+        cunit_reference,
+    ]
+
+    removed = client.request(
+        "DELETE",
+        f"{base}/{passage_reference['coding_reference_id']}",
+        json={"researcher_id": researcher_id},
+    )
+    removed_again = client.request(
+        "DELETE",
+        f"{base}/{passage_reference['coding_reference_id']}",
+        json={"researcher_id": researcher_id},
+    )
+    assert removed.status_code == 200
+    assert removed_again.status_code == 200
+    assert removed_again.json() == removed.json()
+    removed_reference = removed.json()["coding_reference"]
+    assert removed_reference["removed_by"] == researcher_id
+    assert removed_reference["removed_at"] is not None
+    assert client.get(base).json()["coding_references"] == [cunit_reference]
+    included = client.get(base, params={"include_removed": "true"})
+    assert included.status_code == 200
+    assert included.json()["coding_references"] == [
+        removed_reference,
+        cunit_reference,
+    ]
+
+    for invalid_value in ("1", "yes", "TRUE"):
+        rejected = client.get(
+            base,
+            params={"include_removed": invalid_value},
+        )
+        assert rejected.status_code == 422
+    assert client.get(
+        f"{base}?include_removed=true&include_removed=false"
+    ).status_code == 422
+    assert client.get(
+        f"{base}?code_id={fixture['code_id']}&code_id={fixture['code_id']}"
+    ).status_code == 422
+    assert client.get(
+        base,
+        params={"project_source_id[eq]": run["project_source_id"]},
+    ).status_code == 422
+
+
+@pytest.mark.parametrize("invalid_offset", [True, "0", 0.0])
+def test_coding_reference_api_rejects_coercive_offset_types(
+    tmp_path,
+    monkeypatch,
+    invalid_offset: object,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    fixture = _bootstrap_coding_reference_api(
+        client,
+        name=f"Coding Reference Strict Offset {invalid_offset!r}",
+    )
+    study_id = fixture["study_id"]
+    run = fixture["run"]
+    assert isinstance(study_id, str)
+    assert isinstance(run, dict)
+    response = client.post(
+        f"/api/studies/{study_id}/qualitative/coding-references",
+        json={
+            "researcher_id": fixture["researcher_id"],
+            "project_source_id": run["project_source_id"],
+            "transcript_revision_id": run["transcript_revision_id"],
+            "evidence_set_id": run["evidence_set_id"],
+            "target_kind": "passage",
+            "passage_id": run["events"][0]["passage_id"],
+            "cunit_id": "",
+            "start_offset": invalid_offset,
+            "end_offset": 1,
+            "codebook_version_id": fixture["codebook_version_id"],
+            "code_id": fixture["code_id"],
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_coding_reference_api_maps_domain_errors_without_private_details(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    fixture = _bootstrap_coding_reference_api(
+        client,
+        name="Coding Reference Error API",
+    )
+    study_id = fixture["study_id"]
+    researcher_id = fixture["researcher_id"]
+    run = fixture["run"]
+    assert isinstance(study_id, str)
+    assert isinstance(researcher_id, str)
+    assert isinstance(run, dict)
+    base = f"/api/studies/{study_id}/qualitative/coding-references"
+    decision = run["cunit_adjudication"]["decisions"][0]
+    request = {
+        "researcher_id": researcher_id,
+        "project_source_id": run["project_source_id"],
+        "transcript_revision_id": run["transcript_revision_id"],
+        "evidence_set_id": run["evidence_set_id"],
+        "target_kind": "passage",
+        "passage_id": run["events"][0]["passage_id"],
+        "cunit_id": "",
+        "start_offset": 0,
+        "end_offset": 1,
+        "codebook_version_id": fixture["codebook_version_id"],
+        "code_id": fixture["code_id"],
+    }
+
+    invalid_requests = [
+        {**request, "start_offset": -1},
+        {**request, "start_offset": 1, "end_offset": 1},
+        {**request, "end_offset": 10_000},
+        {**request, "target_kind": "unknown"},
+        {**request, "cunit_id": decision["cunit_ids"][0]},
+        {**request, "target_kind": "cunit", "cunit_id": ""},
+    ]
+    for invalid_request in invalid_requests:
+        invalid = client.post(base, json=invalid_request)
+        assert invalid.status_code == 400
+        assert invalid.json() == {
+            "detail": "Coding reference request is invalid"
+        }
+
+    missing_actor = client.post(
+        base,
+        json={**request, "researcher_id": "res_missing"},
+    )
+    missing_target = client.post(
+        base,
+        json={**request, "evidence_set_id": "evs_" + "0" * 32},
+    )
+    missing_study = client.get(
+        "/api/studies/not-real/qualitative/coding-references"
+    )
+    assert missing_actor.status_code == 404
+    assert missing_target.status_code == 404
+    assert missing_study.status_code == 404
+    for response in (missing_actor, missing_target):
+        assert response.json() == {
+            "detail": "Coding reference dependency was not found"
+        }
+    assert missing_study.json() == {"detail": "Study not found"}
+
+    private_study_detail = "PRIVATE-STUDY /private/study.json"
+    corrupt_study_id = client.post(
+        "/api/studies",
+        json={"name": "Corrupt Coding Reference Study"},
+    ).json()["study"]["id"]
+    (
+        tmp_path / "studies" / corrupt_study_id / "study.json"
+    ).write_text(private_study_detail, encoding="utf-8")
+    corrupt_base = (
+        f"/api/studies/{corrupt_study_id}/qualitative/coding-references"
+    )
+    corrupt_responses = [
+        client.get(corrupt_base),
+        client.post(corrupt_base, json=request),
+        client.get(f"{corrupt_base}/{'cdr_' + '0' * 32}"),
+        client.request(
+            "DELETE",
+            f"{corrupt_base}/{'cdr_' + '0' * 32}",
+            json={"researcher_id": researcher_id},
+        ),
+    ]
+    for corrupt_study in corrupt_responses:
+        assert corrupt_study.status_code == 409
+        assert corrupt_study.json() == {
+            "detail": "Study storage is unavailable or invalid"
+        }
+        assert private_study_detail not in corrupt_study.text
+
+    codebooks_url = f"/api/studies/{study_id}/qualitative/codebooks"
+    draft = client.post(
+        f"{codebooks_url}/{fixture['codebook_id']}/versions",
+        json={
+            "researcher_id": researcher_id,
+            "based_on_version_id": fixture["codebook_version_id"],
+        },
+    )
+    assert draft.status_code == 200
+    draft_version = draft.json()["version"]
+    draft_conflict = client.post(
+        base,
+        json={
+            **request,
+            "codebook_version_id": draft_version["codebook_version_id"],
+            "code_id": draft.json()["codes"][0]["code_id"],
+        },
+    )
+    assert draft_conflict.status_code == 409
+    assert draft_conflict.json() == {
+        "detail": "Coding reference state conflicts with stored data"
+    }
+
+    malformed_sentinel = "PRIVATE-MALFORMED /private/malformed/path"
+    malformed = client.post(
+        base,
+        content="{not-json " + malformed_sentinel,
+        headers={"content-type": "application/json"},
+    )
+    extra_sentinel = "PRIVATE-EXTRA /private/extra/path"
+    extra_field = client.post(
+        base,
+        json={**request, "content": extra_sentinel},
+    )
+    assert malformed.status_code == 422
+    assert extra_field.status_code == 422
+    assert malformed.json() == {"detail": "Request validation failed"}
+    assert extra_field.json() == {"detail": "Request validation failed"}
+    assert malformed_sentinel not in malformed.text
+    assert extra_sentinel not in extra_field.text
+
+    query_sentinel = "PRIVATE-QUERY /private/query/path"
+    invalid_query = client.get(
+        base,
+        params={"project_source_id[eq]": query_sentinel},
+    )
+    assert invalid_query.status_code == 422
+    assert invalid_query.json() == {"detail": "Request validation failed"}
+    assert query_sentinel not in invalid_query.text
+
+    private_detail = "PRIVATE-CONTENT /private/evidence/path sha256-deadbeef"
+
+    def reject_list(self, **kwargs):
+        raise CodingReferenceConflictError(private_detail)
+
+    monkeypatch.setattr(
+        "backend.app.main.CodingReferenceService.list_references",
+        reject_list,
+    )
+    private_conflict = client.get(base)
+    assert private_conflict.status_code == 409
+    assert private_conflict.json() == {
+        "detail": "Coding reference state conflicts with stored data"
+    }
+    assert private_detail not in private_conflict.text
 
 
 def test_case_attribute_api_happy_flow_and_exact_envelopes(
@@ -3253,6 +3671,171 @@ def test_segmentation_api_rejects_unknown_synthetic_case() -> None:
 
     assert response.status_code == 404
     assert evaluate_response.status_code == 404
+
+
+def test_study_segmentation_api_scopes_runs_and_guards_mutations(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    local_run = client.post(
+        "/api/segmentation/runs",
+        json={
+            "source_filename": "local.txt",
+            "descript_text": "[00:00:00] P: Local-only evidence.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    owned_study = client.post(
+        "/api/studies",
+        json={"name": "Owned Segmentation API"},
+    ).json()["study"]["id"]
+    foreign_study = client.post(
+        "/api/studies",
+        json={"name": "Foreign Segmentation API"},
+    ).json()["study"]["id"]
+    owned = client.post(
+        f"/api/studies/{owned_study}/segmentation/runs",
+        json={
+            "source_filename": "owned.txt",
+            "descript_text": "[00:00:00] P: Study-owned evidence.",
+            "rule_ids": ["speaker-markers"],
+            "workspace_id": foreign_study,
+        },
+    )
+    foreign = client.post(
+        f"/api/studies/{foreign_study}/segmentation/runs",
+        json={
+            "source_filename": "foreign.txt",
+            "descript_text": "[00:00:00] P: Foreign evidence.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+
+    assert local_run.status_code == 200
+    assert owned.status_code == 200
+    assert foreign.status_code == 200
+    owned_run = owned.json()["run"]
+    foreign_run = foreign.json()["run"]
+    assert owned_run["workspace_id"] == owned_study
+    assert foreign_run["workspace_id"] == foreign_study
+    assert owned_run["evidence_set_id"].startswith("evs_")
+    assert owned_run["cunit_adjudication"]["cunit_text_contract_version"] == 1
+
+    owned_list = client.get(
+        f"/api/studies/{owned_study}/segmentation/runs"
+    )
+    foreign_list = client.get(
+        f"/api/studies/{foreign_study}/segmentation/runs"
+    )
+    assert owned_list.status_code == 200
+    assert foreign_list.status_code == 200
+    assert [run["run_id"] for run in owned_list.json()["runs"]] == [
+        owned_run["run_id"]
+    ]
+    assert [run["run_id"] for run in foreign_list.json()["runs"]] == [
+        foreign_run["run_id"]
+    ]
+    assert local_run.json()["run"]["run_id"] not in {
+        run["run_id"] for run in owned_list.json()["runs"]
+    }
+
+    owned_url = (
+        f"/api/studies/{owned_study}/segmentation/runs/"
+        f"{owned_run['run_id']}"
+    )
+    fetched = client.get(owned_url)
+    verified = client.post(f"{owned_url}/verify")
+    patched = client.post(
+        f"{owned_url}/specialists/speaker_turn/patches",
+        json={"patches": []},
+    )
+    assert fetched.status_code == 200
+    assert verified.status_code == 200
+    assert patched.status_code == 200
+    assert fetched.json()["run"]["workspace_id"] == owned_study
+    assert verified.json()["run"]["workspace_id"] == owned_study
+    assert patched.json()["run"]["workspace_id"] == owned_study
+
+    snapshot_path = (
+        tmp_path / "segmentation_runs" / f"{owned_run['run_id']}.json"
+    )
+    snapshot_before = snapshot_path.read_bytes()
+    operations_before = SegmentationOperationStore(tmp_path).list_operations()
+    wrong_base = (
+        f"/api/studies/{foreign_study}/segmentation/runs/"
+        f"{owned_run['run_id']}"
+    )
+    wrong_responses = [
+        client.get(wrong_base),
+        client.post(f"{wrong_base}/verify"),
+        client.post(
+            f"{wrong_base}/specialists/speaker_turn/patches",
+            json={"patches": []},
+        ),
+    ]
+    for response in wrong_responses:
+        assert response.status_code == 409
+        assert response.json() == {
+            "detail": "Segmentation state conflicts with stored data"
+        }
+    assert snapshot_path.read_bytes() == snapshot_before
+    assert SegmentationOperationStore(tmp_path).list_operations() == (
+        operations_before
+    )
+
+    validation_sentinel = "PRIVATE-PATCH /private/patch/path"
+    coercive_patch = client.post(
+        f"{owned_url}/specialists/speaker_turn/patches",
+        json={
+            "patches": [
+                {
+                    "operation": "replace_event_text",
+                    "event_index": True,
+                    "text": validation_sentinel,
+                }
+            ]
+        },
+    )
+    missing_run = client.get(
+        f"/api/studies/{owned_study}/segmentation/runs/{'0' * 32}"
+    )
+    run_count_before = len(
+        SegmentationRunStore(tmp_path).list_runs()
+    )
+    missing_study = client.post(
+        "/api/studies/not-a-study/segmentation/runs",
+        json={
+            "source_filename": "missing.txt",
+            "descript_text": "[00:00:00] P: Must not be persisted.",
+            "rule_ids": ["speaker-markers"],
+        },
+    )
+    assert coercive_patch.status_code == 422
+    assert coercive_patch.json() == {"detail": "Request validation failed"}
+    assert validation_sentinel not in coercive_patch.text
+    assert missing_run.status_code == 404
+    assert missing_run.json() == {"detail": "Segmentation run not found"}
+    assert missing_study.status_code == 404
+    assert missing_study.json() == {"detail": "Study not found"}
+    assert len(SegmentationRunStore(tmp_path).list_runs()) == run_count_before
+    assert snapshot_path.read_bytes() == snapshot_before
+    assert SegmentationOperationStore(tmp_path).list_operations() == (
+        operations_before
+    )
+
+    private_detail = "PRIVATE-STUDY-CONTENT /private/study/path"
+    study_record_path = tmp_path / "studies" / foreign_study / "study.json"
+    study_record_path.write_text(private_detail, encoding="utf-8")
+    corrupt_study = client.get(
+        f"/api/studies/{foreign_study}/segmentation/runs"
+    )
+    assert corrupt_study.status_code == 409
+    assert corrupt_study.json() == {
+        "detail": "Study storage is unavailable or invalid"
+    }
+    assert private_detail not in corrupt_study.text
 
 
 def test_segmentation_run_api_creates_fetches_and_verifies_rule_specialist_run(

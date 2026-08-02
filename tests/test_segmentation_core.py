@@ -443,6 +443,113 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     ]
 
 
+def test_segmentation_store_enforces_expected_workspace_before_mutation(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import (
+        PatchOperation,
+        SegmentationRunStore,
+        SegmentationSnapshotConflict,
+    )
+    from backend.storage.segmentation_operation_store import (
+        SegmentationOperationStore,
+    )
+
+    store = SegmentationRunStore(tmp_path)
+    owned = store.create_run(
+        source_filename="owned.txt",
+        descript_text="[00:00:00] P: Owned evidence.",
+        rule_ids=["speaker-markers"],
+        workspace_id="study-owned",
+    )
+    foreign = store.create_run(
+        source_filename="foreign.txt",
+        descript_text="[00:00:00] P: Foreign evidence.",
+        rule_ids=["speaker-markers"],
+        workspace_id="study-foreign",
+    )
+    owned_path = tmp_path / "segmentation_runs" / f"{owned.run_id}.json"
+    before_bytes = owned_path.read_bytes()
+    before_operations = SegmentationOperationStore(tmp_path).list_operations()
+
+    assert store.load_run(
+        owned.run_id,
+        expected_workspace_id="study-owned",
+    ) == owned
+    assert [
+        run.run_id
+        for run in store.list_runs(expected_workspace_id="study-owned")
+    ] == [owned.run_id]
+    assert foreign.run_id not in {
+        run.run_id
+        for run in store.list_runs(expected_workspace_id="study-owned")
+    }
+    with pytest.raises(SegmentationSnapshotConflict, match="another workspace"):
+        store.load_run(
+            owned.run_id,
+            expected_workspace_id="study-foreign",
+        )
+    with pytest.raises(SegmentationSnapshotConflict, match="another workspace"):
+        store.verify_run(
+            owned.run_id,
+            expected_workspace_id="study-foreign",
+        )
+    with pytest.raises(SegmentationSnapshotConflict, match="another workspace"):
+        store.apply_specialist_patches(
+            owned.run_id,
+            specialist_id="speaker_turn",
+            patches=[
+                PatchOperation(
+                    operation="event_line",
+                    event_index=0,
+                    text="P: Must not be written.",
+                    reason="wrong workspace",
+                )
+            ],
+            expected_workspace_id="study-foreign",
+        )
+
+    assert owned_path.read_bytes() == before_bytes
+    assert (
+        SegmentationOperationStore(tmp_path).list_operations()
+        == before_operations
+    )
+
+
+def test_segmentation_store_wraps_malformed_snapshot_as_conflict(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import (
+        SegmentationRunStore,
+        SegmentationSnapshotConflict,
+    )
+
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="malformed.txt",
+        descript_text="[00:00:00] P: Preserve this.",
+        rule_ids=["speaker-markers"],
+    )
+    run_path = tmp_path / "segmentation_runs" / f"{run.run_id}.json"
+    run_path.write_text('{"run_id": 1}', encoding="utf-8")
+
+    with pytest.raises(SegmentationSnapshotConflict, match="snapshot is invalid"):
+        store.load_run(run.run_id)
+
+    nested = store.create_run(
+        source_filename="malformed-nested.txt",
+        descript_text="[00:00:00] P: Preserve nested state.",
+        rule_ids=["speaker-markers"],
+    )
+    nested_path = tmp_path / "segmentation_runs" / f"{nested.run_id}.json"
+    nested_payload = json.loads(nested_path.read_text(encoding="utf-8"))
+    nested_payload["events"] = [1]
+    nested_path.write_text(json.dumps(nested_payload), encoding="utf-8")
+
+    with pytest.raises(SegmentationSnapshotConflict, match="snapshot is invalid"):
+        store.load_run(nested.run_id)
+
+
 def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) -> None:
     from backend.segmentation.pipeline import SegmentationRunStore
     from backend.storage.source_blob_store import SourceBlobStore

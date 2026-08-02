@@ -7,10 +7,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal, NoReturn
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.analysis.diagnostics import analyze_transcript_quality
 from backend.analysis.pipeline import execute_analysis, metric_plugin_catalog
@@ -58,6 +60,12 @@ from backend.qualitative.codebooks import (
     CodebookValidationError,
 )
 from backend.qualitative.database import QualitativeDatabaseConflict
+from backend.qualitative.coding_references import (
+    CodingReferenceConflictError,
+    CodingReferenceNotFoundError,
+    CodingReferenceService,
+    CodingReferenceValidationError,
+)
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import SyntheticSegmentationCase
 from backend.segmentation.pipeline import (
@@ -73,6 +81,7 @@ from backend.storage.local_store import LocalRunStore, StoredRun
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.deployment_profiles import check_deployment_profile
 from backend.storage.evidence_catalog import EvidenceCatalog
+from backend.storage.evidence_target_registry import EvidenceTargetConflictError
 from backend.storage.library_store import LibraryStore
 from backend.storage.project_archive import (
     MAX_ARCHIVE_FILE_BYTES,
@@ -95,6 +104,7 @@ from backend.storage.study_store import (
     MAX_STUDY_PARTICIPANTS,
     StudyBatchSnapshotConflict,
     StudySkillPackVersionConflict,
+    StudyWorkspaceConflict,
     StudyWorkspaceStore,
 )
 
@@ -107,6 +117,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _content_safe_validation_error(
+    request: Request,
+    exc: RequestValidationError,
+):
+    path = request.url.path
+    if path.startswith("/api/studies/") and (
+        "/qualitative/coding-references" in path
+        or "/segmentation/runs" in path
+    ):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Request validation failed"},
+        )
+    return await request_validation_exception_handler(request, exc)
 
 _CODEBOOK_API_ERRORS = (
     FileNotFoundError,
@@ -129,6 +156,20 @@ _CASE_API_ERRORS = (
     StudyBatchOperationConflict,
     QualitativeDatabaseConflict,
 )
+
+_STUDY_SEGMENTATION_CONFLICT_ERRORS = (
+    SchemaCompatibilityError,
+    SegmentationOperationConflict,
+    SegmentationSnapshotConflict,
+    SourceBlobIntegrityError,
+    EvidenceTargetConflictError,
+)
+_STUDY_SEGMENTATION_API_ERRORS = _STUDY_SEGMENTATION_CONFLICT_ERRORS + (
+    ValueError,
+)
+_STUDY_SEGMENTATION_READ_ERRORS = (
+    FileNotFoundError,
+) + _STUDY_SEGMENTATION_API_ERRORS
 
 
 class TextRunRequest(BaseModel):
@@ -203,7 +244,7 @@ class SegmentationRunAnalysisRequest(BaseModel):
 
 class SegmentationPatchRequest(BaseModel):
     operation: str = Field(min_length=1)
-    event_index: int = Field(ge=0)
+    event_index: Annotated[int, Field(strict=True, ge=0)]
     text: str = Field(min_length=1)
     reason: str = Field(default="")
 
@@ -332,6 +373,49 @@ class ResearcherActionRequest(BaseModel):
 class SourceLinkActionRequest(BaseModel):
     researcher_id: str
     project_source_id: str
+
+
+class CodingReferenceCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    researcher_id: str
+    project_source_id: str
+    transcript_revision_id: str
+    evidence_set_id: str
+    target_kind: str
+    passage_id: str
+    cunit_id: str = ""
+    start_offset: Annotated[int, Field(strict=True)]
+    end_offset: Annotated[int, Field(strict=True)]
+    codebook_version_id: str
+    code_id: str
+
+
+class CodingReferenceRemoveRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    researcher_id: str
+
+
+class CodingReferenceListQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    project_source_id: str | None = None
+    codebook_version_id: str | None = None
+    code_id: str | None = None
+    created_by: str | None = None
+    include_removed: bool = False
+
+    @field_validator("include_removed", mode="before")
+    @classmethod
+    def validate_include_removed(cls, value: object) -> bool:
+        if type(value) is bool:
+            return value
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError("include_removed must be true or false")
 
 
 class LibraryApprovalRequest(BaseModel):
@@ -881,6 +965,101 @@ def download_segmentation_specialist_packet(run_id: str, filename: str) -> FileR
     )
 
 
+@app.post("/api/studies/{study_id}/segmentation/runs")
+def create_study_segmentation_run(
+    study_id: str,
+    request: SegmentationRunCreateRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        run = SegmentationRunStore(root).create_run(
+            source_filename=request.source_filename,
+            descript_text=request.descript_text,
+            rule_ids=request.rule_ids,
+            source=request.source,
+            project_source_id=request.project_source_id,
+            parent_transcript_revision_id=request.parent_transcript_revision_id,
+            workspace_id=study_id,
+        )
+    except _STUDY_SEGMENTATION_API_ERRORS as exc:
+        _raise_study_segmentation_http_error(exc)
+    return {"run": segmentation_run_to_payload(run)}
+
+
+@app.get("/api/studies/{study_id}/segmentation/runs")
+def list_study_segmentation_runs(study_id: str) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        runs = SegmentationRunStore(root).list_runs(
+            expected_workspace_id=study_id,
+        )
+    except _STUDY_SEGMENTATION_API_ERRORS as exc:
+        _raise_study_segmentation_http_error(exc)
+    return {"runs": [segmentation_run_to_payload(run) for run in runs]}
+
+
+@app.get("/api/studies/{study_id}/segmentation/runs/{run_id}")
+def get_study_segmentation_run(study_id: str, run_id: str) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        run = SegmentationRunStore(root).load_run(
+            run_id,
+            expected_workspace_id=study_id,
+        )
+    except _STUDY_SEGMENTATION_READ_ERRORS as exc:
+        _raise_study_segmentation_http_error(exc)
+    return {"run": segmentation_run_to_payload(run)}
+
+
+@app.post("/api/studies/{study_id}/segmentation/runs/{run_id}/verify")
+def verify_study_segmentation_run(study_id: str, run_id: str) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        run = SegmentationRunStore(root).verify_run(
+            run_id,
+            expected_workspace_id=study_id,
+        )
+    except _STUDY_SEGMENTATION_READ_ERRORS as exc:
+        _raise_study_segmentation_http_error(exc)
+    return {"run": segmentation_run_to_payload(run)}
+
+
+@app.post(
+    "/api/studies/{study_id}/segmentation/runs/{run_id}/specialists/"
+    "{specialist_id}/patches"
+)
+def submit_study_segmentation_specialist_patches(
+    study_id: str,
+    run_id: str,
+    specialist_id: str,
+    request: SegmentationSpecialistPatchRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        run = SegmentationRunStore(root).apply_specialist_patches(
+            run_id,
+            specialist_id=specialist_id,
+            patches=[
+                PatchOperation(
+                    operation=patch.operation,
+                    event_index=patch.event_index,
+                    text=patch.text,
+                    reason=patch.reason,
+                )
+                for patch in request.patches
+            ],
+            expected_workspace_id=study_id,
+        )
+    except _STUDY_SEGMENTATION_READ_ERRORS as exc:
+        _raise_study_segmentation_http_error(exc)
+    return {"run": segmentation_run_to_payload(run)}
+
+
 @app.post("/api/studies")
 def create_study(request: StudyCreateRequest) -> dict:
     try:
@@ -949,6 +1128,116 @@ def qualitative_schema_status(study_id: str) -> dict:
         "current_version": migrations[-1]["version"],
         "migrations": migrations,
     }
+
+
+@app.post("/api/studies/{study_id}/qualitative/coding-references")
+def create_qualitative_coding_reference(
+    study_id: str,
+    request: CodingReferenceCreateRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        coding_reference = CodingReferenceService(
+            root,
+            study_id,
+        ).create_reference(**request.model_dump())
+    except (
+        CodingReferenceValidationError,
+        CodingReferenceNotFoundError,
+        CodingReferenceConflictError,
+    ) as exc:
+        _raise_coding_reference_http_error(exc)
+    return {"coding_reference": _coding_reference_payload(coding_reference)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/coding-references")
+def list_qualitative_coding_references(
+    study_id: str,
+    raw_request: Request,
+    query: Annotated[CodingReferenceListQuery, Query()],
+) -> dict:
+    _reject_repeated_query_parameters(
+        raw_request,
+        {
+            "project_source_id",
+            "codebook_version_id",
+            "code_id",
+            "created_by",
+            "include_removed",
+        },
+    )
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        coding_references = CodingReferenceService(
+            root,
+            study_id,
+        ).list_references(**query.model_dump())
+    except (
+        CodingReferenceValidationError,
+        CodingReferenceNotFoundError,
+        CodingReferenceConflictError,
+    ) as exc:
+        _raise_coding_reference_http_error(exc)
+    return {
+        "coding_references": [
+            _coding_reference_payload(coding_reference)
+            for coding_reference in coding_references
+        ]
+    }
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/coding-references/"
+    "{coding_reference_id}"
+)
+def get_qualitative_coding_reference(
+    study_id: str,
+    coding_reference_id: str,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        coding_reference = CodingReferenceService(
+            root,
+            study_id,
+        ).read_reference(coding_reference_id)
+    except (
+        CodingReferenceValidationError,
+        CodingReferenceNotFoundError,
+        CodingReferenceConflictError,
+    ) as exc:
+        _raise_coding_reference_http_error(exc)
+    return {"coding_reference": _coding_reference_payload(coding_reference)}
+
+
+@app.delete(
+    "/api/studies/{study_id}/qualitative/coding-references/"
+    "{coding_reference_id}"
+)
+def remove_qualitative_coding_reference(
+    study_id: str,
+    coding_reference_id: str,
+    request: CodingReferenceRemoveRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        coding_reference = CodingReferenceService(
+            root,
+            study_id,
+        ).remove_reference(
+            researcher_id=request.researcher_id,
+            coding_reference_id=coding_reference_id,
+        )
+    except (
+        CodingReferenceValidationError,
+        CodingReferenceNotFoundError,
+        CodingReferenceConflictError,
+    ) as exc:
+        _raise_coding_reference_http_error(exc)
+    return {"coding_reference": _coding_reference_payload(coding_reference)}
 
 
 @app.post("/api/studies/{study_id}/qualitative/cases")
@@ -1950,6 +2239,87 @@ def _agent_job_api_payload(store: AgentJobStore, job: AgentJob) -> dict:
     return {
         **agent_job_to_payload(job),
         "available_transitions": store.available_transitions(job.id),
+    }
+
+
+def _require_api_study(root: Path, study_id: str) -> None:
+    try:
+        StudyWorkspaceStore(root).load_study(study_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Study not found") from exc
+    except StudyWorkspaceConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Study storage is unavailable or invalid",
+        ) from exc
+
+
+def _raise_study_segmentation_http_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, FileNotFoundError):
+        raise HTTPException(
+            status_code=404,
+            detail="Segmentation run not found",
+        ) from exc
+    if isinstance(exc, _STUDY_SEGMENTATION_CONFLICT_ERRORS):
+        raise HTTPException(
+            status_code=409,
+            detail="Segmentation state conflicts with stored data",
+        ) from exc
+    raise HTTPException(
+        status_code=400,
+        detail="Segmentation request is invalid",
+    ) from exc
+
+
+def _raise_coding_reference_http_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, CodingReferenceValidationError):
+        raise HTTPException(
+            status_code=400,
+            detail="Coding reference request is invalid",
+        ) from exc
+    if isinstance(exc, CodingReferenceNotFoundError):
+        raise HTTPException(
+            status_code=404,
+            detail="Coding reference dependency was not found",
+        ) from exc
+    raise HTTPException(
+        status_code=409,
+        detail="Coding reference state conflicts with stored data",
+    ) from exc
+
+
+def _reject_repeated_query_parameters(
+    request: Request,
+    parameter_names: set[str],
+) -> None:
+    if any(
+        len(request.query_params.getlist(parameter_name)) > 1
+        for parameter_name in parameter_names
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Query parameters must contain one scalar value",
+        )
+
+
+def _coding_reference_payload(coding_reference) -> dict:
+    return {
+        "coding_reference_id": coding_reference.coding_reference_id,
+        "project_id": coding_reference.project_id,
+        "project_source_id": coding_reference.project_source_id,
+        "transcript_revision_id": coding_reference.transcript_revision_id,
+        "evidence_set_id": coding_reference.evidence_set_id,
+        "target_kind": coding_reference.target_kind,
+        "passage_id": coding_reference.passage_id,
+        "cunit_id": coding_reference.cunit_id,
+        "start_offset": coding_reference.start_offset,
+        "end_offset": coding_reference.end_offset,
+        "codebook_version_id": coding_reference.codebook_version_id,
+        "code_id": coding_reference.code_id,
+        "created_by": coding_reference.created_by,
+        "created_at": coding_reference.created_at,
+        "removed_by": coding_reference.removed_by,
+        "removed_at": coding_reference.removed_at,
     }
 
 

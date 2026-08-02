@@ -310,8 +310,12 @@ class SegmentationRunStore:
         *,
         specialist_id: str,
         patches: list[PatchOperation],
+        expected_workspace_id: str | None = None,
     ) -> SegmentationRun:
-        run, previous_payload_sha256 = self._load_run_for_mutation(run_id)
+        run, previous_payload_sha256 = self._load_run_for_mutation(
+            run_id,
+            expected_workspace_id=expected_workspace_id,
+        )
         packet = next(
             (
                 packet
@@ -400,8 +404,16 @@ class SegmentationRunStore:
             expected_previous_payload_sha256=previous_payload_sha256,
         )
 
-    def verify_run(self, run_id: str) -> SegmentationRun:
-        run, previous_payload_sha256 = self._load_run_for_mutation(run_id)
+    def verify_run(
+        self,
+        run_id: str,
+        *,
+        expected_workspace_id: str | None = None,
+    ) -> SegmentationRun:
+        run, previous_payload_sha256 = self._load_run_for_mutation(
+            run_id,
+            expected_workspace_id=expected_workspace_id,
+        )
         evaluation = evaluate_segmented_draft(
             run.merged_draft,
             expected_rule_ids=run.rule_ids,
@@ -561,20 +573,37 @@ class SegmentationRunStore:
             json.dumps(segmentation_corpus_run_to_payload(corpus_run), indent=2),
         )
 
-    def load_run(self, run_id: str) -> SegmentationRun:
+    def load_run(
+        self,
+        run_id: str,
+        *,
+        expected_workspace_id: str | None = None,
+    ) -> SegmentationRun:
         run_path = self.runs_dir / f"{run_id}.json"
-        if not run_path.exists():
+        if not run_path.exists() and not run_path.is_symlink():
             raise FileNotFoundError(run_id)
-        return segmentation_run_from_payload(
-            json.loads(run_path.read_text(encoding="utf-8"))
+        run, _ = _load_segmentation_run_snapshot(run_path)
+        _require_run_workspace(
+            run,
+            expected_workspace_id=expected_workspace_id,
         )
+        return run
 
-    def _load_run_for_mutation(self, run_id: str) -> tuple[SegmentationRun, str]:
+    def _load_run_for_mutation(
+        self,
+        run_id: str,
+        *,
+        expected_workspace_id: str | None = None,
+    ) -> tuple[SegmentationRun, str]:
         run_path = self.runs_dir / f"{run_id}.json"
-        if not run_path.exists():
+        if not run_path.exists() and not run_path.is_symlink():
             raise FileNotFoundError(run_id)
-        payload = _read_segmentation_payload(run_path)
-        return segmentation_run_from_payload(payload), _payload_sha256(payload)
+        run, payload_sha256 = _load_segmentation_run_snapshot(run_path)
+        _require_run_workspace(
+            run,
+            expected_workspace_id=expected_workspace_id,
+        )
+        return run, payload_sha256
 
     def load_corpus_run(self, corpus_run_id: str) -> SegmentationCorpusRun:
         corpus_run_path = self.corpus_runs_dir / f"{corpus_run_id}.json"
@@ -584,13 +613,24 @@ class SegmentationRunStore:
             json.loads(corpus_run_path.read_text(encoding="utf-8"))
         )
 
-    def list_runs(self) -> list[SegmentationRun]:
+    def list_runs(
+        self,
+        *,
+        expected_workspace_id: str | None = None,
+    ) -> list[SegmentationRun]:
         if not self.runs_dir.exists():
             return []
         runs = [
-            segmentation_run_from_payload(json.loads(path.read_text(encoding="utf-8")))
+            _load_segmentation_run_snapshot(path)[0]
             for path in self.runs_dir.glob("*.json")
         ]
+        if expected_workspace_id is not None:
+            _validate_expected_workspace_id(expected_workspace_id)
+            runs = [
+                run
+                for run in runs
+                if run.workspace_id == expected_workspace_id
+            ]
         return sorted(runs, key=lambda run: run.created_at, reverse=True)
 
     def list_corpus_runs(self) -> list[SegmentationCorpusRun]:
@@ -895,8 +935,10 @@ def _evidence_import_record(run: SegmentationRun) -> EvidenceImportRecord:
 
 def _read_segmentation_payload(path: Path) -> dict[str, Any]:
     try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("segmentation snapshot is not a regular file")
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise SegmentationSnapshotConflict(
             "Stored segmentation snapshot is unreadable"
         ) from exc
@@ -905,6 +947,52 @@ def _read_segmentation_payload(path: Path) -> dict[str, Any]:
             "Stored segmentation snapshot must be a JSON object"
         )
     return payload
+
+
+def _load_segmentation_run_snapshot(
+    path: Path,
+) -> tuple[SegmentationRun, str]:
+    payload = _read_segmentation_payload(path)
+    try:
+        run = segmentation_run_from_payload(payload)
+        payload_sha256 = _payload_sha256(payload)
+    except SegmentationSnapshotConflict:
+        raise
+    except (
+        AttributeError,
+        IndexError,
+        KeyError,
+        OverflowError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise SegmentationSnapshotConflict(
+            "Stored segmentation snapshot is invalid"
+        ) from exc
+    return run, payload_sha256
+
+
+def _validate_expected_workspace_id(expected_workspace_id: str) -> None:
+    if (
+        not isinstance(expected_workspace_id, str)
+        or not expected_workspace_id
+        or expected_workspace_id != expected_workspace_id.strip()
+    ):
+        raise ValueError("expected_workspace_id must be an exact non-empty string")
+
+
+def _require_run_workspace(
+    run: SegmentationRun,
+    *,
+    expected_workspace_id: str | None,
+) -> None:
+    if expected_workspace_id is None:
+        return
+    _validate_expected_workspace_id(expected_workspace_id)
+    if run.workspace_id != expected_workspace_id:
+        raise SegmentationSnapshotConflict(
+            "Segmentation run belongs to another workspace"
+        )
 
 
 def _payload_sha256(payload: dict[str, Any]) -> str:

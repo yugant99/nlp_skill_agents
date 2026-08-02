@@ -25,6 +25,7 @@ from backend.storage.study_batch_operation_store import (
 from backend.storage.study_store import (
     StudyBatchSnapshotConflict,
     StudySkillPackVersionConflict,
+    StudyWorkspaceConflict,
     StudyWorkspaceStore,
 )
 
@@ -41,6 +42,28 @@ def _current_evidence_fields() -> tuple[str, ...]:
         "transcript_sha256",
         "transcript_revision_id",
     )
+
+
+def test_study_workspace_loads_exact_record_and_rejects_invalid_storage(
+    tmp_path: Path,
+) -> None:
+    store = StudyWorkspaceStore(tmp_path)
+    study = store.create_study(
+        {"id": "strict-study", "name": "Strict Study", "description": "exact"}
+    )
+
+    assert store.load_study(study.id) == study
+    with pytest.raises(ValueError, match="normalized"):
+        store.load_study("../strict-study")
+    with pytest.raises(FileNotFoundError):
+        store.load_study("missing-study")
+
+    study_path = tmp_path / "studies" / study.id / "study.json"
+    payload = json.loads(study_path.read_text(encoding="utf-8"))
+    payload["id"] = "other-study"
+    study_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(StudyWorkspaceConflict, match="unavailable or invalid"):
+        store.load_study(study.id)
 
 
 def test_study_workspace_refuses_duplicate_identity_without_overwrite(

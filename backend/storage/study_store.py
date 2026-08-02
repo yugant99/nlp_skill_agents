@@ -48,6 +48,7 @@ from backend.storage.workspace_lock import workspace_mutation_lock
 
 MAX_STUDY_PARTICIPANTS = 10_000
 MAX_STUDY_ID_LENGTH = 96
+_STUDY_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _LEGACY_BASE_RUN_FIELDS = {
@@ -99,6 +100,10 @@ class StudyBatchSnapshotConflict(RuntimeError):
 
 
 class StudySkillPackVersionConflict(RuntimeError):
+    pass
+
+
+class StudyWorkspaceConflict(RuntimeError):
     pass
 
 
@@ -278,6 +283,57 @@ class StudyWorkspaceStore:
             for path in self.studies_dir.glob("*/study.json")
         ]
         return sorted(studies, key=lambda study: study.created_at, reverse=True)
+
+    def load_study(self, study_id: str) -> StudyWorkspace:
+        if (
+            not isinstance(study_id, str)
+            or not _STUDY_ID.fullmatch(study_id)
+            or len(study_id) > MAX_STUDY_ID_LENGTH
+            or _WINDOWS_DEVICE_NAME.fullmatch(study_id)
+        ):
+            raise ValueError("study_id must be a normalized study identifier")
+        study_dir = self._study_dir(study_id)
+        study_path = study_dir / "study.json"
+        if not study_path.exists() and not study_path.is_symlink():
+            raise FileNotFoundError(study_id)
+        try:
+            if study_dir.is_symlink() or not study_dir.is_dir():
+                raise OSError("study directory is not a regular directory")
+            _validate_non_symlink_regular_path(study_path)
+            payload = json.loads(study_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or set(payload) != {
+                "id",
+                "name",
+                "description",
+                "created_at",
+            }:
+                raise ValueError("study record has invalid fields")
+            if (
+                type(payload["id"]) is not str
+                or payload["id"] != study_id
+                or type(payload["name"]) is not str
+                or not payload["name"].strip()
+                or type(payload["description"]) is not str
+            ):
+                raise ValueError("study record identity is invalid")
+            _validate_timezone_aware_timestamp(
+                payload["created_at"],
+                "study created_at",
+            )
+            return StudyWorkspace(**payload)
+        except FileNotFoundError:
+            raise
+        except (
+            json.JSONDecodeError,
+            KeyError,
+            OSError,
+            TypeError,
+            UnicodeDecodeError,
+            ValueError,
+        ) as exc:
+            raise StudyWorkspaceConflict(
+                "Study workspace record is unavailable or invalid"
+            ) from exc
 
     def save_study_schema(self, study_id: str, payload: dict[str, Any]) -> StudySchema:
         self._require_study(study_id)

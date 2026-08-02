@@ -82,6 +82,209 @@ def _insert_note_revision(
     )
 
 
+def _insert_review_code_fixture(
+    connection: sqlite3.Connection,
+    *,
+    project_id: str,
+    created_at: str,
+) -> None:
+    connection.execute(
+        """
+        insert into codebooks (
+          codebook_id, project_id, title, description,
+          created_by, updated_by, created_at, updated_at
+        ) values ('cbk_review', ?, 'Review', '', ?, ?, ?, ?)
+        """,
+        (project_id, RESEARCHER_ID, RESEARCHER_ID, created_at, created_at),
+    )
+    connection.execute(
+        """
+        insert into codebook_versions (
+          codebook_version_id, project_id, codebook_id, version_number,
+          status, based_on_version_id, created_by, created_at, frozen_at
+        ) values ('cbv_review_1', ?, 'cbk_review', 1,
+                  'draft', null, ?, ?, null)
+        """,
+        (project_id, RESEARCHER_ID, created_at),
+    )
+    for code_id, stable_key in (
+        ("cod_review", "review"),
+        ("cod_review_edited", "review-edited"),
+    ):
+        connection.execute(
+            """
+            insert into codes (
+              code_id, project_id, codebook_version_id, stable_code_key,
+              parent_code_id, label, created_by, created_at, updated_at
+            ) values (?, ?, 'cbv_review_1', ?, null, ?, ?, ?, ?)
+            """,
+            (
+                code_id,
+                project_id,
+                stable_key,
+                stable_key,
+                RESEARCHER_ID,
+                created_at,
+                created_at,
+            ),
+        )
+    connection.execute(
+        """
+        update codebook_versions set status = 'frozen', frozen_at = ?
+        where codebook_version_id = 'cbv_review_1'
+        """,
+        (created_at,),
+    )
+    connection.execute(
+        """
+        insert into codebook_versions (
+          codebook_version_id, project_id, codebook_id, version_number,
+          status, based_on_version_id, created_by, created_at, frozen_at
+        ) values ('cbv_review_2', ?, 'cbk_review', 2,
+                  'draft', 'cbv_review_1', ?, ?, null)
+        """,
+        (project_id, RESEARCHER_ID, created_at),
+    )
+    connection.execute(
+        """
+        insert into codes (
+          code_id, project_id, codebook_version_id, stable_code_key,
+          parent_code_id, label, created_by, created_at, updated_at
+        ) values ('cod_review_draft', ?, 'cbv_review_2', 'review-draft',
+                  null, 'Review draft', ?, ?, ?)
+        """,
+        (project_id, RESEARCHER_ID, created_at, created_at),
+    )
+
+
+def _insert_agent_suggestion(
+    connection: sqlite3.Connection,
+    *,
+    project_id: str,
+    suggestion_id: str,
+    origin_key: str,
+    created_at: str,
+    project_source_id: str = "psrc_review",
+    transcript_revision_id: str = "trv_review",
+    evidence_set_id: str = "evs_review",
+    target_kind: str = "passage",
+    passage_id: str = "psg_review",
+    cunit_id: str = "",
+    start_offset: object = 0,
+    end_offset: object = 4,
+    codebook_version_id: str = "cbv_review_1",
+    code_id: str = "cod_review",
+) -> None:
+    connection.execute(
+        """
+        insert into agent_coding_suggestions (
+          agent_suggestion_id, project_id,
+          origin_kind, origin_id, origin_suggestion_key,
+          project_source_id, transcript_revision_id, evidence_set_id,
+          target_kind, passage_id, cunit_id, start_offset, end_offset,
+          codebook_version_id, code_id, created_by, created_at
+        ) values (?, ?, 'synthetic_fixture', 'fixture-run', ?,
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            suggestion_id,
+            project_id,
+            origin_key,
+            project_source_id,
+            transcript_revision_id,
+            evidence_set_id,
+            target_kind,
+            passage_id,
+            cunit_id,
+            start_offset,
+            end_offset,
+            codebook_version_id,
+            code_id,
+            RESEARCHER_ID,
+            created_at,
+        ),
+    )
+
+
+def _insert_coding_reference(
+    connection: sqlite3.Connection,
+    *,
+    project_id: str,
+    coding_reference_id: str,
+    created_at: str,
+    created_by: str = RESEARCHER_ID,
+    project_source_id: str = "psrc_review",
+    transcript_revision_id: str = "trv_review",
+    evidence_set_id: str = "evs_review",
+    target_kind: str = "passage",
+    passage_id: str = "psg_review",
+    cunit_id: str = "",
+    start_offset: int = 0,
+    end_offset: int = 4,
+    codebook_version_id: str = "cbv_review_1",
+    code_id: str = "cod_review",
+) -> None:
+    connection.execute(
+        """
+        insert into coding_references (
+          coding_reference_id, project_id,
+          project_source_id, transcript_revision_id, evidence_set_id,
+          target_kind, passage_id, cunit_id, start_offset, end_offset,
+          codebook_version_id, code_id, created_by, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            coding_reference_id,
+            project_id,
+            project_source_id,
+            transcript_revision_id,
+            evidence_set_id,
+            target_kind,
+            passage_id,
+            cunit_id,
+            start_offset,
+            end_offset,
+            codebook_version_id,
+            code_id,
+            created_by,
+            created_at,
+        ),
+    )
+
+
+def _insert_reviewer_decision(
+    connection: sqlite3.Connection,
+    *,
+    project_id: str,
+    decision_id: str,
+    suggestion_id: str,
+    decision_number: object,
+    decision: str,
+    coding_reference_id: str | None,
+    created_at: str,
+    reviewed_by: str = RESEARCHER_ID,
+) -> None:
+    connection.execute(
+        """
+        insert into reviewer_decisions (
+          reviewer_decision_id, project_id, agent_suggestion_id,
+          decision_number, decision, coding_reference_id,
+          reviewed_by, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            decision_id,
+            project_id,
+            suggestion_id,
+            decision_number,
+            decision,
+            coding_reference_id,
+            reviewed_by,
+            created_at,
+        ),
+    )
+
+
 def test_qualitative_database_initializes_once_with_attributable_identity(
     tmp_path: Path,
 ) -> None:
@@ -99,9 +302,10 @@ def test_qualitative_database_initializes_once_with_attributable_identity(
         "create-qualitative-core-contract",
         "add-coding-reference-contract",
         "add-memo-annotation-contract",
+        "add-coder-suggestion-review-contract",
     ]
     with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 3
+        assert connection.execute("pragma user_version").fetchone()[0] == 4
         assert connection.execute("pragma foreign_key_check").fetchall() == []
         assert connection.execute(
             "select project_id from qualitative_projects"
@@ -169,9 +373,9 @@ def test_qualitative_version_two_upgrades_to_note_contract_without_changing_rows
             (study.id, RESEARCHER_ID, now),
         )
 
-    assert [row["version"] for row in database.migration_status()] == [1, 2, 3]
+    assert [row["version"] for row in database.migration_status()] == [1, 2, 3, 4]
     with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone() == (3,)
+        assert connection.execute("pragma user_version").fetchone() == (4,)
         assert connection.execute(
             "select case_id, label from cases"
         ).fetchall() == [("cas_before_note_upgrade", "P1")]
@@ -190,6 +394,155 @@ def test_qualitative_version_two_upgrades_to_note_contract_without_changing_rows
             ("qualitative_notes",),
         ]
         assert connection.execute("pragma foreign_key_check").fetchall() == []
+
+
+def test_qualitative_version_three_upgrades_to_review_contract_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Qualitative Review Upgrade Study"}
+    )
+    database = QualitativeProjectDatabase(tmp_path, study.id)
+    created_at = "2026-08-01T12:00:00+00:00"
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        assert apply_migrations(
+            connection,
+            database_name="version three qualitative project",
+            migrations=qualitative_database.QUALITATIVE_MIGRATIONS[:3],
+        ) == 3
+        connection.execute(
+            "insert into qualitative_projects values (?, ?)",
+            (study.id, created_at),
+        )
+        connection.execute(
+            """
+            insert into researchers (
+              researcher_id, project_id, display_name, role,
+              active, created_at, updated_at
+            ) values (?, ?, 'Upgrade Owner', 'researcher', 1, ?, ?)
+            """,
+            (RESEARCHER_ID, study.id, created_at, created_at),
+        )
+        _insert_review_code_fixture(
+            connection,
+            project_id=study.id,
+            created_at=created_at,
+        )
+        _insert_coding_reference(
+            connection,
+            project_id=study.id,
+            coding_reference_id=f"cdr_{'1' * 32}",
+            created_at=created_at,
+        )
+        note_id = f"mem_{'1' * 32}"
+        _insert_study_note(
+            connection,
+            project_id=study.id,
+            note_id=note_id,
+            created_at=created_at,
+        )
+        _insert_note_revision(
+            connection,
+            project_id=study.id,
+            note_id=note_id,
+            note_revision_id=f"nrv_{'1' * 32}",
+            revision_number=1,
+            title="Upgrade memo",
+            body="Preserve this revision",
+            created_at=created_at,
+        )
+
+    assert [row["version"] for row in database.migration_status()] == [1, 2, 3, 4]
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone() == (4,)
+        assert connection.execute(
+            "select coding_reference_id from coding_references"
+        ).fetchall() == [(f"cdr_{'1' * 32}",)]
+        assert connection.execute(
+            "select title, body from qualitative_note_revisions"
+        ).fetchall() == [("Upgrade memo", "Preserve this revision")]
+        assert connection.execute(
+            "select count(*) from agent_coding_suggestions"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "select count(*) from reviewer_decisions"
+        ).fetchone() == (0,)
+        assert connection.execute("pragma foreign_key_check").fetchall() == []
+
+
+def test_review_migration_has_exact_columns_indexes_and_triggers(
+    tmp_path: Path,
+) -> None:
+    _, database = _create_project(tmp_path)
+
+    with sqlite3.connect(database.db_path) as connection:
+        suggestion_columns = connection.execute(
+            "pragma table_info(agent_coding_suggestions)"
+        ).fetchall()
+        decision_columns = connection.execute(
+            "pragma table_info(reviewer_decisions)"
+        ).fetchall()
+        assert [
+            (row[1], row[2].upper(), row[3], row[5])
+            for row in suggestion_columns
+        ] == [
+            ("agent_suggestion_id", "TEXT", 1, 1),
+            ("project_id", "TEXT", 1, 0),
+            ("origin_kind", "TEXT", 1, 0),
+            ("origin_id", "TEXT", 1, 0),
+            ("origin_suggestion_key", "TEXT", 1, 0),
+            ("project_source_id", "TEXT", 1, 0),
+            ("transcript_revision_id", "TEXT", 1, 0),
+            ("evidence_set_id", "TEXT", 1, 0),
+            ("target_kind", "TEXT", 1, 0),
+            ("passage_id", "TEXT", 1, 0),
+            ("cunit_id", "TEXT", 1, 0),
+            ("start_offset", "INTEGER", 1, 0),
+            ("end_offset", "INTEGER", 1, 0),
+            ("codebook_version_id", "TEXT", 1, 0),
+            ("code_id", "TEXT", 1, 0),
+            ("created_by", "TEXT", 1, 0),
+            ("created_at", "TEXT", 1, 0),
+        ]
+        assert [
+            (row[1], row[2].upper(), row[3], row[5])
+            for row in decision_columns
+        ] == [
+            ("reviewer_decision_id", "TEXT", 1, 1),
+            ("project_id", "TEXT", 1, 0),
+            ("agent_suggestion_id", "TEXT", 1, 0),
+            ("decision_number", "INTEGER", 1, 0),
+            ("decision", "TEXT", 1, 0),
+            ("coding_reference_id", "TEXT", 0, 0),
+            ("reviewed_by", "TEXT", 1, 0),
+            ("created_at", "TEXT", 1, 0),
+        ]
+
+        objects = connection.execute(
+            """
+            select type, name from sqlite_master
+            where tbl_name in ('agent_coding_suggestions', 'reviewer_decisions')
+              and name not like 'sqlite_autoindex_%'
+              and type in ('index', 'trigger')
+            order by type, name
+            """
+        ).fetchall()
+        assert objects == [
+            ("index", "agent_coding_suggestions_by_code_created"),
+            ("index", "agent_coding_suggestions_by_created"),
+            ("index", "agent_coding_suggestions_by_source_created"),
+            ("trigger", "prevent_agent_coding_suggestion_delete"),
+            ("trigger", "prevent_agent_coding_suggestion_update"),
+            ("trigger", "prevent_reviewer_decision_delete"),
+            ("trigger", "prevent_reviewer_decision_update"),
+            ("trigger", "reject_reviewer_decision_after_terminal"),
+            ("trigger", "require_frozen_agent_coding_suggestion_version"),
+            ("trigger", "require_matching_reviewer_decision_candidate"),
+            ("trigger", "require_monotonic_reviewer_decision_time"),
+            ("trigger", "require_sequential_reviewer_decision"),
+            ("trigger", "require_valid_reviewer_decision_result"),
+        ]
 
 
 def test_qualitative_initialization_retry_uses_persisted_bootstrap_identity(
@@ -258,6 +611,9 @@ def test_qualitative_read_is_guarded_query_only_and_returns_rows(
         "drop table qualitative_note_revisions",
         "drop trigger restrict_qualitative_note_update",
         "drop index qualitative_notes_by_kind_created",
+        "drop table reviewer_decisions",
+        "drop trigger prevent_agent_coding_suggestion_update",
+        "drop index agent_coding_suggestions_by_created",
         "create table unexpected_qualitative_state (value text)",
     ],
 )
@@ -521,6 +877,60 @@ def test_qualitative_schema_failure_rolls_back_partial_migration(
         ).fetchone()[0] == 0
 
 
+def test_review_schema_failure_rolls_back_partial_migration_four(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Review Migration Rollback"}
+    )
+    database = QualitativeProjectDatabase(tmp_path, study.id)
+    with sqlite3.connect(database.db_path) as connection:
+        assert apply_migrations(
+            connection,
+            database_name="version three review rollback",
+            migrations=qualitative_database.QUALITATIVE_MIGRATIONS[:3],
+        ) == 3
+
+    def fail_after_review_schema_change(connection: sqlite3.Connection) -> None:
+        connection.execute("create table partial_review_records (id text)")
+        connection.execute("insert into missing_table values (1)")
+
+    monkeypatch.setattr(
+        qualitative_database,
+        "QUALITATIVE_MIGRATIONS",
+        (
+            *qualitative_database.QUALITATIVE_MIGRATIONS[:3],
+            Migration(
+                4,
+                "fail-review-schema-change",
+                fail_after_review_schema_change,
+            ),
+        ),
+    )
+
+    with pytest.raises(SchemaCompatibilityError, match="migration 4"):
+        database.migration_status()
+
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 3
+        assert connection.execute(
+            "select version from schema_migrations order by version"
+        ).fetchall() == [(1,), (2,), (3,)]
+        assert connection.execute(
+            """
+            select count(*) from sqlite_master
+            where type = 'table' and name = 'partial_review_records'
+            """
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            """
+            select count(*) from sqlite_master
+            where type = 'table' and name = 'agent_coding_suggestions'
+            """
+        ).fetchone()[0] == 0
+
+
 def test_qualitative_transaction_rolls_back_domain_and_audit_writes(
     tmp_path: Path,
 ) -> None:
@@ -731,6 +1141,452 @@ def test_qualitative_schema_enforces_version_and_audit_immutability(
                 where event_id = 'qae_codebook_frozen'
                 """
             )
+
+
+def test_review_migration_enforces_agent_suggestion_storage_rules(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+    created_at = "2026-08-01T12:00:00+00:00"
+    passage_id = f"ags_{'1' * 32}"
+    cunit_id = f"ags_{'2' * 32}"
+    with database.transaction() as connection:
+        _insert_review_code_fixture(
+            connection,
+            project_id=project_id,
+            created_at=created_at,
+        )
+
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        _insert_agent_suggestion(
+            connection,
+            project_id=project_id,
+            suggestion_id=passage_id,
+            origin_key="passage-1",
+            created_at=created_at,
+        )
+        _insert_agent_suggestion(
+            connection,
+            project_id=project_id,
+            suggestion_id=cunit_id,
+            origin_key="cunit-1",
+            created_at=created_at,
+            target_kind="cunit",
+            cunit_id="cun_review",
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="frozen"):
+            _insert_agent_suggestion(
+                connection,
+                project_id=project_id,
+                suggestion_id=f"ags_{'3' * 32}",
+                origin_key="draft-code",
+                created_at=created_at,
+                codebook_version_id="cbv_review_2",
+                code_id="cod_review_draft",
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            _insert_agent_suggestion(
+                connection,
+                project_id=project_id,
+                suggestion_id=f"ags_{'4' * 32}",
+                origin_key="invalid-cunit",
+                created_at=created_at,
+                target_kind="cunit",
+                cunit_id="",
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            _insert_agent_suggestion(
+                connection,
+                project_id=project_id,
+                suggestion_id=f"ags_{'5' * 32}",
+                origin_key="non-integer-offset",
+                created_at=created_at,
+                start_offset=0.5,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            _insert_agent_suggestion(
+                connection,
+                project_id=project_id,
+                suggestion_id=f"ags_{'6' * 32}",
+                origin_key="invalid-offset-order",
+                created_at=created_at,
+                start_offset=4,
+                end_offset=4,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint"):
+            _insert_agent_suggestion(
+                connection,
+                project_id=project_id,
+                suggestion_id=f"ags_{'7' * 32}",
+                origin_key="passage-1",
+                created_at=created_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                """
+                update agent_coding_suggestions set end_offset = 3
+                where agent_suggestion_id = ?
+                """,
+                (passage_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "delete from agent_coding_suggestions where agent_suggestion_id = ?",
+                (passage_id,),
+            )
+
+        assert connection.execute(
+            """
+            select target_kind, cunit_id, typeof(start_offset), typeof(end_offset)
+            from agent_coding_suggestions order by agent_suggestion_id
+            """
+        ).fetchall() == [
+            ("passage", "", "integer", "integer"),
+            ("cunit", "cun_review", "integer", "integer"),
+        ]
+
+
+def test_review_migration_enforces_decision_sequence_terminal_and_immutability(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+    suggested_at = "2026-08-01T12:00:00+00:00"
+    result_at = "2026-08-01T12:01:00+00:00"
+    deferred_at = "2026-08-01T12:02:00+00:00"
+    accepted_at = "2026-08-01T12:03:00+00:00"
+    suggestion_id = f"ags_{'8' * 32}"
+    reference_id = f"cdr_{'8' * 32}"
+    deferred_id = f"rvd_{'8' * 32}"
+    accepted_id = f"rvd_{'9' * 32}"
+    with database.transaction() as connection:
+        _insert_review_code_fixture(
+            connection,
+            project_id=project_id,
+            created_at=suggested_at,
+        )
+        _insert_agent_suggestion(
+            connection,
+            project_id=project_id,
+            suggestion_id=suggestion_id,
+            origin_key="decision-chain",
+            created_at=suggested_at,
+        )
+        _insert_coding_reference(
+            connection,
+            project_id=project_id,
+            coding_reference_id=reference_id,
+            created_at=result_at,
+        )
+
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'1' * 32}",
+                suggestion_id=suggestion_id,
+                decision_number=1,
+                decision="accepted",
+                coding_reference_id=None,
+                created_at=deferred_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'2' * 32}",
+                suggestion_id=suggestion_id,
+                decision_number=1.5,
+                decision="deferred",
+                coding_reference_id=None,
+                created_at=deferred_at,
+            )
+        _insert_reviewer_decision(
+            connection,
+            project_id=project_id,
+            decision_id=deferred_id,
+            suggestion_id=suggestion_id,
+            decision_number=1,
+            decision="deferred",
+            coding_reference_id=None,
+            created_at=deferred_at,
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'3' * 32}",
+                suggestion_id=suggestion_id,
+                decision_number=3,
+                decision="deferred",
+                coding_reference_id=None,
+                created_at=accepted_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="timestamp"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'4' * 32}",
+                suggestion_id=suggestion_id,
+                decision_number=2,
+                decision="deferred",
+                coding_reference_id=None,
+                created_at="2026-08-01T11:59:00+00:00",
+            )
+        _insert_reviewer_decision(
+            connection,
+            project_id=project_id,
+            decision_id=accepted_id,
+            suggestion_id=suggestion_id,
+            decision_number=2,
+            decision="accepted",
+            coding_reference_id=reference_id,
+            created_at=accepted_at,
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="terminal"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'5' * 32}",
+                suggestion_id=suggestion_id,
+                decision_number=3,
+                decision="deferred",
+                coding_reference_id=None,
+                created_at="2026-08-01T12:04:00+00:00",
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                """
+                update reviewer_decisions set decision = 'rejected'
+                where reviewer_decision_id = ?
+                """,
+                (deferred_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "delete from reviewer_decisions where reviewer_decision_id = ?",
+                (deferred_id,),
+            )
+
+        assert connection.execute(
+            """
+            select decision_number, decision, coding_reference_id
+            from reviewer_decisions order by decision_number
+            """
+        ).fetchall() == [
+            (1, "deferred", None),
+            (2, "accepted", reference_id),
+        ]
+
+
+def test_review_migration_enforces_accept_edit_result_and_chronology_rules(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+    suggested_at = "2026-08-01T12:00:00+00:00"
+    decision_before_result = "2026-08-01T12:00:30+00:00"
+    result_at = "2026-08-01T12:01:00+00:00"
+    later_suggestion_at = "2026-08-01T12:02:00+00:00"
+    decision_at = "2026-08-01T12:03:00+00:00"
+    exact_reference_id = f"cdr_{'a' * 32}"
+    edited_reference_id = f"cdr_{'b' * 32}"
+    unrelated_reference_id = f"cdr_{'c' * 32}"
+    other_reference_id = f"cdr_{'d' * 32}"
+    other_researcher_id = "res_other_reviewer"
+
+    with database.transaction() as connection:
+        _insert_review_code_fixture(
+            connection,
+            project_id=project_id,
+            created_at=suggested_at,
+        )
+        connection.execute(
+            """
+            insert into researchers (
+              researcher_id, project_id, display_name, role,
+              active, created_at, updated_at
+            ) values (?, ?, 'Other Reviewer', 'reviewer', 1, ?, ?)
+            """,
+            (
+                other_researcher_id,
+                project_id,
+                suggested_at,
+                suggested_at,
+            ),
+        )
+        for suffix, origin_key in (
+            ("a", "accepted-exact"),
+            ("b", "edited-exact-invalid"),
+            ("c", "edited-valid"),
+            ("d", "accepted-mismatch"),
+            ("e", "edited-unrelated"),
+            ("f", "wrong-owner"),
+        ):
+            _insert_agent_suggestion(
+                connection,
+                project_id=project_id,
+                suggestion_id=f"ags_{suffix * 32}",
+                origin_key=origin_key,
+                created_at=suggested_at,
+            )
+        _insert_agent_suggestion(
+            connection,
+            project_id=project_id,
+            suggestion_id=f"ags_{'1a' * 16}",
+            origin_key="preexisting-result",
+            created_at=later_suggestion_at,
+        )
+        _insert_agent_suggestion(
+            connection,
+            project_id=project_id,
+            suggestion_id=f"ags_{'1b' * 16}",
+            origin_key="decision-before-result",
+            created_at=suggested_at,
+            end_offset=3,
+        )
+        _insert_coding_reference(
+            connection,
+            project_id=project_id,
+            coding_reference_id=exact_reference_id,
+            created_at=result_at,
+        )
+        _insert_coding_reference(
+            connection,
+            project_id=project_id,
+            coding_reference_id=edited_reference_id,
+            created_at=result_at,
+            end_offset=3,
+        )
+        _insert_coding_reference(
+            connection,
+            project_id=project_id,
+            coding_reference_id=unrelated_reference_id,
+            created_at=result_at,
+            project_source_id="psrc_unrelated",
+        )
+        _insert_coding_reference(
+            connection,
+            project_id=project_id,
+            coding_reference_id=other_reference_id,
+            created_at=result_at,
+            created_by=other_researcher_id,
+        )
+
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        _insert_reviewer_decision(
+            connection,
+            project_id=project_id,
+            decision_id=f"rvd_{'a' * 32}",
+            suggestion_id=f"ags_{'a' * 32}",
+            decision_number=1,
+            decision="accepted",
+            coding_reference_id=exact_reference_id,
+            created_at=decision_at,
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="candidate"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'b' * 32}",
+                suggestion_id=f"ags_{'b' * 32}",
+                decision_number=1,
+                decision="edited",
+                coding_reference_id=exact_reference_id,
+                created_at=decision_at,
+            )
+        _insert_reviewer_decision(
+            connection,
+            project_id=project_id,
+            decision_id=f"rvd_{'c' * 32}",
+            suggestion_id=f"ags_{'c' * 32}",
+            decision_number=1,
+            decision="edited",
+            coding_reference_id=edited_reference_id,
+            created_at=decision_at,
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="candidate"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'d' * 32}",
+                suggestion_id=f"ags_{'d' * 32}",
+                decision_number=1,
+                decision="accepted",
+                coding_reference_id=edited_reference_id,
+                created_at=decision_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="candidate"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'e' * 32}",
+                suggestion_id=f"ags_{'e' * 32}",
+                decision_number=1,
+                decision="edited",
+                coding_reference_id=unrelated_reference_id,
+                created_at=decision_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="result"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'f' * 32}",
+                suggestion_id=f"ags_{'f' * 32}",
+                decision_number=1,
+                decision="accepted",
+                coding_reference_id=other_reference_id,
+                created_at=decision_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="result"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'1' * 32}",
+                suggestion_id=f"ags_{'1a' * 16}",
+                decision_number=1,
+                decision="accepted",
+                coding_reference_id=exact_reference_id,
+                created_at=decision_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="result"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'2' * 32}",
+                suggestion_id=f"ags_{'1b' * 16}",
+                decision_number=1,
+                decision="accepted",
+                coding_reference_id=edited_reference_id,
+                created_at=decision_before_result,
+            )
+
+        connection.execute(
+            """
+            update coding_references set removed_by = ?, removed_at = ?
+            where coding_reference_id = ?
+            """,
+            (other_researcher_id, decision_at, other_reference_id),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="result"):
+            _insert_reviewer_decision(
+                connection,
+                project_id=project_id,
+                decision_id=f"rvd_{'3' * 32}",
+                suggestion_id=f"ags_{'f' * 32}",
+                decision_number=1,
+                decision="accepted",
+                coding_reference_id=other_reference_id,
+                reviewed_by=other_researcher_id,
+                created_at="2026-08-01T12:04:00+00:00",
+            )
+
+        assert connection.execute(
+            "select decision from reviewer_decisions order by reviewer_decision_id"
+        ).fetchall() == [("accepted",), ("edited",)]
 
 
 def test_note_migration_enforces_exact_target_shapes_and_frozen_codes(
@@ -1094,7 +1950,7 @@ def test_qualitative_database_is_preserved_by_project_backup_restore(
     ProjectArchiveStore(restore_root).restore_archive(archive.archive_path)
     restored = QualitativeProjectDatabase(restore_root, project_id)
 
-    assert restored.migration_status()[-1]["version"] == 3
+    assert restored.migration_status()[-1]["version"] == 4
     with sqlite3.connect(restored.db_path) as connection:
         assert connection.execute(
             "select case_id, label from cases"
@@ -1105,6 +1961,8 @@ def test_qualitative_ids_use_known_entity_prefixes() -> None:
     assert new_qualitative_id("codebook").startswith("cbk_")
     assert new_qualitative_id("case").startswith("cas_")
     assert new_qualitative_id("coding_reference").startswith("cdr_")
+    assert new_qualitative_id("agent_suggestion").startswith("ags_")
+    assert new_qualitative_id("reviewer_decision").startswith("rvd_")
     assert new_qualitative_id("memo").startswith("mem_")
     assert new_qualitative_id("annotation").startswith("ann_")
     assert new_qualitative_id("note_revision").startswith("nrv_")

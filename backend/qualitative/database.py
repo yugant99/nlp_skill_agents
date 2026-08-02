@@ -29,6 +29,8 @@ _ID_PREFIXES = {
     "case": "cas",
     "attribute_definition": "atr",
     "coding_reference": "cdr",
+    "agent_suggestion": "ags",
+    "reviewer_decision": "rvd",
     "memo": "mem",
     "annotation": "ann",
     "note_revision": "nrv",
@@ -1016,6 +1018,278 @@ def _add_qualitative_notes(connection: sqlite3.Connection) -> None:
     )
 
 
+def _add_coder_suggestion_review_contract(
+    connection: sqlite3.Connection,
+) -> None:
+    _execute_schema_script(
+        connection,
+        """
+        create table agent_coding_suggestions (
+          agent_suggestion_id text not null primary key,
+          project_id text not null,
+          origin_kind text not null check (
+            origin_kind in ('synthetic_fixture', 'imported_agent_output')
+          ),
+          origin_id text not null,
+          origin_suggestion_key text not null,
+          project_source_id text not null,
+          transcript_revision_id text not null,
+          evidence_set_id text not null,
+          target_kind text not null check (target_kind in ('passage', 'cunit')),
+          passage_id text not null,
+          cunit_id text not null,
+          start_offset integer not null check (
+            typeof(start_offset) = 'integer' and start_offset >= 0
+          ),
+          end_offset integer not null check (
+            typeof(end_offset) = 'integer' and end_offset > start_offset
+          ),
+          codebook_version_id text not null,
+          code_id text not null,
+          created_by text not null,
+          created_at text not null,
+          unique (project_id, agent_suggestion_id),
+          unique (
+            project_id, origin_kind, origin_id, origin_suggestion_key
+          ),
+          check (
+            (target_kind = 'passage' and cunit_id = '')
+            or (target_kind = 'cunit' and cunit_id != '')
+          ),
+          foreign key (project_id) references qualitative_projects(project_id)
+            on delete restrict,
+          foreign key (project_id, codebook_version_id, code_id)
+            references codes(project_id, codebook_version_id, code_id)
+            on delete restrict,
+          foreign key (project_id, created_by)
+            references researchers(project_id, researcher_id) on delete restrict
+        );
+
+        create table reviewer_decisions (
+          reviewer_decision_id text not null primary key,
+          project_id text not null,
+          agent_suggestion_id text not null,
+          decision_number integer not null check (
+            typeof(decision_number) = 'integer' and decision_number > 0
+          ),
+          decision text not null check (
+            decision in ('accepted', 'edited', 'rejected', 'deferred')
+          ),
+          coding_reference_id text,
+          reviewed_by text not null,
+          created_at text not null,
+          unique (project_id, reviewer_decision_id),
+          unique (project_id, agent_suggestion_id, decision_number),
+          check (
+            (
+              decision in ('accepted', 'edited')
+              and coding_reference_id is not null
+            )
+            or (
+              decision in ('rejected', 'deferred')
+              and coding_reference_id is null
+            )
+          ),
+          foreign key (project_id, agent_suggestion_id)
+            references agent_coding_suggestions(
+              project_id, agent_suggestion_id
+            ) on delete restrict,
+          foreign key (project_id, coding_reference_id)
+            references coding_references(project_id, coding_reference_id)
+            on delete restrict,
+          foreign key (project_id, reviewed_by)
+            references researchers(project_id, researcher_id) on delete restrict
+        );
+
+        create index agent_coding_suggestions_by_created
+          on agent_coding_suggestions(
+            project_id, created_at, agent_suggestion_id
+          );
+        create index agent_coding_suggestions_by_source_created
+          on agent_coding_suggestions(
+            project_id, project_source_id, created_at, agent_suggestion_id
+          );
+        create index agent_coding_suggestions_by_code_created
+          on agent_coding_suggestions(
+            project_id, codebook_version_id, code_id,
+            created_at, agent_suggestion_id
+          );
+
+        create trigger require_frozen_agent_coding_suggestion_version
+        before insert on agent_coding_suggestions
+        when not exists (
+          select 1 from codebook_versions
+          where project_id = new.project_id
+            and codebook_version_id = new.codebook_version_id
+            and status = 'frozen'
+        )
+        begin
+          select raise(
+            abort,
+            'agent coding suggestion requires a frozen codebook version'
+          );
+        end;
+
+        create trigger prevent_agent_coding_suggestion_update
+        before update on agent_coding_suggestions
+        begin
+          select raise(abort, 'agent coding suggestions are immutable');
+        end;
+
+        create trigger prevent_agent_coding_suggestion_delete
+        before delete on agent_coding_suggestions
+        begin
+          select raise(abort, 'agent coding suggestions are immutable');
+        end;
+
+        create trigger require_sequential_reviewer_decision
+        before insert on reviewer_decisions
+        when new.decision_number != (
+          select coalesce(max(decision_number), 0) + 1
+          from reviewer_decisions
+          where project_id = new.project_id
+            and agent_suggestion_id = new.agent_suggestion_id
+        )
+        begin
+          select raise(abort, 'reviewer decision sequence is invalid');
+        end;
+
+        create trigger reject_reviewer_decision_after_terminal
+        before insert on reviewer_decisions
+        when exists (
+          select 1 from reviewer_decisions
+          where project_id = new.project_id
+            and agent_suggestion_id = new.agent_suggestion_id
+            and decision in ('accepted', 'edited', 'rejected')
+        )
+        begin
+          select raise(abort, 'reviewer decision follows a terminal decision');
+        end;
+
+        create trigger require_monotonic_reviewer_decision_time
+        before insert on reviewer_decisions
+        when
+          typeof(new.created_at) != 'text'
+          or julianday(new.created_at) is null
+          or not exists (
+            select 1 from agent_coding_suggestions
+            where project_id = new.project_id
+              and agent_suggestion_id = new.agent_suggestion_id
+              and typeof(created_at) = 'text'
+              and julianday(created_at) is not null
+              and julianday(new.created_at) >= julianday(created_at)
+          )
+          or (
+            new.decision_number > 1
+            and not exists (
+              select 1 from reviewer_decisions
+              where project_id = new.project_id
+                and agent_suggestion_id = new.agent_suggestion_id
+                and decision_number = new.decision_number - 1
+                and typeof(created_at) = 'text'
+                and julianday(created_at) is not null
+                and julianday(new.created_at) >= julianday(created_at)
+            )
+          )
+        begin
+          select raise(abort, 'reviewer decision timestamp is invalid');
+        end;
+
+        create trigger require_valid_reviewer_decision_result
+        before insert on reviewer_decisions
+        when
+          new.decision in ('accepted', 'edited')
+          and new.coding_reference_id is not null
+          and not exists (
+            select 1
+            from coding_references as reference
+            join agent_coding_suggestions as suggestion
+              on suggestion.project_id = new.project_id
+             and suggestion.agent_suggestion_id = new.agent_suggestion_id
+            where reference.project_id = new.project_id
+              and reference.coding_reference_id = new.coding_reference_id
+              and reference.removed_by is null
+              and reference.removed_at is null
+              and reference.created_by = new.reviewed_by
+              and typeof(reference.created_at) = 'text'
+              and julianday(reference.created_at) is not null
+              and julianday(reference.created_at) >= julianday(suggestion.created_at)
+              and julianday(reference.created_at) <= julianday(new.created_at)
+          )
+        begin
+          select raise(abort, 'reviewer decision result is invalid');
+        end;
+
+        create trigger require_matching_reviewer_decision_candidate
+        before insert on reviewer_decisions
+        when
+          (
+            new.decision = 'accepted'
+            and new.coding_reference_id is not null
+            and not exists (
+              select 1
+              from coding_references as reference
+              join agent_coding_suggestions as suggestion
+                on suggestion.project_id = new.project_id
+               and suggestion.agent_suggestion_id = new.agent_suggestion_id
+              where reference.project_id = new.project_id
+                and reference.coding_reference_id = new.coding_reference_id
+                and reference.project_source_id = suggestion.project_source_id
+                and reference.transcript_revision_id = suggestion.transcript_revision_id
+                and reference.evidence_set_id = suggestion.evidence_set_id
+                and reference.target_kind = suggestion.target_kind
+                and reference.passage_id = suggestion.passage_id
+                and reference.cunit_id = suggestion.cunit_id
+                and reference.start_offset = suggestion.start_offset
+                and reference.end_offset = suggestion.end_offset
+                and reference.codebook_version_id = suggestion.codebook_version_id
+                and reference.code_id = suggestion.code_id
+            )
+          )
+          or (
+            new.decision = 'edited'
+            and new.coding_reference_id is not null
+            and not exists (
+              select 1
+              from coding_references as reference
+              join agent_coding_suggestions as suggestion
+                on suggestion.project_id = new.project_id
+               and suggestion.agent_suggestion_id = new.agent_suggestion_id
+              where reference.project_id = new.project_id
+                and reference.coding_reference_id = new.coding_reference_id
+                and reference.project_source_id = suggestion.project_source_id
+                and reference.transcript_revision_id = suggestion.transcript_revision_id
+                and reference.evidence_set_id = suggestion.evidence_set_id
+                and (
+                  reference.target_kind is not suggestion.target_kind
+                  or reference.passage_id is not suggestion.passage_id
+                  or reference.cunit_id is not suggestion.cunit_id
+                  or reference.start_offset is not suggestion.start_offset
+                  or reference.end_offset is not suggestion.end_offset
+                  or reference.codebook_version_id is not suggestion.codebook_version_id
+                  or reference.code_id is not suggestion.code_id
+                )
+            )
+          )
+        begin
+          select raise(abort, 'reviewer decision candidate is invalid');
+        end;
+
+        create trigger prevent_reviewer_decision_update
+        before update on reviewer_decisions
+        begin
+          select raise(abort, 'reviewer decisions are append-only');
+        end;
+
+        create trigger prevent_reviewer_decision_delete
+        before delete on reviewer_decisions
+        begin
+          select raise(abort, 'reviewer decisions are append-only');
+        end;
+        """,
+    )
+
+
 def _execute_schema_script(
     connection: sqlite3.Connection,
     script: str,
@@ -1104,6 +1378,11 @@ QUALITATIVE_MIGRATIONS = (
     Migration(1, "create-qualitative-core-contract", _create_qualitative_core),
     Migration(2, "add-coding-reference-contract", _add_coding_references),
     Migration(3, "add-memo-annotation-contract", _add_qualitative_notes),
+    Migration(
+        4,
+        "add-coder-suggestion-review-contract",
+        _add_coder_suggestion_review_contract,
+    ),
 )
 
 

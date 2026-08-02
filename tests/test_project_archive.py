@@ -1469,6 +1469,59 @@ def test_project_archive_rejects_rehashed_unmatched_note_audit_before_publish(
     assert not (restore_root / "studies" / study_id).exists()
 
 
+@pytest.mark.parametrize(
+    ("event_type_sql", "subject_type_sql"),
+    (
+        ("cast(' MEMO.CREATED ' as blob)", "'unrelated'"),
+        ("'unrelated'", "cast(' ANNOTATION ' as blob)"),
+    ),
+)
+def test_project_archive_rejects_rehashed_binary_note_audit_markers_before_publish(
+    tmp_path: Path,
+    event_type_sql: str,
+    subject_type_sql: str,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, exported = _build_note_archive(source_root)
+    forged_archive = tmp_path / "binary-note-audit.nlpstudy.zip"
+    _rewrite_qualitative_database(
+        exported.archive_path,
+        forged_archive,
+        tmp_path / "binary-note-audit.sqlite3",
+        f"""
+        insert into qualitative_audit_events (
+          event_id, project_id, actor_id, event_type,
+          subject_type, subject_id, metadata_json, created_at
+        )
+        select
+          'qae_cccccccccccccccccccccccccccccccc',
+          project_id,
+          created_by,
+          {event_type_sql},
+          {subject_type_sql},
+          'unrelated_audit',
+          '{{}}',
+          created_at
+        from qualitative_notes
+        order by note_id
+        limit 1
+        """,
+    )
+    restore_root.mkdir()
+    (restore_root / "sentinel.txt").write_text("unchanged", encoding="utf-8")
+    before = _destination_tree(restore_root)
+
+    with pytest.raises(
+        ProjectArchiveError,
+        match="Archive qualitative project is invalid",
+    ):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == before
+    assert not (restore_root / "studies" / study_id).exists()
+
+
 def test_project_archive_rejects_newer_qualitative_schema_before_publish(
     tmp_path: Path,
 ) -> None:

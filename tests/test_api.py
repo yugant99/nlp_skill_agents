@@ -1328,6 +1328,14 @@ def test_memo_annotation_api_all_routes_targets_and_pagination(
     )
     annotation_id = annotation_snapshot["note"]["note_id"]
     annotation_item_url = f"{annotation_base}/{annotation_id}"
+    assert client.get(
+        memo_base,
+        params={"cursor": annotation_id},
+    ).status_code == 404
+    assert client.get(
+        annotation_base,
+        params={"cursor": study_memo_id},
+    ).status_code == 404
     annotation_list = client.get(annotation_base)
     assert annotation_list.json() == {
         "annotations": [annotation_snapshot],

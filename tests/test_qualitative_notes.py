@@ -551,6 +551,113 @@ def test_note_and_revision_pagination_are_bounded_and_deterministic(
         )
 
 
+def test_pagination_materialization_queries_are_bounded_while_validation_streams(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _create_fixture(tmp_path)
+    created = [
+        _create_study_memo(fixture, title=f"Memo {index}", body=f"Body {index}")
+        for index in range(4)
+    ]
+    current = created[0]
+    for expected in range(1, 5):
+        current = fixture.service.revise_note(
+            note_kind="memo",
+            note_id=current.note.note_id,
+            researcher_id=OWNER_ID,
+            expected_revision_number=expected,
+            title=f"Revision {expected + 1}",
+            body=f"Revision body {expected + 1}",
+        )
+
+    statements: list[tuple[str, tuple[object, ...]]] = []
+    fetchall_statements: list[tuple[str, tuple[object, ...]]] = []
+    original_read = NoteService._read
+
+    class CursorProxy:
+        def __init__(
+            self,
+            cursor: sqlite3.Cursor,
+            statement: str,
+            parameters: tuple[object, ...],
+        ) -> None:
+            self._cursor = cursor
+            self._statement = statement
+            self._parameters = parameters
+
+        def __iter__(self):
+            return iter(self._cursor)
+
+        def __getattr__(self, name: str):
+            return getattr(self._cursor, name)
+
+        def fetchall(self):
+            fetchall_statements.append((self._statement, self._parameters))
+            return self._cursor.fetchall()
+
+    class ConnectionProxy:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self._connection = connection
+
+        def execute(self, statement: str, parameters: tuple[object, ...] = ()):
+            exact_parameters = tuple(parameters)
+            statements.append((statement, exact_parameters))
+            return CursorProxy(
+                self._connection.execute(statement, exact_parameters),
+                statement,
+                exact_parameters,
+            )
+
+        def __getattr__(self, name: str):
+            return getattr(self._connection, name)
+
+    @contextmanager
+    def tracked_read(service: NoteService):
+        with original_read(service) as connection:
+            yield ConnectionProxy(connection)
+
+    monkeypatch.setattr(NoteService, "_read", tracked_read)
+    notes, _ = fixture.service.list_notes("memo", limit=1)
+    revisions, _ = fixture.service.list_revisions(
+        "memo",
+        current.note.note_id,
+        limit=1,
+    )
+
+    assert len(notes) == 1
+    assert len(revisions) == 1
+    assert fetchall_statements
+    assert all(" limit ?" in " ".join(statement.split()) for statement, _ in fetchall_statements)
+    note_page_queries = [
+        (statement, parameters)
+        for statement, parameters in statements
+        if "select * from qualitative_notes where" in " ".join(statement.split())
+        and "order by created_at, note_id limit ?" in " ".join(statement.split())
+    ]
+    revision_page_queries = [
+        (statement, parameters)
+        for statement, parameters in statements
+        if "select * from qualitative_note_revisions where" in " ".join(statement.split())
+        and "order by revision_number, note_revision_id limit ?"
+        in " ".join(statement.split())
+    ]
+    assert len(note_page_queries) == 1
+    assert len(revision_page_queries) == 1
+    assert note_page_queries[0][1][-1] == 2
+    assert revision_page_queries[0][1][-1] == 2
+    assert any(
+        "select * from qualitative_note_revisions where" in " ".join(statement.split())
+        and " limit ?" not in " ".join(statement.split())
+        for statement, _ in statements
+    )
+    assert any(
+        "select * from qualitative_audit_events where" in " ".join(statement.split())
+        and " limit ?" not in " ".join(statement.split())
+        for statement, _ in statements
+    )
+
+
 @pytest.mark.parametrize(
     ("note_kind", "title", "body"),
     (
@@ -644,6 +751,27 @@ def test_missing_draft_and_out_of_bounds_dependencies_fail_by_boundary(
     tmp_path: Path,
 ) -> None:
     fixture = _create_fixture(tmp_path)
+    codebooks = CodebookService(tmp_path, fixture.project_id)
+    second_codebook = codebooks.create_codebook(
+        researcher_id=OWNER_ID,
+        title="Second frozen codes",
+    )
+    second_draft = codebooks.create_draft(
+        researcher_id=OWNER_ID,
+        codebook_id=second_codebook.codebook_id,
+    )
+    codebooks.add_code(
+        researcher_id=OWNER_ID,
+        codebook_id=second_codebook.codebook_id,
+        codebook_version_id=second_draft.version.codebook_version_id,
+        stable_code_key="other",
+        label="Other",
+    )
+    codebooks.freeze_version(
+        researcher_id=OWNER_ID,
+        codebook_id=second_codebook.codebook_id,
+        codebook_version_id=second_draft.version.codebook_version_id,
+    )
     with pytest.raises(NoteNotFoundError):
         fixture.service.create_note(
             note_kind="memo",
@@ -672,6 +800,18 @@ def test_missing_draft_and_out_of_bounds_dependencies_fail_by_boundary(
                 "code_id": fixture.draft_code_id,
             },
         )
+    with pytest.raises(NoteConflictError):
+        fixture.service.create_note(
+            note_kind="memo",
+            researcher_id=OWNER_ID,
+            title="Wrong code version",
+            body="Body.",
+            target={
+                "kind": "code",
+                "codebook_version_id": second_draft.version.codebook_version_id,
+                "code_id": fixture.frozen_code_id,
+            },
+        )
     with pytest.raises(NoteValidationError):
         fixture.service.create_note(
             note_kind="memo",
@@ -689,6 +829,157 @@ def test_missing_draft_and_out_of_bounds_dependencies_fail_by_boundary(
                 "end_offset": len(PASSAGE_TEXT) + 1,
             },
         )
+
+
+def test_foreign_evidence_targets_fail_and_distinct_sets_remain_exact(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_fixture(tmp_path)
+    registry = EvidenceTargetRegistry(tmp_path)
+    transcript_text = f"P1: {PASSAGE_TEXT}"
+    transcript_identity = transcript_evidence_identity(transcript_text)
+    EvidenceCatalog(tmp_path).record_import(
+        EvidenceImportRecord(
+            import_id="imp_note_interview_second",
+            run_id="run_note_interview_second",
+            pipeline="segmentation",
+            source_id=transcript_identity.source_id,
+            source_filename="private-note-interview.txt",
+            source_media_type="text/plain",
+            source_blob_sha256="a" * 64,
+            transcript_revision_id=transcript_identity.transcript_revision_id,
+            transcript_sha256=transcript_identity.transcript_sha256,
+            imported_at="2026-08-01T12:30:00+00:00",
+            project_source_id=fixture.project_source_id,
+            workspace_id=fixture.project_id,
+        )
+    )
+    second_set = registry.prepare_complete_set(
+        import_id="imp_note_interview_second",
+        workspace_id=fixture.project_id,
+        project_source_id=fixture.project_source_id,
+        transcript_revision_id=fixture.transcript_revision_id,
+        transcript_text=transcript_text,
+        producer_kind="cunit_segmentation",
+        producer_version=1,
+        producer_status="verified",
+        review_status="not_domain_validated",
+        passages=(
+            EvidencePassageInput(
+                passage_id=fixture.passage_id,
+                passage_ordinal=0,
+                role="participant",
+                text=PASSAGE_TEXT,
+                cunits=(
+                    EvidenceCUnitInput(
+                        cunit_id=fixture.cunit_id,
+                        cunit_ordinal=0,
+                        text=CUNIT_TEXT,
+                    ),
+                    EvidenceCUnitInput(
+                        cunit_id=cunit_evidence_id(fixture.passage_id, 1),
+                        cunit_ordinal=1,
+                        text="and I stayed.",
+                    ),
+                ),
+            ),
+        ),
+    )
+    registry.register_complete_set(second_set)
+    assert second_set.evidence_set_id != fixture.evidence_set_id
+
+    notes = []
+    for evidence_set_id in (fixture.evidence_set_id, second_set.evidence_set_id):
+        notes.append(
+            fixture.service.create_note(
+                note_kind="annotation",
+                researcher_id=OWNER_ID,
+                title="",
+                body=f"Set {evidence_set_id}",
+                target={
+                    "kind": "excerpt",
+                    "project_source_id": fixture.project_source_id,
+                    "transcript_revision_id": fixture.transcript_revision_id,
+                    "evidence_set_id": evidence_set_id,
+                    "excerpt_target_kind": "cunit",
+                    "passage_id": fixture.passage_id,
+                    "cunit_id": fixture.cunit_id,
+                    "start_offset": 0,
+                    "end_offset": len(CUNIT_TEXT),
+                },
+            )
+        )
+    assert notes[0].note.target.evidence_set_id == fixture.evidence_set_id
+    assert notes[1].note.target.evidence_set_id == second_set.evidence_set_id
+    assert notes[0].note.target.passage_id == notes[1].note.target.passage_id
+    assert notes[0].note.target.cunit_id == notes[1].note.target.cunit_id
+
+    foreign_study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Foreign Note Evidence"}
+    )
+    foreign_text = "P1: Foreign evidence."
+    foreign_identity = transcript_evidence_identity(foreign_text)
+    foreign_source_id = "psrc_foreign_note"
+    foreign_import = EvidenceImportRecord(
+        import_id="imp_foreign_note",
+        run_id="run_foreign_note",
+        pipeline="segmentation",
+        source_id=foreign_identity.source_id,
+        source_filename="foreign-note.txt",
+        source_media_type="text/plain",
+        source_blob_sha256="b" * 64,
+        transcript_revision_id=foreign_identity.transcript_revision_id,
+        transcript_sha256=foreign_identity.transcript_sha256,
+        imported_at="2026-08-01T13:00:00+00:00",
+        project_source_id=foreign_source_id,
+        workspace_id=foreign_study.id,
+    )
+    EvidenceCatalog(tmp_path).record_import(foreign_import)
+    foreign_passage_id = passage_evidence_id(
+        foreign_identity.transcript_revision_id,
+        0,
+    )
+    foreign_set = registry.prepare_complete_set(
+        import_id=foreign_import.import_id,
+        workspace_id=foreign_study.id,
+        project_source_id=foreign_source_id,
+        transcript_revision_id=foreign_identity.transcript_revision_id,
+        transcript_text=foreign_text,
+        producer_kind="cunit_segmentation",
+        producer_version=1,
+        producer_status="verified",
+        review_status="not_domain_validated",
+        passages=(
+            EvidencePassageInput(
+                passage_id=foreign_passage_id,
+                passage_ordinal=0,
+                role="participant",
+                text="Foreign evidence.",
+            ),
+        ),
+    )
+    registry.register_complete_set(foreign_set)
+    for target in (
+        {"kind": "source", "project_source_id": foreign_source_id},
+        {
+            "kind": "excerpt",
+            "project_source_id": foreign_source_id,
+            "transcript_revision_id": foreign_identity.transcript_revision_id,
+            "evidence_set_id": foreign_set.evidence_set_id,
+            "excerpt_target_kind": "passage",
+            "passage_id": foreign_passage_id,
+            "start_offset": 0,
+            "end_offset": len("Foreign evidence."),
+        },
+    ):
+        with pytest.raises(NoteConflictError):
+            fixture.service.create_note(
+                note_kind="memo",
+                researcher_id=OWNER_ID,
+                title="Foreign target",
+                body="Body.",
+                target=target,
+            )
 
 
 def test_inactive_mutation_actor_keeps_historical_attribution_readable(
@@ -712,6 +1003,59 @@ def test_inactive_mutation_actor_keeps_historical_attribution_readable(
             fixture,
             researcher_id="res_note_missing",
             title="Missing",
+        )
+
+
+def test_exact_revision_and_removal_retries_survive_actor_deactivation(
+    tmp_path: Path,
+) -> None:
+    fixture = _create_fixture(tmp_path)
+    revised_note = _create_study_memo(fixture, title="Revision retry")
+    removed_note = _create_study_memo(fixture, title="Removal retry")
+    new_write_note = _create_study_memo(fixture, title="New write")
+    revised = fixture.service.revise_note(
+        note_kind="memo",
+        note_id=revised_note.note.note_id,
+        researcher_id=SECOND_ID,
+        expected_revision_number=1,
+        title="Accepted revision",
+        body="Accepted body.",
+    )
+    removed = fixture.service.remove_note(
+        note_kind="memo",
+        note_id=removed_note.note.note_id,
+        researcher_id=SECOND_ID,
+    )
+    with fixture.database.transaction() as connection:
+        connection.execute(
+            """
+            update researchers set active = 0
+            where project_id = ? and researcher_id = ?
+            """,
+            (fixture.project_id, SECOND_ID),
+        )
+
+    assert fixture.service.revise_note(
+        note_kind="memo",
+        note_id=revised_note.note.note_id,
+        researcher_id=SECOND_ID,
+        expected_revision_number=1,
+        title="Accepted revision",
+        body="Accepted body.",
+    ) == revised
+    assert fixture.service.remove_note(
+        note_kind="memo",
+        note_id=removed_note.note.note_id,
+        researcher_id=SECOND_ID,
+    ) == removed
+    with pytest.raises(NoteConflictError):
+        fixture.service.revise_note(
+            note_kind="memo",
+            note_id=new_write_note.note.note_id,
+            researcher_id=SECOND_ID,
+            expected_revision_number=1,
+            title="Blocked revision",
+            body="Blocked body.",
         )
 
 
@@ -832,6 +1176,41 @@ def test_exact_note_subject_with_malformed_audit_types_never_evades_discovery(
         )
     with pytest.raises(NoteConflictError):
         fixture.service.read_note("memo", snapshot.note.note_id)
+    with pytest.raises(NoteConflictError):
+        fixture.service.validate_project_state()
+
+
+@pytest.mark.parametrize(
+    ("event_type", "subject_type"),
+    (
+        (sqlite3.Binary(b" MEMO.CREATED "), "unrelated"),
+        ("unrelated", sqlite3.Binary(b" ANNOTATION ")),
+    ),
+)
+def test_binary_or_padded_note_audit_markers_never_evade_project_validation(
+    tmp_path: Path,
+    event_type: object,
+    subject_type: object,
+) -> None:
+    fixture = _create_fixture(tmp_path)
+    _create_study_memo(fixture)
+    with fixture.database.transaction() as connection:
+        connection.execute(
+            """
+            insert into qualitative_audit_events (
+              event_id, project_id, actor_id, event_type,
+              subject_type, subject_id, metadata_json, created_at
+            ) values (?, ?, ?, ?, ?, 'unrelated_audit', '{}', ?)
+            """,
+            (
+                f"qae_{'d' * 32}",
+                fixture.project_id,
+                OWNER_ID,
+                event_type,
+                subject_type,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
     with pytest.raises(NoteConflictError):
         fixture.service.validate_project_state()
 

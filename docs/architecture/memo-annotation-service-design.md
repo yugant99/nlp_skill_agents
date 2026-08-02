@@ -429,17 +429,23 @@ to false. `limit` defaults to 20 and accepts only a canonical ASCII decimal from
 prior page. It must belong to the same project and route kind; the service loads
 its immutable `(created_at, note_id)` tuple and returns rows strictly after that
 tuple in `(created_at, note_id)` order. A changed filter does not reinterpret the
-cursor. The service reads at most `limit + 1` matching rows, returns at most
-`limit`, and sets `next_cursor` to the last returned note ID only when another
-matching row exists.
+cursor. The page query materializes at most `limit + 1` matching note headers,
+returns at most `limit`, and sets `next_cursor` to the last returned note ID only
+when another matching row exists. The strict-read invariant still requires
+visiting the complete revision and audit chain for each materialized snapshot and
+recomputing the project content budget. Those validation scans use cursor
+iteration and retain only current/endpoint records plus compact actor identities,
+rather than materializing complete or off-page full-content chains in memory.
 
 History GET accepts only `limit` and `cursor`, with the same default and maximum.
 Its cursor is the exact last `note_revision_id` from a prior page and must belong
 to the requested note. Results are strictly after its immutable
-`(revision_number, note_revision_id)` tuple. It likewise reads at most
-`limit + 1`, returns at most `limit`, and emits the last returned revision ID as
-`next_cursor` only when another revision exists. Repeated scalar parameters,
-unknown parameters, noncanonical limits, and wrong query types return 422.
+`(revision_number, note_revision_id)` tuple. Its page query likewise materializes
+at most `limit + 1` full-content revision rows, returns at most `limit`, and emits
+the last returned revision ID as `next_cursor` only when another revision exists.
+Before that page query, strict validation streams the complete revision and audit
+chain with bounded memory. Repeated scalar parameters, unknown parameters,
+noncanonical limits, and wrong query types return 422.
 
 Singular and history reads include a tombstoned note. Collection reads exclude
 tombstoned notes by default and include them only when `include_removed=true`.
@@ -571,8 +577,9 @@ Focused tests must prove:
     impossible tombstones, and kind/prefix disagreement fail visibly;
 11. exact API envelopes, tombstone visibility, bounded collection/history
     pagination, cursor ordering, defaults, and 422/400/404/409 boundaries hold,
-    including malformed JSON, extra fields, repeated/unknown queries,
-    Boolean/numeric coercion, and privacy sentinels;
+    including instrumentation that distinguishes streamed strict validation from
+    the `limit + 1` page-materialization queries, malformed JSON, extra fields,
+    repeated/unknown queries, Boolean/numeric coercion, and privacy sentinels;
 12. format-2 archive/restore preserves every target, revision, ID, actor,
     timestamp, body, tombstone, and audit event exactly;
 13. rehashed archive tampering fails isolated preflight before destination

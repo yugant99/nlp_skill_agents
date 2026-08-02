@@ -258,7 +258,7 @@ class NoteService:
         normalized_cursor = (
             None
             if cursor is None
-            else _input_note_id(normalized_kind, cursor, field_name="cursor")
+            else _input_note_cursor(cursor)
         )
 
         filters = ["project_id = ?", "note_kind = ?"]
@@ -347,7 +347,6 @@ class NoteService:
             )
             if current.note.target != initial.note.target:
                 raise NoteConflictError("Stored note target changed during revision")
-            self._require_active_researcher(connection, actor_id)
             self._validate_target_local(
                 connection,
                 current.note.target,
@@ -360,12 +359,17 @@ class NoteService:
             same_content = (
                 newest.title == normalized_title and newest.body == normalized_body
             )
+            if (
+                newest.revision_number == expected + 1
+                and newest.created_by == actor_id
+                and same_content
+            ):
+                return current
+            self._require_active_researcher(connection, actor_id)
             if newest.revision_number == expected:
                 if same_content:
                     raise NoteValidationError("Note revision content is unchanged")
             elif newest.revision_number == expected + 1:
-                if newest.created_by == actor_id and same_content:
-                    return current
                 raise NoteConflictError("Note revision retry conflicts with stored state")
             else:
                 raise NoteConflictError("Note revision is stale")
@@ -439,22 +443,63 @@ class NoteService:
         with self._read() as connection:
             self._require_project(connection)
             self._validate_project_content_budget(connection)
-            snapshot, revisions = self._require_note_with_revisions(
+            snapshot = self._require_note(
                 connection,
                 normalized_kind,
                 normalized_id,
             )
-            start_index = 0
+            cursor_parameters: tuple[object, ...] = ()
+            cursor_filter = ""
             if normalized_cursor is not None:
-                cursor_indexes = [
-                    index
-                    for index, revision in enumerate(revisions)
-                    if revision.note_revision_id == normalized_cursor
-                ]
-                if len(cursor_indexes) != 1:
+                cursor_row = connection.execute(
+                    """
+                    select * from qualitative_note_revisions
+                    where project_id = ? and note_id = ?
+                      and note_revision_id = ?
+                    """,
+                    (self.project_id, normalized_id, normalized_cursor),
+                ).fetchone()
+                if cursor_row is None:
                     raise NoteNotFoundError("Note revision cursor not found")
-                start_index = cursor_indexes[0] + 1
-            candidates = revisions[start_index : start_index + normalized_limit + 1]
+                cursor_revision = self._revision_record(
+                    cursor_row,
+                    normalized_kind,
+                )
+                if (
+                    cursor_revision.note_id != normalized_id
+                    or cursor_revision.note_revision_id != normalized_cursor
+                ):
+                    raise NoteConflictError("Stored note revision cursor is invalid")
+                cursor_filter = """
+                  and (
+                    revision_number > ?
+                    or (
+                      revision_number = ? and note_revision_id > ?
+                    )
+                  )
+                """
+                cursor_parameters = (
+                    cursor_revision.revision_number,
+                    cursor_revision.revision_number,
+                    normalized_cursor,
+                )
+            page_rows = connection.execute(
+                """
+                select * from qualitative_note_revisions
+                where project_id = ? and note_id = ?
+                """
+                + cursor_filter
+                + " order by revision_number, note_revision_id limit ?",
+                (
+                    self.project_id,
+                    normalized_id,
+                    *cursor_parameters,
+                    normalized_limit + 1,
+                ),
+            ).fetchall()
+            candidates = tuple(
+                self._revision_record(row, normalized_kind) for row in page_rows
+            )
             has_more = len(candidates) > normalized_limit
             page = tuple(candidates[:normalized_limit])
         self._validate_external_targets(
@@ -482,11 +527,12 @@ class NoteService:
                 normalized_kind,
                 normalized_id,
             )
-            self._require_active_researcher(connection, actor_id)
             if current.note.removed_at is not None:
                 if current.note.removed_by == actor_id:
                     return current
+                self._require_active_researcher(connection, actor_id)
                 raise NoteConflictError("Note was removed by another researcher")
+            self._require_active_researcher(connection, actor_id)
             self._validate_target_local(
                 connection,
                 current.note.target,
@@ -751,19 +797,6 @@ class NoteService:
         note_kind: str,
         note_id: str,
     ) -> NoteSnapshot:
-        snapshot, _ = self._require_note_with_revisions(
-            connection,
-            note_kind,
-            note_id,
-        )
-        return snapshot
-
-    def _require_note_with_revisions(
-        self,
-        connection: sqlite3.Connection,
-        note_kind: str,
-        note_id: str,
-    ) -> tuple[NoteSnapshot, tuple[NoteRevisionRecord, ...]]:
         row = connection.execute(
             """
             select * from qualitative_notes
@@ -773,53 +806,78 @@ class NoteService:
         ).fetchone()
         if row is None:
             raise NoteNotFoundError("Note not found")
-        snapshot, revisions = self._snapshot_and_revisions_from_note_row(
-            connection,
-            row,
-        )
+        snapshot = self._snapshot_from_note_row(connection, row)
         if snapshot.note.note_kind != note_kind:
             raise NoteNotFoundError("Note not found for requested kind")
-        return snapshot, revisions
+        return snapshot
 
     def _snapshot_from_note_row(
         self,
         connection: sqlite3.Connection,
         row: sqlite3.Row,
     ) -> NoteSnapshot:
-        snapshot, _ = self._snapshot_and_revisions_from_note_row(connection, row)
-        return snapshot
-
-    def _snapshot_and_revisions_from_note_row(
-        self,
-        connection: sqlite3.Connection,
-        row: sqlite3.Row,
-    ) -> tuple[NoteSnapshot, tuple[NoteRevisionRecord, ...]]:
         note = self._note_record(row)
-        revision_rows = connection.execute(
+        revision_cursor = connection.execute(
             """
             select * from qualitative_note_revisions
             where project_id = ? and note_id = ?
             order by revision_number, note_revision_id
             """,
             (self.project_id, note.note_id),
-        ).fetchall()
-        revisions = tuple(
-            self._revision_record(revision_row, note.note_kind)
-            for revision_row in revision_rows
         )
-        if not revisions:
-            raise NoteConflictError("Stored note revision history is missing")
-        for expected_number, revision in enumerate(revisions, start=1):
+        audit_cursor = connection.execute(
+            """
+            select * from qualitative_audit_events
+            where project_id = ?
+              and (
+                subject_id = ?
+                or (
+                  typeof(subject_id) != 'text'
+                  and cast(subject_id as text) = ?
+                )
+              )
+            order by
+              case event_type
+                when ? then 0
+                when ? then 1
+                when ? then 2
+                else 3
+              end,
+              case
+                when typeof(metadata_json) = 'text'
+                  and json_valid(metadata_json)
+                then coalesce(
+                  cast(json_extract(metadata_json, '$.revision_number') as integer),
+                  -1
+                )
+                else -1
+              end,
+              created_at,
+              event_id
+            """,
+            (
+                self.project_id,
+                note.note_id,
+                note.note_id,
+                f"{note.note_kind}.created",
+                f"{note.note_kind}.revised",
+                f"{note.note_kind}.removed",
+            ),
+        )
+        first: NoteRevisionRecord | None = None
+        latest: NoteRevisionRecord | None = None
+        previous_instant: datetime | None = None
+        validated_actor_ids: set[str] = set()
+        for expected_number, revision_row in enumerate(revision_cursor, start=1):
+            revision = self._revision_record(revision_row, note.note_kind)
             if (
                 revision.note_id != note.note_id
                 or revision.revision_number != expected_number
             ):
                 raise NoteConflictError("Stored note revision history is invalid")
-        first = revisions[0]
-        if first.created_by != note.created_by or first.created_at != note.created_at:
-            raise NoteConflictError("Stored initial note revision is invalid")
-        previous_instant: datetime | None = None
-        for revision in revisions:
+            if revision.created_by not in validated_actor_ids:
+                self._validate_actor(connection, revision.created_by)
+                validated_actor_ids.add(revision.created_by)
             _, instant = _stored_timestamp_with_instant(
                 revision.created_at,
                 "revision created_at",
@@ -827,6 +885,37 @@ class NoteService:
             if previous_instant is not None and instant < previous_instant:
                 raise NoteConflictError("Stored note revision chronology is invalid")
             previous_instant = instant
+            if first is None:
+                first = revision
+            latest = revision
+            event_type = (
+                f"{note.note_kind}.created"
+                if revision.revision_number == 1
+                else f"{note.note_kind}.revised"
+            )
+            metadata: dict[str, object] = {
+                "note_revision_id": revision.note_revision_id,
+                "revision_number": revision.revision_number,
+            }
+            if revision.revision_number == 1:
+                metadata["target_kind"] = note.target.kind
+            self._require_matching_note_audit(
+                audit_cursor.fetchone(),
+                note,
+                (
+                    event_type,
+                    revision.created_by,
+                    revision.created_at,
+                    _canonical_json(metadata),
+                ),
+            )
+        if first is None or latest is None:
+            raise NoteConflictError("Stored note revision history is missing")
+        if first.created_by != note.created_by or first.created_at != note.created_at:
+            raise NoteConflictError("Stored initial note revision is invalid")
+        if note.created_by not in validated_actor_ids:
+            self._validate_actor(connection, note.created_by)
+            validated_actor_ids.add(note.created_by)
         if note.removed_at is not None:
             _, removed_instant = _stored_timestamp_with_instant(
                 note.removed_at,
@@ -834,20 +923,28 @@ class NoteService:
             )
             if previous_instant is not None and removed_instant < previous_instant:
                 raise NoteConflictError("Stored note removal chronology is invalid")
+            assert note.removed_by is not None
+            if note.removed_by not in validated_actor_ids:
+                self._validate_actor(connection, note.removed_by)
+            self._require_matching_note_audit(
+                audit_cursor.fetchone(),
+                note,
+                (
+                    f"{note.note_kind}.removed",
+                    note.removed_by,
+                    note.removed_at,
+                    "{}",
+                ),
+            )
+        if audit_cursor.fetchone() is not None:
+            raise NoteConflictError("Stored note audit history is invalid")
 
         self._validate_target_local(
             connection,
             note.target,
             missing_is_not_found=False,
         )
-        actor_ids = {revision.created_by for revision in revisions}
-        actor_ids.add(note.created_by)
-        if note.removed_by is not None:
-            actor_ids.add(note.removed_by)
-        for actor_id in actor_ids:
-            self._validate_actor(connection, actor_id)
-        self._validate_note_audit(connection, note, revisions)
-        return NoteSnapshot(note=note, current_revision=revisions[-1]), revisions
+        return NoteSnapshot(note=note, current_revision=latest)
 
     def _note_record(self, row: sqlite3.Row) -> NoteRecord:
         note_kind = _stored_note_kind(row["note_kind"])
@@ -909,90 +1006,39 @@ class NoteService:
             created_at=_stored_timestamp(row["created_at"], "revision created_at"),
         )
 
-    def _validate_note_audit(
+    def _require_matching_note_audit(
         self,
-        connection: sqlite3.Connection,
+        row: sqlite3.Row | None,
         note: NoteRecord,
-        revisions: Sequence[NoteRevisionRecord],
+        expected: tuple[str, str, str, str],
     ) -> None:
-        rows = connection.execute(
-            """
-            select * from qualitative_audit_events
-            where project_id = ?
-              and (
-                subject_id = ?
-                or (
-                  typeof(subject_id) != 'text'
-                  and cast(subject_id as text) = ?
-                )
-              )
-            order by created_at, event_id
-            """,
-            (self.project_id, note.note_id, note.note_id),
-        ).fetchall()
-        expected: list[tuple[str, str, str, str]] = []
-        for revision in revisions:
-            event_type = (
-                f"{note.note_kind}.created"
-                if revision.revision_number == 1
-                else f"{note.note_kind}.revised"
-            )
-            metadata: dict[str, object] = {
-                "note_revision_id": revision.note_revision_id,
-                "revision_number": revision.revision_number,
-            }
-            if revision.revision_number == 1:
-                metadata["target_kind"] = note.target.kind
-            expected.append(
-                (
-                    event_type,
-                    revision.created_by,
-                    revision.created_at,
-                    _canonical_json(metadata),
-                )
-            )
-        if note.removed_by is not None and note.removed_at is not None:
-            expected.append(
-                (
-                    f"{note.note_kind}.removed",
-                    note.removed_by,
-                    note.removed_at,
-                    "{}",
-                )
-            )
-
-        actual: list[tuple[str, str, str, str]] = []
-        for row in rows:
-            if not _AUDIT_EVENT_ID.fullmatch(
-                _stored_text(row["event_id"], "audit event_id")
-            ):
-                raise NoteConflictError("Stored note audit history is invalid")
-            if (
-                _stored_text(row["project_id"], "audit project_id")
-                != self.project_id
-                or _stored_text(row["subject_type"], "audit subject_type")
-                != note.note_kind
-                or _stored_text(row["subject_id"], "audit subject_id")
-                != note.note_id
-            ):
-                raise NoteConflictError("Stored note audit history is invalid")
-            event_type = _stored_text(row["event_type"], "audit event_type")
-            if event_type not in {
-                f"{note.note_kind}.created",
-                f"{note.note_kind}.revised",
-                f"{note.note_kind}.removed",
-            }:
-                raise NoteConflictError("Stored note audit history is invalid")
-            metadata_json = _stored_canonical_json(row["metadata_json"])
-            actual.append(
-                (
-                    event_type,
-                    _stored_entity_id(row["actor_id"], "audit actor_id"),
-                    _stored_timestamp(row["created_at"], "audit created_at"),
-                    metadata_json,
-                )
-            )
-        if sorted(actual) != sorted(expected):
+        if row is None:
+            raise NoteConflictError("Stored note audit history is invalid")
+        if not _AUDIT_EVENT_ID.fullmatch(
+            _stored_text(row["event_id"], "audit event_id")
+        ):
+            raise NoteConflictError("Stored note audit history is invalid")
+        if (
+            _stored_text(row["project_id"], "audit project_id") != self.project_id
+            or _stored_text(row["subject_type"], "audit subject_type")
+            != note.note_kind
+            or _stored_text(row["subject_id"], "audit subject_id") != note.note_id
+        ):
+            raise NoteConflictError("Stored note audit history is invalid")
+        event_type = _stored_text(row["event_type"], "audit event_type")
+        if event_type not in {
+            f"{note.note_kind}.created",
+            f"{note.note_kind}.revised",
+            f"{note.note_kind}.removed",
+        }:
+            raise NoteConflictError("Stored note audit history is invalid")
+        actual = (
+            event_type,
+            _stored_entity_id(row["actor_id"], "audit actor_id"),
+            _stored_timestamp(row["created_at"], "audit created_at"),
+            _stored_canonical_json(row["metadata_json"]),
+        )
+        if actual != expected:
             raise NoteConflictError("Stored note audit history is invalid")
 
     def _reject_unmatched_note_audits(
@@ -1017,11 +1063,8 @@ class NoteService:
             event_type = row["event_type"]
             is_candidate = (
                 _has_note_subject_prefix(subject_value)
-                or subject_type in _NOTE_KINDS
-                or (
-                    isinstance(event_type, str)
-                    and event_type.startswith(("memo.", "annotation."))
-                )
+                or _has_note_subject_type(subject_type)
+                or _has_note_event_prefix(event_type)
             )
             if not is_candidate:
                 continue
@@ -1073,7 +1116,7 @@ class NoteService:
             order by r.note_id, r.revision_number, r.note_revision_id
             """,
             (self.project_id,),
-        ).fetchall()
+        )
         total = 0
         for row in rows:
             note_kind = _stored_note_kind(row["note_kind"])
@@ -1264,6 +1307,14 @@ def _input_note_id(
     return value
 
 
+def _input_note_cursor(value: object) -> str:
+    if not isinstance(value, str) or not any(
+        pattern.fullmatch(value) for pattern in _NOTE_IDS.values()
+    ):
+        raise NoteValidationError("cursor is invalid")
+    return value
+
+
 def _input_revision_id(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not _NOTE_REVISION_ID.fullmatch(value):
         raise NoteValidationError(f"{field_name} is invalid")
@@ -1441,9 +1492,25 @@ def _stored_text(value: object, field_name: str) -> str:
 
 def _has_note_subject_prefix(value: object) -> bool:
     if isinstance(value, str):
-        return value.strip().startswith(("mem_", "ann_"))
+        return value.strip().casefold().startswith(("mem_", "ann_"))
     if isinstance(value, bytes):
-        return value.strip().startswith((b"mem_", b"ann_"))
+        return value.strip().lower().startswith((b"mem_", b"ann_"))
+    return False
+
+
+def _has_note_subject_type(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().casefold() in _NOTE_KINDS
+    if isinstance(value, bytes):
+        return value.strip().lower() in {b"memo", b"annotation"}
+    return False
+
+
+def _has_note_event_prefix(value: object) -> bool:
+    if isinstance(value, str):
+        return value.strip().casefold().startswith(("memo.", "annotation."))
+    if isinstance(value, bytes):
+        return value.strip().lower().startswith((b"memo.", b"annotation."))
     return False
 
 

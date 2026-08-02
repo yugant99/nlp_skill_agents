@@ -19,6 +19,7 @@ from backend.qualitative.cases import CaseService
 from backend.qualitative.codebooks import CodebookService
 from backend.qualitative.coding_references import CodingReferenceService
 from backend.qualitative.database import QualitativeProjectDatabase
+from backend.qualitative.notes import NoteService
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.evidence_target_registry import (
@@ -212,6 +213,97 @@ def _build_coding_reference_archive(root: Path):
     )
     exported = ProjectArchiveStore(root).create_archive(study_id)
     return study_id, import_record, prepared, reference, exported
+
+
+def _build_note_archive(root: Path):
+    (
+        study_id,
+        import_record,
+        prepared,
+        reference,
+        _,
+    ) = _build_coding_reference_archive(root)
+    researcher_id = reference.created_by
+    case = CaseService(root, study_id).create_case(
+        researcher_id=researcher_id,
+        case_kind="participant",
+        label="Memo participant",
+    )
+    service = NoteService(root, study_id)
+    study_memo = service.create_note(
+        note_kind="memo",
+        researcher_id=researcher_id,
+        title="Reflexive memo",
+        body="Initial analytic reflection.",
+        target={"kind": "study"},
+    )
+    source_annotation = service.create_note(
+        note_kind="annotation",
+        researcher_id=researcher_id,
+        title="",
+        body="Source context.",
+        target={
+            "kind": "source",
+            "project_source_id": import_record.project_source_id,
+        },
+    )
+    case_memo = service.create_note(
+        note_kind="memo",
+        researcher_id=researcher_id,
+        title="Case memo",
+        body="Case-level interpretation.",
+        target={"kind": "case", "case_id": case.case_id},
+    )
+    code_annotation = service.create_note(
+        note_kind="annotation",
+        researcher_id=researcher_id,
+        title="",
+        body="Code context.",
+        target={
+            "kind": "code",
+            "codebook_version_id": reference.codebook_version_id,
+            "code_id": reference.code_id,
+        },
+    )
+    excerpt_memo = service.create_note(
+        note_kind="memo",
+        researcher_id=researcher_id,
+        title="Excerpt memo",
+        body="Exact evidence interpretation.",
+        target={
+            "kind": "excerpt",
+            "project_source_id": import_record.project_source_id,
+            "transcript_revision_id": import_record.transcript_revision_id,
+            "evidence_set_id": prepared.evidence_set_id,
+            "excerpt_target_kind": "cunit",
+            "passage_id": reference.passage_id,
+            "cunit_id": reference.cunit_id,
+            "start_offset": 0,
+            "end_offset": len("I came"),
+        },
+    )
+    study_memo = service.revise_note(
+        note_kind="memo",
+        note_id=study_memo.note.note_id,
+        researcher_id=researcher_id,
+        expected_revision_number=1,
+        title="Reflexive memo revised",
+        body="Revised analytic reflection.",
+    )
+    source_annotation = service.remove_note(
+        note_kind="annotation",
+        note_id=source_annotation.note.note_id,
+        researcher_id=researcher_id,
+    )
+    snapshots = (
+        study_memo,
+        source_annotation,
+        case_memo,
+        code_annotation,
+        excerpt_memo,
+    )
+    exported = ProjectArchiveStore(root).create_archive(study_id)
+    return study_id, snapshots, exported
 
 
 def _build_cunit_target_archive(root: Path):
@@ -427,6 +519,24 @@ def _destination_tree(root: Path) -> dict[str, tuple[str, bytes | str | None]]:
     return tree
 
 
+def _note_audit_rows(root: Path, study_id: str) -> tuple[tuple[object, ...], ...]:
+    database_path = root / "studies" / study_id / "qualitative.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        return tuple(
+            connection.execute(
+                """
+                select event_id, project_id, actor_id, event_type,
+                       subject_type, subject_id, metadata_json, created_at
+                from qualitative_audit_events
+                where subject_type in ('memo', 'annotation')
+                   or event_type like 'memo.%'
+                   or event_type like 'annotation.%'
+                order by event_id
+                """
+            ).fetchall()
+        )
+
+
 def test_project_archive_round_trips_study_evidence_and_source_blobs(tmp_path) -> None:
     source_root = tmp_path / "source"
     restore_root = tmp_path / "restore"
@@ -591,6 +701,43 @@ def test_project_archive_v2_round_trips_coding_reference_target_closure(
         assert EvidenceTextBlobStore(restore_root).read_verified(digest)
 
 
+def test_project_archive_v2_round_trips_all_note_targets_and_history(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, source_snapshots, exported = _build_note_archive(source_root)
+    source_service = NoteService(source_root, study_id)
+    source_histories = {
+        snapshot.note.note_id: source_service.list_revisions(
+            snapshot.note.note_kind,
+            snapshot.note.note_id,
+            limit=50,
+        )[0]
+        for snapshot in source_snapshots
+    }
+    source_audits = _note_audit_rows(source_root, study_id)
+
+    ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    restored = NoteService(restore_root, study_id)
+    restored.validate_project_state()
+    for snapshot in source_snapshots:
+        assert restored.read_note(
+            snapshot.note.note_kind,
+            snapshot.note.note_id,
+        ) == snapshot
+        revisions, next_cursor = restored.list_revisions(
+            snapshot.note.note_kind,
+            snapshot.note.note_id,
+            limit=50,
+        )
+        assert next_cursor is None
+        assert revisions == source_histories[snapshot.note.note_id]
+    assert _note_audit_rows(restore_root, study_id) == source_audits
+    assert source_snapshots[1].note.removed_at is not None
+
+
 def test_project_archive_concurrent_coding_write_is_attributably_atomic(
     tmp_path: Path,
 ) -> None:
@@ -673,6 +820,196 @@ def test_project_archive_concurrent_coding_write_is_attributably_atomic(
     assert (coding_count, audit_count) in {(0, 0), (1, 1)}
 
 
+def test_project_archive_concurrent_note_write_is_attributably_atomic(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    study_id, _, _, _, _ = _build_qualitative_archive(source_root)
+    researcher_id = "res_archive_researcher"
+    barrier = threading.Barrier(3)
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def create_archive() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results["archive"] = ProjectArchiveStore(source_root).create_archive(
+                study_id
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def create_note() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results["note"] = NoteService(source_root, study_id).create_note(
+                note_kind="memo",
+                researcher_id=researcher_id,
+                title="Concurrent memo",
+                body="Complete note state or no note state.",
+                target={"kind": "study"},
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    archive_thread = threading.Thread(target=create_archive)
+    note_thread = threading.Thread(target=create_note)
+    archive_thread.start()
+    note_thread.start()
+    barrier.wait(timeout=5)
+    archive_thread.join(timeout=15)
+    note_thread.join(timeout=15)
+
+    assert not archive_thread.is_alive()
+    assert not note_thread.is_alive()
+    assert errors == []
+    note = results["note"]
+    exported = results["archive"]
+    database_copy = tmp_path / "concurrent-note-archive.sqlite3"
+    with ZipFile(exported.archive_path) as archive:
+        database_copy.write_bytes(archive.read("study/qualitative.sqlite3"))
+    with sqlite3.connect(database_copy) as connection:
+        note_count = connection.execute(
+            "select count(*) from qualitative_notes where note_id = ?",
+            (note.note.note_id,),
+        ).fetchone()[0]
+        revision_count = connection.execute(
+            """
+            select count(*) from qualitative_note_revisions where note_id = ?
+            """,
+            (note.note.note_id,),
+        ).fetchone()[0]
+        audit_count = connection.execute(
+            """
+            select count(*) from qualitative_audit_events
+            where event_type = 'memo.created' and subject_id = ?
+            """,
+            (note.note.note_id,),
+        ).fetchone()[0]
+
+    assert (note_count, revision_count, audit_count) in {
+        (0, 0, 0),
+        (1, 1, 1),
+    }
+
+
+@pytest.mark.parametrize("mutation_kind", ["revise", "remove"])
+def test_project_archive_concurrent_note_lifecycle_is_attributably_atomic(
+    tmp_path: Path,
+    mutation_kind: str,
+) -> None:
+    source_root = tmp_path / "source"
+    study_id, snapshots, _ = _build_note_archive(source_root)
+    initial = snapshots[-1]
+    barrier = threading.Barrier(3)
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def create_archive() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results["archive"] = ProjectArchiveStore(source_root).create_archive(
+                study_id
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def mutate_note() -> None:
+        try:
+            barrier.wait(timeout=5)
+            service = NoteService(source_root, study_id)
+            if mutation_kind == "revise":
+                results["note"] = service.revise_note(
+                    note_kind="memo",
+                    note_id=initial.note.note_id,
+                    researcher_id=initial.note.created_by,
+                    expected_revision_number=1,
+                    title="Concurrent excerpt revision",
+                    body="Archive captures this complete revision or not at all.",
+                )
+            else:
+                results["note"] = service.remove_note(
+                    note_kind="memo",
+                    note_id=initial.note.note_id,
+                    researcher_id=initial.note.created_by,
+                )
+        except BaseException as exc:
+            errors.append(exc)
+
+    archive_thread = threading.Thread(target=create_archive)
+    mutation_thread = threading.Thread(target=mutate_note)
+    archive_thread.start()
+    mutation_thread.start()
+    barrier.wait(timeout=5)
+    archive_thread.join(timeout=15)
+    mutation_thread.join(timeout=15)
+
+    assert not archive_thread.is_alive()
+    assert not mutation_thread.is_alive()
+    assert errors == []
+    mutated = results["note"]
+    exported = results["archive"]
+    database_copy = tmp_path / f"concurrent-note-{mutation_kind}.sqlite3"
+    with ZipFile(exported.archive_path) as archive:
+        database_copy.write_bytes(archive.read("study/qualitative.sqlite3"))
+    with sqlite3.connect(database_copy) as connection:
+        if mutation_kind == "revise":
+            revision_count = connection.execute(
+                """
+                select count(*) from qualitative_note_revisions
+                where note_revision_id = ?
+                """,
+                (mutated.current_revision.note_revision_id,),
+            ).fetchone()[0]
+            chain_count = connection.execute(
+                """
+                select count(*) from qualitative_note_revisions where note_id = ?
+                """,
+                (initial.note.note_id,),
+            ).fetchone()[0]
+            metadata = json.dumps(
+                {
+                    "note_revision_id": mutated.current_revision.note_revision_id,
+                    "revision_number": mutated.current_revision.revision_number,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            audit_count = connection.execute(
+                """
+                select count(*) from qualitative_audit_events
+                where event_type = 'memo.revised' and subject_id = ?
+                  and metadata_json = ?
+                """,
+                (initial.note.note_id, metadata),
+            ).fetchone()[0]
+            assert (revision_count, audit_count, chain_count) in {
+                (0, 0, 1),
+                (1, 1, 2),
+            }
+        else:
+            removed_by, removed_at = connection.execute(
+                """
+                select removed_by, removed_at from qualitative_notes
+                where note_id = ?
+                """,
+                (initial.note.note_id,),
+            ).fetchone()
+            audit_count = connection.execute(
+                """
+                select count(*) from qualitative_audit_events
+                where event_type = 'memo.removed' and subject_id = ?
+                """,
+                (initial.note.note_id,),
+            ).fetchone()[0]
+            assert (
+                (removed_by, removed_at, audit_count)
+                == (None, None, 0)
+                or (removed_by, removed_at, audit_count)
+                == (mutated.note.removed_by, mutated.note.removed_at, 1)
+            )
+
+
 def test_project_archive_enters_live_guards_before_destination_workspace_lock(
     tmp_path: Path,
     monkeypatch,
@@ -682,10 +1019,12 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
     destination_lock_depth = 0
     study_guard_entries: list[int] = []
     qualitative_validation_roots: list[Path] = []
+    note_validation_roots: list[Path] = []
     original_workspace_lock = project_archive_module.workspace_mutation_lock
     original_archive_guard = StudyBatchOperationStore.archive_snapshot_guard
     original_case_validation = CaseService.validate_project_state
     original_coding_validation = CodingReferenceService.validate_project_state
+    original_note_validation = NoteService.validate_project_state
 
     @contextmanager
     def tracked_workspace_lock(root):
@@ -719,6 +1058,12 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
             assert service.root != source_root
         return original_coding_validation(service)
 
+    def tracked_note_validation(service):
+        note_validation_roots.append(service.root)
+        if destination_lock_depth:
+            assert service.root != source_root
+        return original_note_validation(service)
+
     monkeypatch.setattr(
         project_archive_module,
         "workspace_mutation_lock",
@@ -739,12 +1084,19 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
         "validate_project_state",
         tracked_coding_validation,
     )
+    monkeypatch.setattr(
+        NoteService,
+        "validate_project_state",
+        tracked_note_validation,
+    )
 
     ProjectArchiveStore(source_root).create_archive(study_id)
 
     assert study_guard_entries == [0]
     assert qualitative_validation_roots
     assert all(root != source_root for root in qualitative_validation_roots)
+    assert note_validation_roots
+    assert all(root != source_root for root in note_validation_roots)
     assert destination_lock_depth == 0
 
 
@@ -1069,6 +1421,52 @@ def test_project_archive_rejects_invalid_qualitative_rows_before_publish(
     assert "private-value" not in str(error.value)
     assert not (restore_root / "studies" / study_id).exists()
     assert _destination_files(restore_root) == {}
+
+
+def test_project_archive_rejects_rehashed_unmatched_note_audit_before_publish(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, exported = _build_note_archive(source_root)
+    forged_archive = tmp_path / "unmatched-note-audit.nlpstudy.zip"
+    _rewrite_qualitative_database(
+        exported.archive_path,
+        forged_archive,
+        tmp_path / "unmatched-note-audit.sqlite3",
+        """
+        insert into qualitative_audit_events (
+          event_id, project_id, actor_id, event_type,
+          subject_type, subject_id, metadata_json, created_at
+        )
+        select
+          'qae_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          project_id,
+          created_by,
+          case when note_kind = 'memo' then 'memo.revised'
+               else 'annotation.revised' end,
+          note_kind,
+          note_id,
+          '{"note_revision_id":"nrv_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",'
+            || '"revision_number":99}',
+          created_at
+        from qualitative_notes
+        order by note_id
+        limit 1
+        """,
+    )
+    restore_root.mkdir()
+    (restore_root / "sentinel.txt").write_text("unchanged", encoding="utf-8")
+    before = _destination_tree(restore_root)
+
+    with pytest.raises(
+        ProjectArchiveError,
+        match="Archive qualitative project is invalid",
+    ):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == before
+    assert not (restore_root / "studies" / study_id).exists()
 
 
 def test_project_archive_rejects_newer_qualitative_schema_before_publish(
@@ -1856,6 +2254,86 @@ def test_project_archive_rejects_v1_qualitative_coding_reference_row(
 
     with pytest.raises(ProjectArchiveError, match="cannot reference evidence"):
         ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_v1_accepts_non_excerpt_note_and_ignores_body_literal(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id = StudyWorkspaceStore(source_root).create_study(
+        {"name": "Legacy note archive"}
+    ).id
+    QualitativeProjectDatabase(source_root, study_id).initialize(
+        researcher_id="res_legacy_note",
+        researcher_name="Legacy Note Researcher",
+    )
+    snapshot = NoteService(source_root, study_id).create_note(
+        note_kind="memo",
+        researcher_id="res_legacy_note",
+        title="Legacy-compatible memo",
+        body="The literal evidence_set_id is researcher-authored content.",
+        target={"kind": "study"},
+    )
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    legacy_archive = tmp_path / "v1-non-excerpt-note.nlpstudy.zip"
+    _rewrite_archive_as_v1(exported.archive_path, legacy_archive)
+
+    ProjectArchiveStore(restore_root).restore_archive(legacy_archive)
+
+    assert NoteService(restore_root, study_id).read_note(
+        "memo",
+        snapshot.note.note_id,
+    ) == snapshot
+
+
+def test_project_archive_v1_rejects_excerpt_note_row(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id = StudyWorkspaceStore(source_root).create_study(
+        {"name": "Version 1 excerpt note"}
+    ).id
+    import_record, prepared, passage_id, _ = _add_cunit_evidence(
+        source_root,
+        study_id,
+    )
+    QualitativeProjectDatabase(source_root, study_id).initialize(
+        researcher_id="res_v1_excerpt_note",
+        researcher_name="Version 1 Excerpt Researcher",
+    )
+    NoteService(source_root, study_id).create_note(
+        note_kind="annotation",
+        researcher_id="res_v1_excerpt_note",
+        title="",
+        body="Direct note evidence target.",
+        target={
+            "kind": "excerpt",
+            "project_source_id": import_record.project_source_id,
+            "transcript_revision_id": import_record.transcript_revision_id,
+            "evidence_set_id": prepared.evidence_set_id,
+            "excerpt_target_kind": "passage",
+            "passage_id": passage_id,
+            "start_offset": 0,
+            "end_offset": len("I came"),
+        },
+    )
+    with sqlite3.connect(
+        source_root / "studies" / study_id / "qualitative.sqlite3"
+    ) as connection:
+        assert connection.execute(
+            "select count(*) from coding_references"
+        ).fetchone() == (0,)
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    legacy_archive = tmp_path / "v1-excerpt-note.nlpstudy.zip"
+    _rewrite_archive_as_v1(exported.archive_path, legacy_archive)
+
+    with pytest.raises(ProjectArchiveError, match="cannot reference evidence"):
+        ProjectArchiveStore(restore_root).restore_archive(legacy_archive)
 
     assert _destination_tree(restore_root) == {}
     assert not (restore_root / "studies" / study_id).exists()

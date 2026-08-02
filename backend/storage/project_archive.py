@@ -29,6 +29,12 @@ from backend.qualitative.coding_references import (
     CodingReferenceValidationError,
 )
 from backend.qualitative.database import QualitativeDatabaseConflict
+from backend.qualitative.notes import (
+    NoteConflictError,
+    NoteNotFoundError,
+    NoteService,
+    NoteValidationError,
+)
 from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
 from backend.segmentation.models import RawTranscriptEvent
 from backend.storage.atomic import atomic_binary_writer, atomic_write_bytes
@@ -245,6 +251,9 @@ class ProjectArchiveStore:
             EvidenceTargetValidationError,
             EvidenceTextBlobIntegrityError,
             FileNotFoundError,
+            NoteConflictError,
+            NoteNotFoundError,
+            NoteValidationError,
             OSError,
             SchemaCompatibilityError,
             SourceBlobIntegrityError,
@@ -1345,6 +1354,18 @@ def _reject_v1_target_references(
                 raise ProjectArchiveError(
                     "Format version 1 cannot reference evidence targets"
                 )
+        if "qualitative_notes" in table_names:
+            note_reference = connection.execute(
+                """
+                select 1 from qualitative_notes
+                where evidence_set_id is not null and evidence_set_id != ''
+                limit 1
+                """
+            ).fetchone()
+            if note_reference is not None:
+                raise ProjectArchiveError(
+                    "Format version 1 cannot reference evidence targets"
+                )
         if "qualitative_audit_events" in table_names:
             for (metadata_json,) in connection.execute(
                 "select metadata_json from qualitative_audit_events"
@@ -1778,6 +1799,7 @@ def _validate_staged_qualitative_project(
     try:
         CaseService(stage_root, study_id).validate_project_state()
         CodingReferenceService(stage_root, study_id).validate_project_state()
+        NoteService(stage_root, study_id).validate_project_state()
     except SchemaCompatibilityError as exc:
         raise ProjectArchiveConflict(str(exc)) from exc
     except (
@@ -1787,6 +1809,9 @@ def _validate_staged_qualitative_project(
         CodingReferenceConflictError,
         CodingReferenceNotFoundError,
         CodingReferenceValidationError,
+        NoteConflictError,
+        NoteNotFoundError,
+        NoteValidationError,
         QualitativeDatabaseConflict,
         StudyBatchOperationConflict,
         sqlite3.Error,

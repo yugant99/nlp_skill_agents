@@ -29,6 +29,9 @@ _ID_PREFIXES = {
     "case": "cas",
     "attribute_definition": "atr",
     "coding_reference": "cdr",
+    "memo": "mem",
+    "annotation": "ann",
+    "note_revision": "nrv",
     "audit_event": "qae",
 }
 
@@ -695,6 +698,324 @@ def _add_coding_references(connection: sqlite3.Connection) -> None:
     )
 
 
+def _add_qualitative_notes(connection: sqlite3.Connection) -> None:
+    _execute_schema_script(
+        connection,
+        """
+        create table qualitative_notes (
+          note_id text primary key,
+          project_id text not null,
+          note_kind text not null check (note_kind in ('memo', 'annotation')),
+          target_kind text not null check (
+            target_kind in ('study', 'source', 'case', 'code', 'excerpt')
+          ),
+          project_source_id text,
+          case_id text,
+          codebook_version_id text,
+          code_id text,
+          transcript_revision_id text,
+          evidence_set_id text,
+          excerpt_target_kind text check (
+            excerpt_target_kind is null
+            or excerpt_target_kind in ('passage', 'cunit')
+          ),
+          passage_id text,
+          cunit_id text,
+          start_offset integer,
+          end_offset integer,
+          created_by text not null,
+          created_at text not null,
+          removed_by text,
+          removed_at text,
+          unique (project_id, note_id),
+          check (
+            (removed_by is null and removed_at is null)
+            or (removed_by is not null and removed_at is not null)
+          ),
+          check (
+            (
+              target_kind = 'study'
+              and project_source_id is null
+              and case_id is null
+              and codebook_version_id is null
+              and code_id is null
+              and transcript_revision_id is null
+              and evidence_set_id is null
+              and excerpt_target_kind is null
+              and passage_id is null
+              and cunit_id is null
+              and start_offset is null
+              and end_offset is null
+            )
+            or (
+              target_kind = 'source'
+              and project_source_id is not null
+              and case_id is null
+              and codebook_version_id is null
+              and code_id is null
+              and transcript_revision_id is null
+              and evidence_set_id is null
+              and excerpt_target_kind is null
+              and passage_id is null
+              and cunit_id is null
+              and start_offset is null
+              and end_offset is null
+            )
+            or (
+              target_kind = 'case'
+              and project_source_id is null
+              and case_id is not null
+              and codebook_version_id is null
+              and code_id is null
+              and transcript_revision_id is null
+              and evidence_set_id is null
+              and excerpt_target_kind is null
+              and passage_id is null
+              and cunit_id is null
+              and start_offset is null
+              and end_offset is null
+            )
+            or (
+              target_kind = 'code'
+              and project_source_id is null
+              and case_id is null
+              and codebook_version_id is not null
+              and code_id is not null
+              and transcript_revision_id is null
+              and evidence_set_id is null
+              and excerpt_target_kind is null
+              and passage_id is null
+              and cunit_id is null
+              and start_offset is null
+              and end_offset is null
+            )
+            or (
+              target_kind = 'excerpt'
+              and project_source_id is not null
+              and case_id is null
+              and codebook_version_id is null
+              and code_id is null
+              and transcript_revision_id is not null
+              and evidence_set_id is not null
+              and excerpt_target_kind in ('passage', 'cunit')
+              and passage_id is not null
+              and (
+                (excerpt_target_kind = 'passage' and cunit_id is null)
+                or (excerpt_target_kind = 'cunit' and cunit_id is not null)
+              )
+              and typeof(start_offset) = 'integer'
+              and start_offset >= 0
+              and typeof(end_offset) = 'integer'
+              and end_offset > start_offset
+            )
+          ),
+          foreign key (project_id) references qualitative_projects(project_id)
+            on delete restrict,
+          foreign key (project_id, case_id)
+            references cases(project_id, case_id) on delete restrict,
+          foreign key (project_id, codebook_version_id, code_id)
+            references codes(project_id, codebook_version_id, code_id)
+            on delete restrict,
+          foreign key (project_id, created_by)
+            references researchers(project_id, researcher_id) on delete restrict,
+          foreign key (project_id, removed_by)
+            references researchers(project_id, researcher_id) on delete restrict
+        );
+
+        create table qualitative_note_revisions (
+          note_revision_id text primary key,
+          project_id text not null,
+          note_id text not null,
+          revision_number integer not null check (
+            typeof(revision_number) = 'integer' and revision_number > 0
+          ),
+          title text not null,
+          body text not null,
+          created_by text not null,
+          created_at text not null,
+          unique (project_id, note_revision_id),
+          unique (project_id, note_id, revision_number),
+          foreign key (project_id, note_id)
+            references qualitative_notes(project_id, note_id) on delete restrict,
+          foreign key (project_id, created_by)
+            references researchers(project_id, researcher_id) on delete restrict
+        );
+
+        create index qualitative_notes_by_kind_created
+          on qualitative_notes(project_id, note_kind, created_at, note_id);
+        create index qualitative_notes_by_creator_created
+          on qualitative_notes(
+            project_id, note_kind, created_by, created_at, note_id
+          );
+        create index qualitative_notes_by_target_created
+          on qualitative_notes(project_id, target_kind, created_at, note_id);
+
+        create trigger require_frozen_qualitative_note_code
+        before insert on qualitative_notes
+        when new.target_kind = 'code' and not exists (
+          select 1 from codebook_versions
+          where project_id = new.project_id
+            and codebook_version_id = new.codebook_version_id
+            and status = 'frozen'
+        )
+        begin
+          select raise(abort, 'qualitative note requires a frozen codebook version');
+        end;
+
+        create trigger reject_pre_removed_qualitative_note
+        before insert on qualitative_notes
+        when new.removed_by is not null or new.removed_at is not null
+        begin
+          select raise(abort, 'qualitative note must be active when inserted');
+        end;
+
+        create trigger prevent_qualitative_note_delete
+        before delete on qualitative_notes
+        begin
+          select raise(abort, 'qualitative notes cannot be physically deleted');
+        end;
+
+        create trigger restrict_qualitative_note_update
+        before update on qualitative_notes
+        when
+          new.note_id is not old.note_id
+          or new.project_id is not old.project_id
+          or new.note_kind is not old.note_kind
+          or new.target_kind is not old.target_kind
+          or new.project_source_id is not old.project_source_id
+          or new.case_id is not old.case_id
+          or new.codebook_version_id is not old.codebook_version_id
+          or new.code_id is not old.code_id
+          or new.transcript_revision_id is not old.transcript_revision_id
+          or new.evidence_set_id is not old.evidence_set_id
+          or new.excerpt_target_kind is not old.excerpt_target_kind
+          or new.passage_id is not old.passage_id
+          or new.cunit_id is not old.cunit_id
+          or new.start_offset is not old.start_offset
+          or new.end_offset is not old.end_offset
+          or new.created_by is not old.created_by
+          or new.created_at is not old.created_at
+          or old.removed_by is not null
+          or old.removed_at is not null
+          or new.removed_by is null
+          or new.removed_at is null
+          or typeof(new.removed_at) != 'text'
+          or julianday(new.removed_at) is null
+          or julianday(old.created_at) is null
+          or julianday(new.removed_at) < julianday(old.created_at)
+          or not exists (
+            select 1 from qualitative_note_revisions
+            where project_id = old.project_id and note_id = old.note_id
+          )
+          or exists (
+            select 1 from qualitative_note_revisions
+            where project_id = old.project_id
+              and note_id = old.note_id
+              and (
+                julianday(created_at) is null
+                or julianday(new.removed_at) < julianday(created_at)
+              )
+          )
+        begin
+          select raise(abort, 'qualitative note update is not an initial removal');
+        end;
+
+        create trigger prevent_qualitative_note_revision_update
+        before update on qualitative_note_revisions
+        begin
+          select raise(abort, 'qualitative note revisions are append-only');
+        end;
+
+        create trigger prevent_qualitative_note_revision_delete
+        before delete on qualitative_note_revisions
+        begin
+          select raise(abort, 'qualitative note revisions are append-only');
+        end;
+
+        create trigger reject_removed_qualitative_note_revision
+        before insert on qualitative_note_revisions
+        when exists (
+          select 1 from qualitative_notes
+          where project_id = new.project_id
+            and note_id = new.note_id
+            and (removed_by is not null or removed_at is not null)
+        )
+        begin
+          select raise(abort, 'removed qualitative note cannot be revised');
+        end;
+
+        create trigger require_sequential_qualitative_note_revision
+        before insert on qualitative_note_revisions
+        when new.revision_number != (
+          select coalesce(max(revision_number), 0) + 1
+          from qualitative_note_revisions
+          where project_id = new.project_id and note_id = new.note_id
+        )
+        begin
+          select raise(abort, 'qualitative note revision sequence is invalid');
+        end;
+
+        create trigger require_initial_qualitative_note_revision_identity
+        before insert on qualitative_note_revisions
+        when new.revision_number = 1 and not exists (
+          select 1 from qualitative_notes
+          where project_id = new.project_id
+            and note_id = new.note_id
+            and created_by = new.created_by
+            and created_at = new.created_at
+        )
+        begin
+          select raise(abort, 'initial qualitative note revision identity is invalid');
+        end;
+
+        create trigger require_monotonic_qualitative_note_revision_time
+        before insert on qualitative_note_revisions
+        when
+          typeof(new.created_at) != 'text'
+          or julianday(new.created_at) is null
+          or (
+            new.revision_number > 1
+            and exists (
+              select 1 from qualitative_note_revisions
+              where project_id = new.project_id
+                and note_id = new.note_id
+                and revision_number = new.revision_number - 1
+                and (
+                  julianday(created_at) is null
+                  or julianday(new.created_at) < julianday(created_at)
+                )
+            )
+          )
+        begin
+          select raise(abort, 'qualitative note revision timestamp is invalid');
+        end;
+
+        create trigger require_qualitative_note_revision_content
+        before insert on qualitative_note_revisions
+        when
+          typeof(new.title) != 'text'
+          or typeof(new.body) != 'text'
+          or instr(cast(new.title as blob), x'00') != 0
+          or instr(cast(new.body as blob), x'00') != 0
+          or new.body = ''
+          or length(new.title) > 512
+          or length(new.body) > 262144
+          or not exists (
+            select 1 from qualitative_notes
+            where project_id = new.project_id
+              and note_id = new.note_id
+              and (
+                (note_kind = 'memo' and new.title != '')
+                or (note_kind = 'annotation' and new.title = '')
+              )
+          )
+        begin
+          select raise(abort, 'qualitative note revision content is invalid');
+        end;
+        """,
+    )
+
+
 def _execute_schema_script(
     connection: sqlite3.Connection,
     script: str,
@@ -782,6 +1103,7 @@ def _validate_project_ownership(
 QUALITATIVE_MIGRATIONS = (
     Migration(1, "create-qualitative-core-contract", _create_qualitative_core),
     Migration(2, "add-coding-reference-contract", _add_coding_references),
+    Migration(3, "add-memo-annotation-contract", _add_qualitative_notes),
 )
 
 

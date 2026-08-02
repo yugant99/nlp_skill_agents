@@ -15,6 +15,7 @@ from backend.storage.project_archive import ProjectArchiveStore
 from backend.storage.sqlite_migrations import (
     Migration,
     SchemaCompatibilityError,
+    apply_migrations,
 )
 from backend.storage.study_store import StudyWorkspaceStore
 
@@ -30,6 +31,55 @@ def _create_project(root: Path) -> tuple[str, QualitativeProjectDatabase]:
         researcher_name="Project Owner",
     )
     return study.id, database
+
+
+def _insert_study_note(
+    connection: sqlite3.Connection,
+    *,
+    project_id: str,
+    note_id: str,
+    created_at: str,
+    note_kind: str = "memo",
+) -> None:
+    connection.execute(
+        """
+        insert into qualitative_notes (
+          note_id, project_id, note_kind, target_kind, created_by, created_at
+        ) values (?, ?, ?, 'study', ?, ?)
+        """,
+        (note_id, project_id, note_kind, RESEARCHER_ID, created_at),
+    )
+
+
+def _insert_note_revision(
+    connection: sqlite3.Connection,
+    *,
+    project_id: str,
+    note_id: str,
+    note_revision_id: str,
+    revision_number: int,
+    title: str,
+    body: str,
+    created_at: str,
+) -> None:
+    connection.execute(
+        """
+        insert into qualitative_note_revisions (
+          note_revision_id, project_id, note_id, revision_number,
+          title, body, created_by, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            note_revision_id,
+            project_id,
+            note_id,
+            revision_number,
+            title,
+            body,
+            RESEARCHER_ID,
+            created_at,
+        ),
+    )
 
 
 def test_qualitative_database_initializes_once_with_attributable_identity(
@@ -48,9 +98,10 @@ def test_qualitative_database_initializes_once_with_attributable_identity(
     assert [record["name"] for record in database.migration_status()] == [
         "create-qualitative-core-contract",
         "add-coding-reference-contract",
+        "add-memo-annotation-contract",
     ]
     with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 2
+        assert connection.execute("pragma user_version").fetchone()[0] == 3
         assert connection.execute("pragma foreign_key_check").fetchall() == []
         assert connection.execute(
             "select project_id from qualitative_projects"
@@ -67,6 +118,78 @@ def test_qualitative_database_initializes_once_with_attributable_identity(
         ).fetchall() == [
             ("qualitative.project.initialized", RESEARCHER_ID)
         ]
+
+
+def test_qualitative_version_two_upgrades_to_note_contract_without_changing_rows(
+    tmp_path: Path,
+) -> None:
+    study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Qualitative Upgrade Study"}
+    )
+    database = QualitativeProjectDatabase(tmp_path, study.id)
+    now = datetime.now(UTC).isoformat()
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        assert apply_migrations(
+            connection,
+            database_name="version two qualitative project",
+            migrations=qualitative_database.QUALITATIVE_MIGRATIONS[:2],
+        ) == 2
+        connection.execute(
+            "insert into qualitative_projects values (?, ?)",
+            (study.id, now),
+        )
+        connection.execute(
+            """
+            insert into researchers (
+              researcher_id, project_id, display_name, role,
+              active, created_at, updated_at
+            ) values (?, ?, 'Upgrade Owner', 'researcher', 1, ?, ?)
+            """,
+            (RESEARCHER_ID, study.id, now, now),
+        )
+        connection.execute(
+            """
+            insert into cases (
+              case_id, project_id, case_kind, label, description,
+              created_by, updated_by, created_at, updated_at
+            ) values ('cas_before_note_upgrade', ?, 'participant', 'P1', '',
+                      ?, ?, ?, ?)
+            """,
+            (study.id, RESEARCHER_ID, RESEARCHER_ID, now, now),
+        )
+        connection.execute(
+            """
+            insert into qualitative_audit_events (
+              event_id, project_id, actor_id, event_type,
+              subject_type, subject_id, metadata_json, created_at
+            ) values ('qae_before_note_upgrade', ?, ?, 'case.created',
+                      'case', 'cas_before_note_upgrade', '{}', ?)
+            """,
+            (study.id, RESEARCHER_ID, now),
+        )
+
+    assert [row["version"] for row in database.migration_status()] == [1, 2, 3]
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone() == (3,)
+        assert connection.execute(
+            "select case_id, label from cases"
+        ).fetchall() == [("cas_before_note_upgrade", "P1")]
+        assert connection.execute(
+            "select event_id from qualitative_audit_events"
+        ).fetchall() == [("qae_before_note_upgrade",)]
+        assert connection.execute(
+            """
+            select name from sqlite_master
+            where type = 'table'
+              and name in ('qualitative_notes', 'qualitative_note_revisions')
+            order by name
+            """
+        ).fetchall() == [
+            ("qualitative_note_revisions",),
+            ("qualitative_notes",),
+        ]
+        assert connection.execute("pragma foreign_key_check").fetchall() == []
 
 
 def test_qualitative_initialization_retry_uses_persisted_bootstrap_identity(
@@ -132,6 +255,9 @@ def test_qualitative_read_is_guarded_query_only_and_returns_rows(
         "drop table cases",
         "drop trigger prevent_frozen_code_update",
         "drop index cases_by_kind",
+        "drop table qualitative_note_revisions",
+        "drop trigger restrict_qualitative_note_update",
+        "drop index qualitative_notes_by_kind_created",
         "create table unexpected_qualitative_state (value text)",
     ],
 )
@@ -349,7 +475,16 @@ def test_qualitative_schema_failure_rolls_back_partial_migration(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    _, baseline = _create_project(tmp_path)
+    study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Qualitative Migration Rollback"}
+    )
+    database = QualitativeProjectDatabase(tmp_path, study.id)
+    with sqlite3.connect(database.db_path) as connection:
+        assert apply_migrations(
+            connection,
+            database_name="version two qualitative rollback",
+            migrations=qualitative_database.QUALITATIVE_MIGRATIONS[:2],
+        ) == 2
 
     def fail_after_schema_change(connection: sqlite3.Connection) -> None:
         connection.execute("create table partial_qualitative_records (id text)")
@@ -359,11 +494,10 @@ def test_qualitative_schema_failure_rolls_back_partial_migration(
         qualitative_database,
         "QUALITATIVE_MIGRATIONS",
         (
-            *qualitative_database.QUALITATIVE_MIGRATIONS,
+            *qualitative_database.QUALITATIVE_MIGRATIONS[:2],
             Migration(3, "fail-after-schema-change", fail_after_schema_change),
         ),
     )
-    database = QualitativeProjectDatabase(tmp_path, baseline.project_id)
 
     with pytest.raises(SchemaCompatibilityError, match="migration 3"):
         database.migration_status()
@@ -371,9 +505,18 @@ def test_qualitative_schema_failure_rolls_back_partial_migration(
     with sqlite3.connect(database.db_path) as connection:
         assert connection.execute("pragma user_version").fetchone()[0] == 2
         assert connection.execute(
+            "select version from schema_migrations order by version"
+        ).fetchall() == [(1,), (2,)]
+        assert connection.execute(
             """
             select count(*) from sqlite_master
             where type = 'table' and name = 'partial_qualitative_records'
+            """
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            """
+            select count(*) from sqlite_master
+            where type = 'table' and name = 'qualitative_notes'
             """
         ).fetchone()[0] == 0
 
@@ -590,6 +733,345 @@ def test_qualitative_schema_enforces_version_and_audit_immutability(
             )
 
 
+def test_note_migration_enforces_exact_target_shapes_and_frozen_codes(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+    now = datetime.now(UTC).isoformat()
+    with database.transaction() as connection:
+        connection.execute(
+            """
+            insert into codebooks (
+              codebook_id, project_id, title, description,
+              created_by, updated_by, created_at, updated_at
+            ) values ('cbk_notes', ?, 'Notes', '', ?, ?, ?, ?)
+            """,
+            (project_id, RESEARCHER_ID, RESEARCHER_ID, now, now),
+        )
+        connection.execute(
+            """
+            insert into codebook_versions (
+              codebook_version_id, project_id, codebook_id, version_number,
+              status, based_on_version_id, created_by, created_at, frozen_at
+            ) values ('cbv_notes_1', ?, 'cbk_notes', 1,
+                      'draft', null, ?, ?, null)
+            """,
+            (project_id, RESEARCHER_ID, now),
+        )
+        connection.execute(
+            """
+            insert into codes (
+              code_id, project_id, codebook_version_id, stable_code_key,
+              parent_code_id, label, created_by, created_at, updated_at
+            ) values ('cod_notes', ?, 'cbv_notes_1', 'notes',
+                      null, 'Notes', ?, ?, ?)
+            """,
+            (project_id, RESEARCHER_ID, now, now),
+        )
+
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            connection.execute(
+                """
+                insert into qualitative_notes (
+                  note_id, project_id, note_kind, target_kind,
+                  project_source_id, created_by, created_at
+                ) values (?, ?, 'memo', 'study', 'psrc_hybrid', ?, ?)
+                """,
+                (f"mem_{'1' * 32}", project_id, RESEARCHER_ID, now),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="frozen"):
+            connection.execute(
+                """
+                insert into qualitative_notes (
+                  note_id, project_id, note_kind, target_kind,
+                  codebook_version_id, code_id, created_by, created_at
+                ) values (?, ?, 'memo', 'code', 'cbv_notes_1', 'cod_notes', ?, ?)
+                """,
+                (f"mem_{'2' * 32}", project_id, RESEARCHER_ID, now),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint"):
+            connection.execute(
+                """
+                insert into qualitative_notes (
+                  note_id, project_id, note_kind, target_kind,
+                  project_source_id, transcript_revision_id, evidence_set_id,
+                  excerpt_target_kind, passage_id, start_offset, end_offset,
+                  created_by, created_at
+                ) values (?, ?, 'annotation', 'excerpt', 'psrc_excerpt',
+                          ?, ?, 'passage', ?, 'not-an-integer', 4, ?, ?)
+                """,
+                (
+                    f"ann_{'3' * 32}",
+                    project_id,
+                    f"trv_{'3' * 32}",
+                    f"evs_{'3' * 32}",
+                    f"psg_{'3' * 32}",
+                    RESEARCHER_ID,
+                    now,
+                ),
+            )
+        connection.execute(
+            """
+            update codebook_versions set status = 'frozen', frozen_at = ?
+            where codebook_version_id = 'cbv_notes_1'
+            """,
+            (now,),
+        )
+        connection.execute(
+            """
+            insert into qualitative_notes (
+              note_id, project_id, note_kind, target_kind,
+              codebook_version_id, code_id, created_by, created_at
+            ) values (?, ?, 'memo', 'code', 'cbv_notes_1', 'cod_notes', ?, ?)
+            """,
+            (f"mem_{'4' * 32}", project_id, RESEARCHER_ID, now),
+        )
+
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute(
+            "select target_kind, codebook_version_id, code_id from qualitative_notes"
+        ).fetchall() == [("code", "cbv_notes_1", "cod_notes")]
+        assert connection.execute("pragma foreign_key_check").fetchall() == []
+
+
+def test_note_migration_enforces_append_only_revisions_and_one_way_removal(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+    created_at = "2026-08-01T12:00:00+00:00"
+    later = "2026-08-01T12:01:00+00:00"
+    note_id = f"mem_{'5' * 32}"
+    revision_id = f"nrv_{'5' * 32}"
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        _insert_study_note(
+            connection,
+            project_id=project_id,
+            note_id=note_id,
+            created_at=created_at,
+        )
+        _insert_note_revision(
+            connection,
+            project_id=project_id,
+            note_id=note_id,
+            note_revision_id=revision_id,
+            revision_number=1,
+            title="Research memo",
+            body="Initial interpretation",
+            created_at=created_at,
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="sequence"):
+            _insert_note_revision(
+                connection,
+                project_id=project_id,
+                note_id=note_id,
+                note_revision_id=f"nrv_{'6' * 32}",
+                revision_number=3,
+                title="Third",
+                body="Skipped one revision",
+                created_at=later,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="timestamp"):
+            _insert_note_revision(
+                connection,
+                project_id=project_id,
+                note_id=note_id,
+                note_revision_id=f"nrv_{'7' * 32}",
+                revision_number=2,
+                title="Earlier",
+                body="Time moved backwards",
+                created_at="2026-08-01T11:59:00+00:00",
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                """
+                update qualitative_note_revisions set body = 'changed'
+                where note_revision_id = ?
+                """,
+                (revision_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            connection.execute(
+                "delete from qualitative_note_revisions where note_revision_id = ?",
+                (revision_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="initial removal"):
+            connection.execute(
+                "update qualitative_notes set note_kind = 'annotation' where note_id = ?",
+                (note_id,),
+            )
+
+        connection.execute(
+            """
+            update qualitative_notes set removed_by = ?, removed_at = ?
+            where note_id = ?
+            """,
+            (RESEARCHER_ID, later, note_id),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="removed"):
+            _insert_note_revision(
+                connection,
+                project_id=project_id,
+                note_id=note_id,
+                note_revision_id=f"nrv_{'8' * 32}",
+                revision_number=2,
+                title="After removal",
+                body="Must not be stored",
+                created_at=later,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="initial removal"):
+            connection.execute(
+                """
+                update qualitative_notes set removed_by = removed_by
+                where note_id = ?
+                """,
+                (note_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="physically deleted"):
+            connection.execute(
+                "delete from qualitative_notes where note_id = ?",
+                (note_id,),
+            )
+
+        orphan_id = f"ann_{'9' * 32}"
+        _insert_study_note(
+            connection,
+            project_id=project_id,
+            note_id=orphan_id,
+            created_at=created_at,
+            note_kind="annotation",
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="initial removal"):
+            connection.execute(
+                """
+                update qualitative_notes set removed_by = ?, removed_at = ?
+                where note_id = ?
+                """,
+                (RESEARCHER_ID, later, orphan_id),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="active when inserted"):
+            connection.execute(
+                """
+                insert into qualitative_notes (
+                  note_id, project_id, note_kind, target_kind,
+                  created_by, created_at, removed_by, removed_at
+                ) values (?, ?, 'memo', 'study', ?, ?, ?, ?)
+                """,
+                (
+                    f"mem_{'a' * 32}",
+                    project_id,
+                    RESEARCHER_ID,
+                    created_at,
+                    RESEARCHER_ID,
+                    later,
+                ),
+            )
+
+
+def test_note_migration_enforces_revision_identity_and_content_bounds(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+    created_at = "2026-08-01T12:00:00+00:00"
+    annotation_id = f"ann_{'b' * 32}"
+    memo_id = f"mem_{'c' * 32}"
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        _insert_study_note(
+            connection,
+            project_id=project_id,
+            note_id=annotation_id,
+            created_at=created_at,
+            note_kind="annotation",
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="content"):
+            _insert_note_revision(
+                connection,
+                project_id=project_id,
+                note_id=annotation_id,
+                note_revision_id=f"nrv_{'b' * 32}",
+                revision_number=1,
+                title="Annotations are untitled",
+                body="Context",
+                created_at=created_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="content"):
+            _insert_note_revision(
+                connection,
+                project_id=project_id,
+                note_id=annotation_id,
+                note_revision_id=f"nrv_{'d' * 32}",
+                revision_number=1,
+                title="",
+                body="",
+                created_at=created_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="content"):
+            _insert_note_revision(
+                connection,
+                project_id=project_id,
+                note_id=annotation_id,
+                note_revision_id=f"nrv_{'e' * 32}",
+                revision_number=1,
+                title="",
+                body="contains\0nul",
+                created_at=created_at,
+            )
+        _insert_note_revision(
+            connection,
+            project_id=project_id,
+            note_id=annotation_id,
+            note_revision_id=f"nrv_{'f' * 32}",
+            revision_number=1,
+            title="",
+            body="Context",
+            created_at=created_at,
+        )
+
+        _insert_study_note(
+            connection,
+            project_id=project_id,
+            note_id=memo_id,
+            created_at=created_at,
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="content"):
+            _insert_note_revision(
+                connection,
+                project_id=project_id,
+                note_id=memo_id,
+                note_revision_id=f"nrv_{'1' * 32}",
+                revision_number=1,
+                title="x" * 513,
+                body="Body",
+                created_at=created_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="content"):
+            _insert_note_revision(
+                connection,
+                project_id=project_id,
+                note_id=memo_id,
+                note_revision_id=f"nrv_{'2' * 32}",
+                revision_number=1,
+                title="Memo",
+                body="x" * 262_145,
+                created_at=created_at,
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="initial"):
+            _insert_note_revision(
+                connection,
+                project_id=project_id,
+                note_id=memo_id,
+                note_revision_id=f"nrv_{'3' * 32}",
+                revision_number=1,
+                title="Memo",
+                body="Body",
+                created_at="2026-08-01T12:00:01+00:00",
+            )
+
+
 def test_qualitative_database_is_preserved_by_project_backup_restore(
     tmp_path: Path,
 ) -> None:
@@ -612,7 +1094,7 @@ def test_qualitative_database_is_preserved_by_project_backup_restore(
     ProjectArchiveStore(restore_root).restore_archive(archive.archive_path)
     restored = QualitativeProjectDatabase(restore_root, project_id)
 
-    assert restored.migration_status()[-1]["version"] == 2
+    assert restored.migration_status()[-1]["version"] == 3
     with sqlite3.connect(restored.db_path) as connection:
         assert connection.execute(
             "select case_id, label from cases"
@@ -623,6 +1105,9 @@ def test_qualitative_ids_use_known_entity_prefixes() -> None:
     assert new_qualitative_id("codebook").startswith("cbk_")
     assert new_qualitative_id("case").startswith("cas_")
     assert new_qualitative_id("coding_reference").startswith("cdr_")
+    assert new_qualitative_id("memo").startswith("mem_")
+    assert new_qualitative_id("annotation").startswith("ann_")
+    assert new_qualitative_id("note_revision").startswith("nrv_")
     assert new_qualitative_id("audit_event").startswith("qae_")
     with pytest.raises(ValueError, match="Unknown qualitative entity type"):
         new_qualitative_id("unknown")

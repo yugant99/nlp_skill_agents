@@ -952,7 +952,7 @@ def test_validate_project_state_allows_schema_only_database(tmp_path: Path) -> N
 def test_validate_project_state_preserves_newer_schema_error(tmp_path: Path) -> None:
     _, database, service = _create_service(tmp_path)
     with sqlite3.connect(database.db_path) as connection:
-        connection.execute("pragma user_version = 3")
+        connection.execute("pragma user_version = 4")
 
     with pytest.raises(SchemaCompatibilityError, match="newer"):
         service.validate_project_state()

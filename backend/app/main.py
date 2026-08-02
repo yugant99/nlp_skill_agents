@@ -72,6 +72,12 @@ from backend.qualitative.notes import (
     NoteService,
     NoteValidationError,
 )
+from backend.qualitative.research_reviews import (
+    ResearchReviewService,
+    ReviewConflictError,
+    ReviewNotFoundError,
+    ReviewValidationError,
+)
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import SyntheticSegmentationCase
 from backend.segmentation.pipeline import (
@@ -133,6 +139,8 @@ async def _content_safe_validation_error(
     path = request.url.path
     if path.startswith("/api/studies/") and (
         "/qualitative/coding-references" in path
+        or "/qualitative/researchers" in path
+        or "/qualitative/agent-suggestions" in path
         or "/qualitative/memos" in path
         or "/qualitative/annotations" in path
         or "/segmentation/runs" in path
@@ -169,6 +177,12 @@ _NOTE_API_ERRORS = (
     NoteValidationError,
     NoteNotFoundError,
     NoteConflictError,
+)
+
+_REVIEW_API_ERRORS = (
+    ReviewValidationError,
+    ReviewNotFoundError,
+    ReviewConflictError,
 )
 
 _STUDY_SEGMENTATION_CONFLICT_ERRORS = (
@@ -430,6 +444,80 @@ class CodingReferenceListQuery(BaseModel):
         if value == "false":
             return False
         raise ValueError("include_removed must be true or false")
+
+
+class _StrictReviewAPIModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ResearcherRegistrationRequest(_StrictReviewAPIModel):
+    actor_id: str
+    display_name: str
+    role: str
+
+
+class AgentSuggestionCreateRequest(_StrictReviewAPIModel):
+    agent_suggestion_id: str
+    origin_kind: str
+    origin_id: str
+    origin_suggestion_key: str
+    researcher_id: str
+    project_source_id: str
+    transcript_revision_id: str
+    evidence_set_id: str
+    target_kind: str
+    passage_id: str
+    cunit_id: str
+    start_offset: Annotated[int, Field(strict=True)]
+    end_offset: Annotated[int, Field(strict=True)]
+    codebook_version_id: str
+    code_id: str
+
+
+class ReviewerDecisionCreateRequest(_StrictReviewAPIModel):
+    reviewer_decision_id: str
+    researcher_id: str
+    expected_decision_number: Annotated[int, Field(strict=True)]
+    decision: str
+    coding_reference_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_coding_reference_presence(self):
+        supplied = "coding_reference_id" in self.model_fields_set
+        if supplied and self.coding_reference_id is None:
+            raise ValueError("coding_reference_id must not be null")
+        if self.decision in {"accepted", "edited"}:
+            if not supplied:
+                raise ValueError(
+                    "accepted and edited decisions require coding_reference_id"
+                )
+        elif self.decision in {"rejected", "deferred"} and supplied:
+            raise ValueError(
+                "rejected and deferred decisions must omit coding_reference_id"
+            )
+        return self
+
+
+class ResearcherListQuery(_StrictReviewAPIModel):
+    role: str | None = None
+    active: str | None = None
+    limit: str = "20"
+    cursor: str | None = None
+
+
+class AgentSuggestionListQuery(_StrictReviewAPIModel):
+    project_source_id: str | None = None
+    codebook_version_id: str | None = None
+    code_id: str | None = None
+    created_by: str | None = None
+    origin_kind: str | None = None
+    limit: str = "20"
+    cursor: str | None = None
+
+
+class ReviewerDecisionListQuery(_StrictReviewAPIModel):
+    limit: str = "20"
+    cursor: str | None = None
 
 
 class _StrictNoteAPIModel(BaseModel):
@@ -1375,6 +1463,205 @@ def remove_qualitative_coding_reference(
     ) as exc:
         _raise_coding_reference_http_error(exc)
     return {"coding_reference": _coding_reference_payload(coding_reference)}
+
+
+@app.put(
+    "/api/studies/{study_id}/qualitative/researchers/{researcher_id}"
+)
+def register_qualitative_researcher(
+    study_id: str,
+    researcher_id: str,
+    request: ResearcherRegistrationRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_review_api_study(root, study_id)
+    try:
+        researcher = ResearchReviewService(root, study_id).create_researcher(
+            researcher_id=researcher_id,
+            **request.model_dump(),
+        )
+    except _REVIEW_API_ERRORS as exc:
+        _raise_review_http_error(exc)
+    return {"researcher": _researcher_payload(researcher)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/researchers")
+def list_qualitative_researchers(
+    study_id: str,
+    raw_request: Request,
+    query: Annotated[ResearcherListQuery, Query()],
+) -> dict:
+    _reject_repeated_review_query_parameters(
+        raw_request,
+        {"role", "active", "limit", "cursor"},
+    )
+    root = _local_data_root()
+    _require_review_api_study(root, study_id)
+    try:
+        page = ResearchReviewService(root, study_id).list_researchers(
+            role=query.role,
+            active=_review_active_filter(query.active),
+            limit=_review_page_limit(query.limit),
+            cursor=query.cursor,
+        )
+    except _REVIEW_API_ERRORS as exc:
+        _raise_review_http_error(exc)
+    return {
+        "researchers": [
+            _researcher_payload(researcher) for researcher in page.researchers
+        ],
+        "next_cursor": page.next_cursor,
+    }
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/researchers/{researcher_id}"
+)
+def get_qualitative_researcher(study_id: str, researcher_id: str) -> dict:
+    root = _local_data_root()
+    _require_review_api_study(root, study_id)
+    try:
+        researcher = ResearchReviewService(root, study_id).read_researcher(
+            researcher_id
+        )
+    except _REVIEW_API_ERRORS as exc:
+        _raise_review_http_error(exc)
+    return {"researcher": _researcher_payload(researcher)}
+
+
+@app.post("/api/studies/{study_id}/qualitative/agent-suggestions")
+def create_qualitative_agent_suggestion(
+    study_id: str,
+    request: AgentSuggestionCreateRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_review_api_study(root, study_id)
+    try:
+        snapshot = ResearchReviewService(
+            root,
+            study_id,
+        ).create_agent_suggestion(**request.model_dump())
+    except _REVIEW_API_ERRORS as exc:
+        _raise_review_http_error(exc)
+    return {"agent_suggestion": _agent_suggestion_snapshot_payload(snapshot)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/agent-suggestions")
+def list_qualitative_agent_suggestions(
+    study_id: str,
+    raw_request: Request,
+    query: Annotated[AgentSuggestionListQuery, Query()],
+) -> dict:
+    _reject_repeated_review_query_parameters(
+        raw_request,
+        {
+            "project_source_id",
+            "codebook_version_id",
+            "code_id",
+            "created_by",
+            "origin_kind",
+            "limit",
+            "cursor",
+        },
+    )
+    root = _local_data_root()
+    _require_review_api_study(root, study_id)
+    try:
+        page = ResearchReviewService(root, study_id).list_agent_suggestions(
+            project_source_id=query.project_source_id,
+            codebook_version_id=query.codebook_version_id,
+            code_id=query.code_id,
+            created_by=query.created_by,
+            origin_kind=query.origin_kind,
+            limit=_review_page_limit(query.limit),
+            cursor=query.cursor,
+        )
+    except _REVIEW_API_ERRORS as exc:
+        _raise_review_http_error(exc)
+    return {
+        "agent_suggestions": [
+            _agent_suggestion_snapshot_payload(snapshot)
+            for snapshot in page.agent_suggestions
+        ],
+        "next_cursor": page.next_cursor,
+    }
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/agent-suggestions/"
+    "{agent_suggestion_id}"
+)
+def get_qualitative_agent_suggestion(
+    study_id: str,
+    agent_suggestion_id: str,
+) -> dict:
+    root = _local_data_root()
+    _require_review_api_study(root, study_id)
+    try:
+        snapshot = ResearchReviewService(
+            root,
+            study_id,
+        ).read_agent_suggestion(agent_suggestion_id)
+    except _REVIEW_API_ERRORS as exc:
+        _raise_review_http_error(exc)
+    return {"agent_suggestion": _agent_suggestion_snapshot_payload(snapshot)}
+
+
+@app.post(
+    "/api/studies/{study_id}/qualitative/agent-suggestions/"
+    "{agent_suggestion_id}/decisions"
+)
+def append_qualitative_reviewer_decision(
+    study_id: str,
+    agent_suggestion_id: str,
+    request: ReviewerDecisionCreateRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_review_api_study(root, study_id)
+    try:
+        decision = ResearchReviewService(
+            root,
+            study_id,
+        ).append_reviewer_decision(
+            agent_suggestion_id=agent_suggestion_id,
+            **request.model_dump(),
+        )
+    except _REVIEW_API_ERRORS as exc:
+        _raise_review_http_error(exc)
+    return {"reviewer_decision": _reviewer_decision_payload(decision)}
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/agent-suggestions/"
+    "{agent_suggestion_id}/decisions"
+)
+def list_qualitative_reviewer_decisions(
+    study_id: str,
+    agent_suggestion_id: str,
+    raw_request: Request,
+    query: Annotated[ReviewerDecisionListQuery, Query()],
+) -> dict:
+    _reject_repeated_review_query_parameters(
+        raw_request,
+        {"limit", "cursor"},
+    )
+    root = _local_data_root()
+    _require_review_api_study(root, study_id)
+    try:
+        page = ResearchReviewService(root, study_id).list_reviewer_decisions(
+            agent_suggestion_id,
+            limit=_review_page_limit(query.limit),
+            cursor=query.cursor,
+        )
+    except _REVIEW_API_ERRORS as exc:
+        _raise_review_http_error(exc)
+    return {
+        "reviewer_decisions": [
+            _reviewer_decision_payload(decision)
+            for decision in page.reviewer_decisions
+        ],
+        "next_cursor": page.next_cursor,
+    }
 
 
 @app.post("/api/studies/{study_id}/qualitative/memos")
@@ -2655,6 +2942,21 @@ def _require_api_study(root: Path, study_id: str) -> None:
         ) from exc
 
 
+def _require_review_api_study(root: Path, study_id: str) -> None:
+    try:
+        StudyWorkspaceStore(root).load_study(study_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Review dependency was not found",
+        ) from exc
+    except StudyWorkspaceConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Review state conflicts with stored data",
+        ) from exc
+
+
 def _raise_study_segmentation_http_error(exc: Exception) -> NoReturn:
     if isinstance(exc, FileNotFoundError):
         raise HTTPException(
@@ -2706,6 +3008,47 @@ def _raise_note_http_error(exc: Exception) -> NoReturn:
     ) from exc
 
 
+def _raise_review_http_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, ReviewValidationError):
+        raise HTTPException(
+            status_code=400,
+            detail="Review request is invalid",
+        ) from exc
+    if isinstance(exc, ReviewNotFoundError):
+        raise HTTPException(
+            status_code=404,
+            detail="Review dependency was not found",
+        ) from exc
+    raise HTTPException(
+        status_code=409,
+        detail="Review state conflicts with stored data",
+    ) from exc
+
+
+def _review_active_filter(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ReviewValidationError("active must be true or false")
+
+
+def _review_page_limit(value: str) -> int:
+    if (
+        not value
+        or not value.isascii()
+        or not value.isdecimal()
+        or value.startswith("0")
+    ):
+        raise ReviewValidationError("limit must be a canonical ASCII decimal")
+    parsed = int(value)
+    if not 1 <= parsed <= 50:
+        raise ReviewValidationError("limit must be between 1 and 50")
+    return parsed
+
+
 def _canonical_note_page_limit(value: object) -> int:
     if type(value) is int:
         parsed = value
@@ -2737,6 +3080,20 @@ def _reject_repeated_query_parameters(
         )
 
 
+def _reject_repeated_review_query_parameters(
+    request: Request,
+    parameter_names: set[str],
+) -> None:
+    if any(
+        len(request.query_params.getlist(parameter_name)) > 1
+        for parameter_name in parameter_names
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Request validation failed",
+        )
+
+
 def _coding_reference_payload(coding_reference) -> dict:
     return {
         "coding_reference_id": coding_reference.coding_reference_id,
@@ -2755,6 +3112,67 @@ def _coding_reference_payload(coding_reference) -> dict:
         "created_at": coding_reference.created_at,
         "removed_by": coding_reference.removed_by,
         "removed_at": coding_reference.removed_at,
+    }
+
+
+def _researcher_payload(researcher) -> dict:
+    return {
+        "project_id": researcher.project_id,
+        "researcher_id": researcher.researcher_id,
+        "display_name": researcher.display_name,
+        "role": researcher.role,
+        "active": researcher.active,
+        "created_at": researcher.created_at,
+        "updated_at": researcher.updated_at,
+        "provenance_classification": researcher.provenance_classification,
+        "provenance_actor_id": researcher.provenance_actor_id,
+    }
+
+
+def _agent_suggestion_payload(suggestion) -> dict:
+    return {
+        "agent_suggestion_id": suggestion.agent_suggestion_id,
+        "project_id": suggestion.project_id,
+        "origin_kind": suggestion.origin_kind,
+        "origin_id": suggestion.origin_id,
+        "origin_suggestion_key": suggestion.origin_suggestion_key,
+        "project_source_id": suggestion.project_source_id,
+        "transcript_revision_id": suggestion.transcript_revision_id,
+        "evidence_set_id": suggestion.evidence_set_id,
+        "target_kind": suggestion.target_kind,
+        "passage_id": suggestion.passage_id,
+        "cunit_id": suggestion.cunit_id,
+        "start_offset": suggestion.start_offset,
+        "end_offset": suggestion.end_offset,
+        "codebook_version_id": suggestion.codebook_version_id,
+        "code_id": suggestion.code_id,
+        "created_by": suggestion.created_by,
+        "created_at": suggestion.created_at,
+    }
+
+
+def _reviewer_decision_payload(decision) -> dict:
+    return {
+        "reviewer_decision_id": decision.reviewer_decision_id,
+        "project_id": decision.project_id,
+        "agent_suggestion_id": decision.agent_suggestion_id,
+        "decision_number": decision.decision_number,
+        "decision": decision.decision,
+        "coding_reference_id": decision.coding_reference_id,
+        "reviewed_by": decision.reviewed_by,
+        "created_at": decision.created_at,
+    }
+
+
+def _agent_suggestion_snapshot_payload(snapshot) -> dict:
+    return {
+        "suggestion": _agent_suggestion_payload(snapshot.suggestion),
+        "current_decision": (
+            None
+            if snapshot.current_decision is None
+            else _reviewer_decision_payload(snapshot.current_decision)
+        ),
+        "review_status": snapshot.review_status,
     }
 
 

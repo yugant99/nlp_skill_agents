@@ -20,6 +20,7 @@ from backend.qualitative.codebooks import CodebookService
 from backend.qualitative.coding_references import CodingReferenceService
 from backend.qualitative.database import QualitativeProjectDatabase
 from backend.qualitative.notes import NoteService
+from backend.qualitative.research_reviews import ResearchReviewService
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.evidence_target_registry import (
@@ -306,6 +307,73 @@ def _build_note_archive(root: Path):
     return study_id, snapshots, exported
 
 
+def _build_research_review_archive(root: Path):
+    (
+        study_id,
+        import_record,
+        prepared,
+        existing_reference,
+        _,
+    ) = _build_coding_reference_archive(root)
+    owner_id = existing_reference.created_by
+    reviewer_id = "res_archive_reviewer"
+    reviews = ResearchReviewService(root, study_id)
+    researcher = reviews.create_researcher(
+        researcher_id=reviewer_id,
+        actor_id=owner_id,
+        display_name="Archive Reviewer",
+        role="reviewer",
+    )
+    target = prepared.passages[0].cunits[1]
+    suggestion = reviews.create_agent_suggestion(
+        agent_suggestion_id=f"ags_{'a' * 32}",
+        origin_kind="imported_agent_output",
+        origin_id="archive-agent-output",
+        origin_suggestion_key="candidate-1",
+        researcher_id=owner_id,
+        project_source_id=import_record.project_source_id,
+        transcript_revision_id=import_record.transcript_revision_id,
+        evidence_set_id=prepared.evidence_set_id,
+        target_kind="cunit",
+        passage_id=prepared.passages[0].passage_id,
+        cunit_id=target.cunit_id,
+        start_offset=0,
+        end_offset=len(target.text),
+        codebook_version_id=existing_reference.codebook_version_id,
+        code_id=existing_reference.code_id,
+    )
+    result = CodingReferenceService(root, study_id).create_reference(
+        researcher_id=reviewer_id,
+        project_source_id=import_record.project_source_id,
+        transcript_revision_id=import_record.transcript_revision_id,
+        evidence_set_id=prepared.evidence_set_id,
+        target_kind="cunit",
+        passage_id=prepared.passages[0].passage_id,
+        cunit_id=target.cunit_id,
+        start_offset=0,
+        end_offset=len(target.text),
+        codebook_version_id=existing_reference.codebook_version_id,
+        code_id=existing_reference.code_id,
+    )
+    decision = reviews.append_reviewer_decision(
+        reviewer_decision_id=f"rvd_{'b' * 32}",
+        agent_suggestion_id=suggestion.suggestion.agent_suggestion_id,
+        researcher_id=reviewer_id,
+        expected_decision_number=0,
+        decision="accepted",
+        coding_reference_id=result.coding_reference_id,
+    )
+    tombstone = CodingReferenceService(root, study_id).remove_reference(
+        researcher_id=reviewer_id,
+        coding_reference_id=result.coding_reference_id,
+    )
+    suggestion = reviews.read_agent_suggestion(
+        suggestion.suggestion.agent_suggestion_id
+    )
+    exported = ProjectArchiveStore(root).create_archive(study_id)
+    return study_id, researcher, suggestion, decision, tombstone, exported
+
+
 def _build_cunit_target_archive(root: Path):
     study = StudyWorkspaceStore(root).create_study(
         {"name": "Archive C-unit Target"}
@@ -537,6 +605,29 @@ def _note_audit_rows(root: Path, study_id: str) -> tuple[tuple[object, ...], ...
         )
 
 
+def _research_review_audit_rows(
+    root: Path,
+    study_id: str,
+) -> tuple[tuple[object, ...], ...]:
+    database_path = root / "studies" / study_id / "qualitative.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        return tuple(
+            connection.execute(
+                """
+                select event_id, project_id, actor_id, event_type,
+                       subject_type, subject_id, metadata_json, created_at
+                from qualitative_audit_events
+                where subject_type in ('researcher', 'agent_suggestion',
+                                       'reviewer_decision')
+                   or event_type like 'qualitative.researcher.%'
+                   or event_type like 'qualitative.agent_suggestion.%'
+                   or event_type like 'qualitative.reviewer_decision.%'
+                order by event_id
+                """
+            ).fetchall()
+        )
+
+
 def test_project_archive_round_trips_study_evidence_and_source_blobs(tmp_path) -> None:
     source_root = tmp_path / "source"
     restore_root = tmp_path / "restore"
@@ -738,6 +829,40 @@ def test_project_archive_v2_round_trips_all_note_targets_and_history(
     assert source_snapshots[1].note.removed_at is not None
 
 
+def test_project_archive_v2_round_trips_research_review_state_and_audits(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, researcher, suggestion, decision, tombstone, exported = (
+        _build_research_review_archive(source_root)
+    )
+    source_reviews = ResearchReviewService(source_root, study_id)
+    source_decisions = source_reviews.list_reviewer_decisions(
+        suggestion.suggestion.agent_suggestion_id,
+        limit=50,
+    )
+    source_audits = _research_review_audit_rows(source_root, study_id)
+
+    ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    restored = ResearchReviewService(restore_root, study_id)
+    restored.validate_project_state()
+    assert restored.read_researcher(researcher.researcher_id) == researcher
+    assert restored.read_agent_suggestion(
+        suggestion.suggestion.agent_suggestion_id
+    ) == suggestion
+    assert restored.list_reviewer_decisions(
+        suggestion.suggestion.agent_suggestion_id,
+        limit=50,
+    ) == source_decisions
+    assert source_decisions.reviewer_decisions == (decision,)
+    assert CodingReferenceService(restore_root, study_id).read_reference(
+        tombstone.coding_reference_id
+    ) == tombstone
+    assert _research_review_audit_rows(restore_root, study_id) == source_audits
+
+
 def test_project_archive_concurrent_coding_write_is_attributably_atomic(
     tmp_path: Path,
 ) -> None:
@@ -818,6 +943,94 @@ def test_project_archive_concurrent_coding_write_is_attributably_atomic(
         ).fetchone()[0]
 
     assert (coding_count, audit_count) in {(0, 0), (1, 1)}
+
+
+def test_project_archive_concurrent_suggestion_write_is_attributably_atomic(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    (
+        study_id,
+        import_record,
+        prepared,
+        existing_reference,
+        _,
+    ) = _build_coding_reference_archive(source_root)
+    target = prepared.passages[0].cunits[1]
+    barrier = threading.Barrier(3)
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def create_archive() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results["archive"] = ProjectArchiveStore(source_root).create_archive(
+                study_id
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def create_suggestion() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results["suggestion"] = ResearchReviewService(
+                source_root,
+                study_id,
+            ).create_agent_suggestion(
+                agent_suggestion_id=f"ags_{'c' * 32}",
+                origin_kind="synthetic_fixture",
+                origin_id="archive-race",
+                origin_suggestion_key="candidate-1",
+                researcher_id=existing_reference.created_by,
+                project_source_id=import_record.project_source_id,
+                transcript_revision_id=import_record.transcript_revision_id,
+                evidence_set_id=prepared.evidence_set_id,
+                target_kind="cunit",
+                passage_id=prepared.passages[0].passage_id,
+                cunit_id=target.cunit_id,
+                start_offset=0,
+                end_offset=len(target.text),
+                codebook_version_id=existing_reference.codebook_version_id,
+                code_id=existing_reference.code_id,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    archive_thread = threading.Thread(target=create_archive)
+    suggestion_thread = threading.Thread(target=create_suggestion)
+    archive_thread.start()
+    suggestion_thread.start()
+    barrier.wait(timeout=5)
+    archive_thread.join(timeout=15)
+    suggestion_thread.join(timeout=15)
+
+    assert not archive_thread.is_alive()
+    assert not suggestion_thread.is_alive()
+    assert errors == []
+    concurrent_suggestion = results["suggestion"]
+    suggestion_id = concurrent_suggestion.suggestion.agent_suggestion_id
+    exported = results["archive"]
+    database_copy = tmp_path / "concurrent-suggestion-archive.sqlite3"
+    with ZipFile(exported.archive_path) as archive:
+        database_copy.write_bytes(archive.read("study/qualitative.sqlite3"))
+    with sqlite3.connect(database_copy) as connection:
+        suggestion_count = connection.execute(
+            """
+            select count(*) from agent_coding_suggestions
+            where agent_suggestion_id = ?
+            """,
+            (suggestion_id,),
+        ).fetchone()[0]
+        audit_count = connection.execute(
+            """
+            select count(*) from qualitative_audit_events
+            where event_type = 'qualitative.agent_suggestion.created'
+              and subject_id = ?
+            """,
+            (suggestion_id,),
+        ).fetchone()[0]
+
+    assert (suggestion_count, audit_count) in {(0, 0), (1, 1)}
 
 
 def test_project_archive_concurrent_note_write_is_attributably_atomic(
@@ -1020,11 +1233,13 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
     study_guard_entries: list[int] = []
     qualitative_validation_roots: list[Path] = []
     note_validation_roots: list[Path] = []
+    review_validation_roots: list[Path] = []
     original_workspace_lock = project_archive_module.workspace_mutation_lock
     original_archive_guard = StudyBatchOperationStore.archive_snapshot_guard
     original_case_validation = CaseService.validate_project_state
     original_coding_validation = CodingReferenceService.validate_project_state
     original_note_validation = NoteService.validate_project_state
+    original_review_validation = ResearchReviewService.validate_project_state
 
     @contextmanager
     def tracked_workspace_lock(root):
@@ -1064,6 +1279,12 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
             assert service.root != source_root
         return original_note_validation(service)
 
+    def tracked_review_validation(service):
+        review_validation_roots.append(service.root)
+        if destination_lock_depth:
+            assert service.root != source_root
+        return original_review_validation(service)
+
     monkeypatch.setattr(
         project_archive_module,
         "workspace_mutation_lock",
@@ -1089,6 +1310,11 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
         "validate_project_state",
         tracked_note_validation,
     )
+    monkeypatch.setattr(
+        ResearchReviewService,
+        "validate_project_state",
+        tracked_review_validation,
+    )
 
     ProjectArchiveStore(source_root).create_archive(study_id)
 
@@ -1097,6 +1323,8 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
     assert all(root != source_root for root in qualitative_validation_roots)
     assert note_validation_roots
     assert all(root != source_root for root in note_validation_roots)
+    assert review_validation_roots
+    assert all(root != source_root for root in review_validation_roots)
     assert destination_lock_depth == 0
 
 
@@ -1453,6 +1681,37 @@ def test_project_archive_rejects_rehashed_unmatched_note_audit_before_publish(
         from qualitative_notes
         order by note_id
         limit 1
+        """,
+    )
+    restore_root.mkdir()
+    (restore_root / "sentinel.txt").write_text("unchanged", encoding="utf-8")
+    before = _destination_tree(restore_root)
+
+    with pytest.raises(
+        ProjectArchiveError,
+        match="Archive qualitative project is invalid",
+    ):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == before
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_rejects_rehashed_invalid_agent_suggestion_before_publish(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, _, exported = _build_research_review_archive(source_root)
+    forged_archive = tmp_path / "invalid-agent-suggestion.nlpstudy.zip"
+    _rewrite_qualitative_database(
+        exported.archive_path,
+        forged_archive,
+        tmp_path / "invalid-agent-suggestion.sqlite3",
+        f"""
+        drop trigger prevent_agent_coding_suggestion_update;
+        update agent_coding_suggestions
+        set cunit_id = 'cun_{'f' * 32}'
         """,
     )
     restore_root.mkdir()
@@ -2303,6 +2562,22 @@ def test_project_archive_rejects_v1_qualitative_coding_reference_row(
     restore_root = tmp_path / "restore"
     study_id, _, _, _, exported = _build_coding_reference_archive(source_root)
     forged_archive = tmp_path / "v1-coding-row.nlpstudy.zip"
+    _rewrite_archive_as_v1(exported.archive_path, forged_archive)
+
+    with pytest.raises(ProjectArchiveError, match="cannot reference evidence"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_rejects_v1_agent_suggestion_row(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, _, exported = _build_research_review_archive(source_root)
+    forged_archive = tmp_path / "v1-agent-suggestion-row.nlpstudy.zip"
     _rewrite_archive_as_v1(exported.archive_path, forged_archive)
 
     with pytest.raises(ProjectArchiveError, match="cannot reference evidence"):

@@ -3,7 +3,11 @@ import sqlite3
 
 import pytest
 
-from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.evidence_catalog import (
+    EvidenceCatalog,
+    EvidenceCatalogConflict,
+    EvidenceImportRecord,
+)
 from backend.storage.sqlite_migrations import SchemaCompatibilityError
 
 
@@ -202,9 +206,10 @@ def test_evidence_catalog_migrates_imports_without_inventing_lineage(tmp_path) -
         1,
         2,
         3,
+        4,
     ]
     with sqlite3.connect(database_path) as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 3
+        assert connection.execute("pragma user_version").fetchone()[0] == 4
         assert connection.execute("pragma foreign_key_check").fetchall() == []
         referenced_tables = {
             row[2]
@@ -213,7 +218,7 @@ def test_evidence_catalog_migrates_imports_without_inventing_lineage(tmp_path) -
     assert referenced_tables == {"project_sources", "transcript_revisions"}
 
 
-def test_evidence_catalog_versions_existing_lineage_without_data_loss(tmp_path) -> None:
+def test_evidence_catalog_refuses_erased_migration_identity(tmp_path) -> None:
     catalog = EvidenceCatalog(tmp_path)
     first = EvidenceImportRecord(
         import_id="imp_v1",
@@ -248,19 +253,8 @@ def test_evidence_catalog_versions_existing_lineage_without_data_loss(tmp_path) 
         connection.execute("drop table schema_migrations")
         connection.execute("pragma user_version = 0")
 
-    assert [item["import_id"] for item in catalog.list_imports()] == [
-        "imp_v2",
-        "imp_v1",
-    ]
-    history = catalog.source_history("psrc_interview")
-    assert history["source"]["workspace_id"] == "study_one"
-    assert [item["transcript_revision_id"] for item in history["revisions"]] == [
-        "trv_v1",
-        "trv_v2",
-    ]
-    assert history["revisions"][1]["parent_transcript_revision_id"] == "trv_v1"
-    with sqlite3.connect(catalog.db_path) as connection:
-        assert connection.execute("pragma foreign_key_check").fetchall() == []
+    with pytest.raises(EvidenceCatalogConflict):
+        catalog.list_imports()
 
 
 def test_evidence_catalog_refuses_newer_schema(tmp_path) -> None:
@@ -270,4 +264,14 @@ def test_evidence_catalog_refuses_newer_schema(tmp_path) -> None:
         connection.execute("pragma user_version = 99")
 
     with pytest.raises(SchemaCompatibilityError, match="newer"):
+        catalog.list_imports()
+
+
+def test_evidence_catalog_refuses_missing_migration_four_trigger(tmp_path) -> None:
+    catalog = EvidenceCatalog(tmp_path)
+    assert catalog.list_imports() == []
+    with sqlite3.connect(catalog.db_path) as connection:
+        connection.execute("drop trigger prevent_evidence_sets_update")
+
+    with pytest.raises(EvidenceCatalogConflict, match="unavailable or invalid"):
         catalog.list_imports()

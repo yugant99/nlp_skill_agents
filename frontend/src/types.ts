@@ -130,6 +130,7 @@ export type CUnitBoundaryDecision = {
   event_index: number;
   passage_id: string;
   cunit_ids: string[];
+  cunit_texts: string[];
   speaker: string;
   raw_text: string;
   cleaned_text: string;
@@ -151,6 +152,7 @@ export type CUnitAdjudication = {
   needs_review_count: number;
   boundary_type_counts: Record<string, number>;
   decisions: CUnitBoundaryDecision[];
+  cunit_text_contract_version: number;
   validation_status: string;
   evidence_scope: string;
 };
@@ -243,6 +245,7 @@ export type SegmentationRun = {
   cunit_adjudication: CUnitAdjudication;
   evaluation: SegmentationEvaluation | null;
   status: string;
+  evidence_set_id: string;
   failure_routes: {
     rule_id: string;
     specialist_id: string;

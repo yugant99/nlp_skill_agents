@@ -64,6 +64,7 @@ class CUnitBoundaryDecision:
     evidence_terms: list[str] = field(default_factory=list)
     passage_id: str = ""
     cunit_ids: list[str] = field(default_factory=list)
+    cunit_texts: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -75,5 +76,6 @@ class CUnitAdjudication:
     needs_review_count: int
     boundary_type_counts: dict[str, int]
     decisions: list[CUnitBoundaryDecision]
+    cunit_text_contract_version: int = 1
     validation_status: str = "not_domain_validated"
     evidence_scope: str = "deterministic_heuristics_and_synthetic_fixtures"

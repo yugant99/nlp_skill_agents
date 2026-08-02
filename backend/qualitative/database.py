@@ -28,6 +28,7 @@ _ID_PREFIXES = {
     "code": "cod",
     "case": "cas",
     "attribute_definition": "atr",
+    "coding_reference": "cdr",
     "audit_event": "qae",
 }
 
@@ -582,6 +583,118 @@ def _create_qualitative_core(connection: sqlite3.Connection) -> None:
     )
 
 
+def _add_coding_references(connection: sqlite3.Connection) -> None:
+    _execute_schema_script(
+        connection,
+        """
+        create table coding_references (
+          coding_reference_id text primary key,
+          project_id text not null,
+          project_source_id text not null,
+          transcript_revision_id text not null,
+          evidence_set_id text not null,
+          target_kind text not null check (target_kind in ('passage', 'cunit')),
+          passage_id text not null,
+          cunit_id text not null default '',
+          start_offset integer not null check (start_offset >= 0),
+          end_offset integer not null check (end_offset > start_offset),
+          codebook_version_id text not null,
+          code_id text not null,
+          created_by text not null,
+          created_at text not null,
+          removed_by text,
+          removed_at text,
+          unique (project_id, coding_reference_id),
+          check (
+            (target_kind = 'passage' and cunit_id = '')
+            or (target_kind = 'cunit' and cunit_id != '')
+          ),
+          check (
+            (removed_by is null and removed_at is null)
+            or (removed_by is not null and removed_at is not null)
+          ),
+          foreign key (project_id) references qualitative_projects(project_id)
+            on delete restrict,
+          foreign key (project_id, codebook_version_id, code_id)
+            references codes(project_id, codebook_version_id, code_id)
+            on delete restrict,
+          foreign key (project_id, created_by)
+            references researchers(project_id, researcher_id) on delete restrict,
+          foreign key (project_id, removed_by)
+            references researchers(project_id, researcher_id) on delete restrict
+        );
+
+        create unique index active_coding_reference_identity
+          on coding_references (
+            project_id, project_source_id, transcript_revision_id,
+            evidence_set_id, target_kind, passage_id, cunit_id,
+            start_offset, end_offset, codebook_version_id, code_id, created_by
+          ) where removed_at is null;
+
+        create index coding_references_by_created
+          on coding_references (project_id, created_at, coding_reference_id);
+
+        create index coding_references_by_code
+          on coding_references (
+            project_id, codebook_version_id, code_id, created_at
+          );
+
+        create trigger require_frozen_coding_reference_version
+        before insert on coding_references
+        when not exists (
+          select 1 from codebook_versions
+          where project_id = new.project_id
+            and codebook_version_id = new.codebook_version_id
+            and status = 'frozen'
+        )
+        begin
+          select raise(abort, 'coding reference requires a frozen codebook version');
+        end;
+
+        create trigger reject_pre_removed_coding_reference
+        before insert on coding_references
+        when new.removed_by is not null or new.removed_at is not null
+        begin
+          select raise(abort, 'coding reference must be active when inserted');
+        end;
+
+        create trigger prevent_coding_reference_delete
+        before delete on coding_references
+        begin
+          select raise(abort, 'coding references cannot be physically deleted');
+        end;
+
+        create trigger restrict_coding_reference_update
+        before update on coding_references
+        when
+          new.coding_reference_id is not old.coding_reference_id
+          or new.project_id is not old.project_id
+          or new.project_source_id is not old.project_source_id
+          or new.transcript_revision_id is not old.transcript_revision_id
+          or new.evidence_set_id is not old.evidence_set_id
+          or new.target_kind is not old.target_kind
+          or new.passage_id is not old.passage_id
+          or new.cunit_id is not old.cunit_id
+          or new.start_offset is not old.start_offset
+          or new.end_offset is not old.end_offset
+          or new.codebook_version_id is not old.codebook_version_id
+          or new.code_id is not old.code_id
+          or new.created_by is not old.created_by
+          or new.created_at is not old.created_at
+          or old.removed_by is not null
+          or old.removed_at is not null
+          or new.removed_by is null
+          or new.removed_at is null
+          or julianday(new.removed_at) is null
+          or julianday(old.created_at) is null
+          or julianday(new.removed_at) < julianday(old.created_at)
+        begin
+          select raise(abort, 'coding reference update is not an initial removal');
+        end;
+        """,
+    )
+
+
 def _execute_schema_script(
     connection: sqlite3.Connection,
     script: str,
@@ -668,6 +781,7 @@ def _validate_project_ownership(
 
 QUALITATIVE_MIGRATIONS = (
     Migration(1, "create-qualitative-core-contract", _create_qualitative_core),
+    Migration(2, "add-coding-reference-contract", _add_coding_references),
 )
 
 

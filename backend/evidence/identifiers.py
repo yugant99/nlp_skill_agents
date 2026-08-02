@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from hashlib import sha256
+import re
 from uuid import uuid4
+
+
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,14 @@ def passage_evidence_id(transcript_revision_id: str, passage_index: int) -> str:
 
 def cunit_evidence_id(passage_id: str, cunit_ordinal: int) -> str:
     return _derived_id("cun", passage_id, cunit_ordinal)
+
+
+def evidence_set_id(snapshot_sha256: str) -> str:
+    if not isinstance(snapshot_sha256, str) or not _SHA256_PATTERN.fullmatch(
+        snapshot_sha256
+    ):
+        raise ValueError("snapshot_sha256 must be a full lowercase SHA-256")
+    return f"evs_{snapshot_sha256[:32]}"
 
 
 def _derived_id(prefix: str, parent_id: str, ordinal: int) -> str:

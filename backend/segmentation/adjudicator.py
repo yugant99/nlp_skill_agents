@@ -141,6 +141,12 @@ _UNINTELLIGIBLE_PATTERN = re.compile(
     r"\[(?:unintelligible|inaudible|xxx)\]|\b(?:xxx|unintelligible|inaudible)\b",
     re.IGNORECASE,
 )
+_COORDINATE_CLAUSE_PATTERN = re.compile(
+    r"\b(?:and|but|so)\s+(?:i|we|he|she|they|it)\s+\w+",
+    re.IGNORECASE,
+)
+
+CUNIT_TEXT_CONTRACT_VERSION = 1
 
 
 def adjudicate_cunit_boundaries(
@@ -165,6 +171,7 @@ def adjudicate_cunit_boundaries(
         needs_review_count=sum(1 for decision in decisions if decision.needs_human_review),
         boundary_type_counts=dict(boundary_counts),
         decisions=decisions,
+        cunit_text_contract_version=CUNIT_TEXT_CONTRACT_VERSION,
     )
 
 
@@ -253,7 +260,23 @@ def _classify_event(
             fallback_revision_id,
         )
 
-    if _has_coordinate_clause(cleaned_text):
+    coordinate_texts = _coordinate_cunit_texts(cleaned_text)
+    if coordinate_texts == []:
+        return _decision(
+            index,
+            event,
+            cleaned_text,
+            "coordination-split",
+            "needs-review",
+            0,
+            "Coordinate-clause evidence did not produce two non-empty canonical unit texts, so route the turn for human review.",
+            True,
+            excluded_maze,
+            ["coordinate-conjunction + subject"],
+            fallback_revision_id,
+        )
+
+    if coordinate_texts is not None:
         return _decision(
             index,
             event,
@@ -266,6 +289,7 @@ def _classify_event(
             excluded_maze,
             ["and + subject"],
             fallback_revision_id,
+            cunit_texts=coordinate_texts,
         )
 
     if _has_independent_clause(tokens):
@@ -310,11 +334,27 @@ def _decision(
     excluded_maze: str,
     evidence_terms: list[str],
     fallback_revision_id: str,
+    *,
+    cunit_texts: list[str] | None = None,
 ) -> CUnitBoundaryDecision:
     passage_id = event.passage_id or passage_evidence_id(
         fallback_revision_id,
         index,
     )
+    resolved_cunit_texts = (
+        list(cunit_texts)
+        if cunit_texts is not None
+        else ([cleaned_text] if cunit_count == 1 else [])
+    )
+    if (
+        len(resolved_cunit_texts) != cunit_count
+        or any(not text for text in resolved_cunit_texts)
+    ):
+        raise ValueError("C-unit count and canonical texts are inconsistent")
+    cunit_ids = [
+        cunit_evidence_id(passage_id, ordinal)
+        for ordinal in range(cunit_count)
+    ]
     return CUnitBoundaryDecision(
         event_index=index,
         speaker=event.speaker,
@@ -329,10 +369,8 @@ def _decision(
         excluded_maze=excluded_maze,
         evidence_terms=[term for term in evidence_terms if term],
         passage_id=passage_id,
-        cunit_ids=[
-            cunit_evidence_id(passage_id, ordinal)
-            for ordinal in range(cunit_count)
-        ],
+        cunit_ids=cunit_ids,
+        cunit_texts=resolved_cunit_texts,
     )
 
 
@@ -367,8 +405,48 @@ def _tokens(text: str) -> list[str]:
     return _TOKEN_PATTERN.findall(text)
 
 
-def _has_coordinate_clause(text: str) -> bool:
-    return bool(re.search(r"\b(?:and|but|so)\s+(?:i|we|he|she|they|it)\s+\w+", text, re.IGNORECASE))
+def _coordinate_cunit_texts(text: str) -> list[str] | None:
+    match = _COORDINATE_CLAUSE_PATTERN.search(text)
+    if match is None:
+        return None
+    first = text[: match.start()].rstrip()
+    second = text[match.start() :].lstrip()
+    if not first or not second:
+        return []
+    return [first, second]
+
+
+def validate_cunit_text_contract(
+    adjudication: CUnitAdjudication,
+    events: list[RawTranscriptEvent],
+) -> None:
+    version = adjudication.cunit_text_contract_version
+    if type(version) is not int or version not in (0, CUNIT_TEXT_CONTRACT_VERSION):
+        raise ValueError("C-unit text contract version is invalid")
+    if adjudication.counted_cunit_count != sum(
+        decision.cunit_count for decision in adjudication.decisions
+    ):
+        raise ValueError("C-unit adjudication count is inconsistent")
+    for decision in adjudication.decisions:
+        if type(decision.cunit_count) is not int or decision.cunit_count < 0:
+            raise ValueError("C-unit decision count is invalid")
+        if (
+            len(decision.cunit_ids) != decision.cunit_count
+            or len(decision.cunit_texts) != decision.cunit_count
+        ):
+            raise ValueError("C-unit count, IDs, and canonical texts are inconsistent")
+        expected_ids = [
+            cunit_evidence_id(decision.passage_id, ordinal)
+            for ordinal in range(decision.cunit_count)
+        ]
+        if decision.cunit_ids != expected_ids:
+            raise ValueError("C-unit decision IDs are inconsistent")
+        if any(type(text) is not str or not text for text in decision.cunit_texts):
+            raise ValueError("C-unit canonical text is invalid")
+    if version == CUNIT_TEXT_CONTRACT_VERSION:
+        expected = adjudicate_cunit_boundaries(events)
+        if adjudication != expected:
+            raise ValueError("C-unit text contract does not match the current producer")
 
 
 def _is_formulaic_cunit(normalized: str) -> bool:

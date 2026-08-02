@@ -34,6 +34,7 @@ def test_semantic_cunit_adjudicator_classifies_boundary_decisions() -> None:
     assert adjudication.counted_cunit_count == 3
     assert adjudication.needs_review_count == 2
     assert adjudication.validation_status == "not_domain_validated"
+    assert adjudication.cunit_text_contract_version == 1
     assert adjudication.evidence_scope == (
         "deterministic_heuristics_and_synthetic_fixtures"
     )
@@ -58,17 +59,61 @@ def test_semantic_cunit_adjudicator_classifies_boundary_decisions() -> None:
     assert coordination.cunit_count == 2
     assert len(coordination.cunit_ids) == 2
     assert len(set(coordination.cunit_ids)) == 2
+    assert coordination.cunit_texts == [
+        "I picked up the cup",
+        "and I moved it to the tray.",
+    ]
     assert "coordinate clause" in coordination.rationale
 
     dependent = adjudication.decisions[1]
     assert dependent.boundary_type == "dependent-clause-attachment"
     assert dependent.cunit_count == 0
+    assert dependent.cunit_ids == []
+    assert dependent.cunit_texts == []
     assert dependent.needs_human_review is True
+
+    minimal = adjudication.decisions[2]
+    assert minimal.cunit_ids
+    assert minimal.cunit_texts == ["Yes."]
 
     maze = adjudication.decisions[3]
     assert maze.boundary_type == "maze-revision-unintelligible"
     assert maze.excluded_maze == "Uh, wa"
     assert maze.needs_human_review is True
+
+    assert all(
+        decision.cunit_count
+        == len(decision.cunit_ids)
+        == len(decision.cunit_texts)
+        for decision in adjudication.decisions
+    )
+
+
+def test_cunit_coordination_uses_first_exact_match_and_rejects_empty_unit() -> None:
+    from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
+
+    events = extract_descript_events(
+        """
+        [00:00:00] P: I moved BUT She stayed and he left.
+        [00:00:03] P: And I moved the cup.
+        """,
+        source_filename="coordination_fixture.txt",
+    )
+
+    adjudication = adjudicate_cunit_boundaries(events)
+
+    first, leading = adjudication.decisions
+    assert first.cunit_texts == [
+        "I moved",
+        "BUT She stayed and he left.",
+    ]
+    assert first.cunit_count == 2
+    assert leading.boundary_type == "coordination-split"
+    assert leading.decision == "needs-review"
+    assert leading.cunit_count == 0
+    assert leading.cunit_ids == []
+    assert leading.cunit_texts == []
+    assert leading.needs_human_review is True
 
 
 def test_semantic_cunit_adjudicator_counts_nominal_subject_clauses() -> None:
@@ -302,6 +347,7 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     tmp_path: Path,
 ) -> None:
     from backend.segmentation.pipeline import SegmentationRunStore
+    from backend.storage.evidence_target_registry import EvidenceTargetRegistry
 
     store = SegmentationRunStore(tmp_path)
     run = store.create_run(
@@ -326,6 +372,7 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     assert run.source_id.startswith("src_")
     assert len(run.transcript_sha256) == 64
     assert run.transcript_revision_id.startswith("trv_")
+    assert run.evidence_set_id.startswith("evs_")
     assert all(event.passage_id.startswith("psg_") for event in run.events)
     assert run.merged_draft.startswith("Researcher-provided transcript: session")
     assert [packet.specialist_id for packet in run.rule_plan] == [
@@ -352,6 +399,22 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
 
     assert loaded.run_id == run.run_id
     assert loaded.status == run.status
+    assert loaded.evidence_set_id == run.evidence_set_id
+    first_decision = run.cunit_adjudication.decisions[0]
+    resolved = EvidenceTargetRegistry(tmp_path).resolve(
+        run.workspace_id,
+        run.project_source_id,
+        run.transcript_revision_id,
+        run.evidence_set_id,
+        run.events[0].passage_id,
+        first_decision.cunit_ids[0],
+    )
+    assert resolved.target_kind == "cunit"
+    assert resolved.text == first_decision.cunit_texts[0]
+    assert resolved.producer_kind == "cunit_segmentation"
+    assert resolved.producer_version == 1
+    assert resolved.producer_status == "verified"
+    assert resolved.review_status == "not_domain_validated"
 
     repeated = store.create_run(
         source_filename="renamed-session.txt",
@@ -378,6 +441,113 @@ def test_rule_specialist_pipeline_plans_patches_merges_and_verifies(
     ] == [
         decision.cunit_ids for decision in run.cunit_adjudication.decisions
     ]
+
+
+def test_segmentation_store_enforces_expected_workspace_before_mutation(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import (
+        PatchOperation,
+        SegmentationRunStore,
+        SegmentationSnapshotConflict,
+    )
+    from backend.storage.segmentation_operation_store import (
+        SegmentationOperationStore,
+    )
+
+    store = SegmentationRunStore(tmp_path)
+    owned = store.create_run(
+        source_filename="owned.txt",
+        descript_text="[00:00:00] P: Owned evidence.",
+        rule_ids=["speaker-markers"],
+        workspace_id="study-owned",
+    )
+    foreign = store.create_run(
+        source_filename="foreign.txt",
+        descript_text="[00:00:00] P: Foreign evidence.",
+        rule_ids=["speaker-markers"],
+        workspace_id="study-foreign",
+    )
+    owned_path = tmp_path / "segmentation_runs" / f"{owned.run_id}.json"
+    before_bytes = owned_path.read_bytes()
+    before_operations = SegmentationOperationStore(tmp_path).list_operations()
+
+    assert store.load_run(
+        owned.run_id,
+        expected_workspace_id="study-owned",
+    ) == owned
+    assert [
+        run.run_id
+        for run in store.list_runs(expected_workspace_id="study-owned")
+    ] == [owned.run_id]
+    assert foreign.run_id not in {
+        run.run_id
+        for run in store.list_runs(expected_workspace_id="study-owned")
+    }
+    with pytest.raises(SegmentationSnapshotConflict, match="another workspace"):
+        store.load_run(
+            owned.run_id,
+            expected_workspace_id="study-foreign",
+        )
+    with pytest.raises(SegmentationSnapshotConflict, match="another workspace"):
+        store.verify_run(
+            owned.run_id,
+            expected_workspace_id="study-foreign",
+        )
+    with pytest.raises(SegmentationSnapshotConflict, match="another workspace"):
+        store.apply_specialist_patches(
+            owned.run_id,
+            specialist_id="speaker_turn",
+            patches=[
+                PatchOperation(
+                    operation="event_line",
+                    event_index=0,
+                    text="P: Must not be written.",
+                    reason="wrong workspace",
+                )
+            ],
+            expected_workspace_id="study-foreign",
+        )
+
+    assert owned_path.read_bytes() == before_bytes
+    assert (
+        SegmentationOperationStore(tmp_path).list_operations()
+        == before_operations
+    )
+
+
+def test_segmentation_store_wraps_malformed_snapshot_as_conflict(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import (
+        SegmentationRunStore,
+        SegmentationSnapshotConflict,
+    )
+
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="malformed.txt",
+        descript_text="[00:00:00] P: Preserve this.",
+        rule_ids=["speaker-markers"],
+    )
+    run_path = tmp_path / "segmentation_runs" / f"{run.run_id}.json"
+    run_path.write_text('{"run_id": 1}', encoding="utf-8")
+
+    with pytest.raises(SegmentationSnapshotConflict, match="snapshot is invalid"):
+        store.load_run(run.run_id)
+
+    nested = store.create_run(
+        source_filename="malformed-nested.txt",
+        descript_text="[00:00:00] P: Preserve nested state.",
+        rule_ids=["speaker-markers"],
+    )
+    nested_path = tmp_path / "segmentation_runs" / f"{nested.run_id}.json"
+    nested_payload = json.loads(nested_path.read_text(encoding="utf-8"))
+    nested_payload["events"] = [1]
+    nested_path.write_text(json.dumps(nested_payload), encoding="utf-8")
+
+    with pytest.raises(SegmentationSnapshotConflict, match="snapshot is invalid"):
+        store.load_run(nested.run_id)
 
 
 def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) -> None:
@@ -413,6 +583,7 @@ def test_segmentation_run_store_lists_runs_and_writes_exports(tmp_path: Path) ->
     assert evidence["source_id"] == run.source_id
     assert evidence["transcript_sha256"] == run.transcript_sha256
     assert evidence["transcript_revision_id"] == run.transcript_revision_id
+    assert evidence["evidence_set_id"] == run.evidence_set_id
     assert evidence["cunit_adjudication"]["counted_cunit_count"] >= 1
     assert evidence["cunit_adjudication"]["decisions"][0]["boundary_type"]
     assert evidence["cunit_adjudication"]["decisions"][0]["passage_id"]
@@ -525,6 +696,11 @@ def test_segmentation_run_store_remerges_submitted_specialist_patches(
             "filled-pauses",
         ],
     )
+    original_timing_patches = next(
+        output.patches
+        for output in run.specialist_outputs
+        if output.specialist_id == "timing_pause"
+    )
 
     updated = store.apply_specialist_patches(
         run.run_id,
@@ -540,6 +716,7 @@ def test_segmentation_run_store_remerges_submitted_specialist_patches(
     )
 
     assert updated.status == "needs_rewrite"
+    assert updated.evidence_set_id == ""
     assert updated.source == "researcher_provided"
     assert "; :03" not in updated.merged_draft
     assert updated.failure_routes[0]["rule_id"] == "pause-markers"
@@ -554,11 +731,27 @@ def test_segmentation_run_store_remerges_submitted_specialist_patches(
     assert loaded.merged_draft == updated.merged_draft
     assert loaded.source == "researcher_provided"
 
+    repaired = store.apply_specialist_patches(
+        run.run_id,
+        specialist_id="timing_pause",
+        patches=original_timing_patches,
+    )
+    assert repaired.status == "verified"
+    assert repaired.cunit_adjudication.cunit_text_contract_version == 1
+    assert repaired.evidence_set_id == ""
+
+    reverified = store.verify_run(run.run_id)
+    assert reverified.evidence_set_id == run.evidence_set_id
+
 
 def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     tmp_path: Path,
 ) -> None:
-    from backend.segmentation.pipeline import SegmentationRunStore, _payload_sha256
+    from backend.segmentation.pipeline import (
+        PatchOperation,
+        SegmentationRunStore,
+        _payload_sha256,
+    )
     from backend.storage.segmentation_operation_store import SegmentationOperationStore
 
     store = SegmentationRunStore(tmp_path)
@@ -579,6 +772,7 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     payload.pop("source_id")
     payload.pop("transcript_sha256")
     payload.pop("transcript_revision_id")
+    payload.pop("evidence_set_id")
     for event in payload["events"]:
         event.pop("passage_id")
     payload["evaluation"]["score"] = 100
@@ -586,11 +780,13 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     payload["evaluation"].pop("passed_rule_count")
     payload["cunit_adjudication"].pop("validation_status")
     payload["cunit_adjudication"].pop("evidence_scope")
+    payload["cunit_adjudication"].pop("cunit_text_contract_version")
     for decision in payload["cunit_adjudication"]["decisions"]:
         decision["confidence"] = 0.82
         decision.pop("confidence_status")
         decision.pop("passage_id")
         decision.pop("cunit_ids")
+        decision.pop("cunit_texts")
     legacy_payload_sha256 = _payload_sha256(payload)
     run_path.write_text(json.dumps(payload), encoding="utf-8")
     (tmp_path / "segmentation.sqlite3").unlink()
@@ -611,12 +807,20 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     assert loaded.evaluation.configured_rule_count == 1
     assert loaded.evaluation.passed_rule_count == 1
     assert loaded.cunit_adjudication.validation_status == "not_domain_validated"
+    assert loaded.cunit_adjudication.cunit_text_contract_version == 0
+    assert loaded.evidence_set_id == ""
     assert all(
         decision.confidence_status == "not_calibrated"
         for decision in loaded.cunit_adjudication.decisions
     )
     assert all(
         decision.passage_id.startswith("psg_")
+        for decision in loaded.cunit_adjudication.decisions
+    )
+    assert all(
+        decision.cunit_count
+        == len(decision.cunit_ids)
+        == len(decision.cunit_texts)
         for decision in loaded.cunit_adjudication.decisions
     )
 
@@ -641,3 +845,146 @@ def test_segmentation_run_store_defaults_legacy_payloads_to_synthetic(
     assert rewritten["source_blob_sha256"] == ""
     assert rewritten["events"][0]["passage_id"]
     assert rewritten["cunit_adjudication"]["decisions"][0]["passage_id"]
+    assert rewritten["cunit_adjudication"]["cunit_text_contract_version"] == 0
+    assert rewritten["cunit_adjudication"]["decisions"][0]["cunit_texts"]
+    assert rewritten["evidence_set_id"] == ""
+
+    patched = store.apply_specialist_patches(
+        run.run_id,
+        specialist_id="speaker_turn",
+        patches=[
+            PatchOperation(
+                operation="event_line",
+                event_index=0,
+                text="P: Legacy compatibility greeting.",
+                reason="prove patch does not promote the text contract",
+            )
+        ],
+    )
+    assert patched.cunit_adjudication.cunit_text_contract_version == 0
+    assert patched.evidence_set_id == ""
+
+    verified = store.verify_run(run.run_id)
+    assert verified.cunit_adjudication.cunit_text_contract_version == 1
+    assert verified.evidence_set_id == ""
+
+
+def test_segmentation_explicit_verify_registers_current_legacy_snapshot(
+    tmp_path: Path,
+) -> None:
+    from backend.segmentation.pipeline import PatchOperation, SegmentationRunStore
+    from backend.storage.evidence_target_registry import EvidenceTargetRegistry
+
+    store = SegmentationRunStore(tmp_path)
+    created = store.create_run(
+        source_filename="pre-registry.txt",
+        descript_text="[00:00:00] P: Good morning.",
+        rule_ids=["speaker-markers"],
+    )
+    run_path = tmp_path / "segmentation_runs" / f"{created.run_id}.json"
+    payload = json.loads(run_path.read_text(encoding="utf-8"))
+    payload.pop("evidence_set_id")
+    run_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    compatible = store.load_run(created.run_id)
+    assert compatible.evidence_set_id == ""
+
+    patched = store.apply_specialist_patches(
+        created.run_id,
+        specialist_id="speaker_turn",
+        patches=[
+            PatchOperation(
+                operation="event_line",
+                event_index=0,
+                text="P: A current-lineage compatibility patch.",
+                reason="compatibility loading must not register targets",
+            )
+        ],
+    )
+    assert patched.status == "verified"
+    assert patched.cunit_adjudication.cunit_text_contract_version == 1
+    assert patched.evidence_set_id == ""
+
+    patched_again = store.apply_specialist_patches(
+        created.run_id,
+        specialist_id="speaker_turn",
+        patches=[
+            PatchOperation(
+                operation="event_line",
+                event_index=0,
+                text="P: A second current-lineage compatibility patch.",
+                reason="repeated patches must not create evidence provenance",
+            )
+        ],
+    )
+    assert patched_again.status == "verified"
+    assert patched_again.evidence_set_id == ""
+
+    verified = store.verify_run(created.run_id)
+    assert verified.evidence_set_id == created.evidence_set_id
+    resolved = EvidenceTargetRegistry(tmp_path).resolve(
+        verified.workspace_id,
+        verified.project_source_id,
+        verified.transcript_revision_id,
+        verified.evidence_set_id,
+        verified.events[0].passage_id,
+        verified.cunit_adjudication.decisions[0].cunit_ids[0],
+    )
+    assert resolved.text == verified.cunit_adjudication.decisions[0].cunit_texts[0]
+
+
+def test_segmentation_rejects_misaligned_version_one_cunit_targets(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from backend.segmentation.pipeline import (
+        SegmentationRunStore,
+        _segmentation_payload_sha256,
+        segmentation_run_from_payload,
+        segmentation_run_to_payload,
+    )
+
+    store = SegmentationRunStore(tmp_path)
+    run = store.create_run(
+        source_filename="target-contract.txt",
+        descript_text="[00:00:00] P: Good morning.",
+        rule_ids=["speaker-markers"],
+    )
+    decision = run.cunit_adjudication.decisions[0]
+    malformed_adjudication = replace(
+        run.cunit_adjudication,
+        decisions=[replace(decision, cunit_texts=[])],
+    )
+    malformed_run = replace(run, cunit_adjudication=malformed_adjudication)
+
+    with pytest.raises(ValueError, match="count, IDs, and canonical texts"):
+        store.persist_run(
+            malformed_run,
+            operation_kind="rewrite",
+            expected_previous_payload_sha256=_segmentation_payload_sha256(run),
+        )
+
+    payload = segmentation_run_to_payload(run)
+    payload["cunit_adjudication"]["decisions"][0].pop("cunit_texts")
+    with pytest.raises(ValueError, match="count, IDs, and canonical texts"):
+        segmentation_run_from_payload(payload)
+
+    invalid_id_payload = segmentation_run_to_payload(run)
+    invalid_id_payload["evidence_set_id"] = "evs_invalid"
+    with pytest.raises(ValueError, match="evidence_set_id is invalid"):
+        segmentation_run_from_payload(invalid_id_payload)
+
+    mismatched_id_payload = segmentation_run_to_payload(run)
+    mismatched_id_payload["evidence_set_id"] = f"evs_{'0' * 32}"
+    with pytest.raises(ValueError, match="does not match the current producer"):
+        segmentation_run_from_payload(mismatched_id_payload)
+
+    with pytest.raises(ValueError, match="does not match the current producer"):
+        store.persist_run(
+            replace(run, evidence_set_id=f"evs_{'0' * 32}"),
+            operation_kind="rewrite",
+            expected_previous_payload_sha256=_segmentation_payload_sha256(run),
+        )
+
+    assert store.load_run(run.run_id) == run

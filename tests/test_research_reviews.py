@@ -1,16 +1,21 @@
+import base64
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from hashlib import sha256
 
 import pytest
 
 import backend.qualitative.research_reviews as research_reviews_module
+from backend.qualitative.database import QualitativeProjectDatabase
 from backend.qualitative.research_reviews import (
     ResearchReviewService,
     ReviewConflictError,
     ReviewNotFoundError,
     ReviewValidationError,
 )
+from backend.storage.study_store import StudyWorkspaceStore
 from tests.test_qualitative_coding_references import (
     OWNER_ID,
     SECOND_ID,
@@ -47,6 +52,19 @@ def _suggestion_arguments(fixture, suffix: str, **overrides):
 def _coding_count(fixture) -> int:
     with sqlite3.connect(fixture.database.db_path) as connection:
         return int(connection.execute("select count(*) from coding_references").fetchone()[0])
+
+
+def _rewrite_cursor(cursor: str, rewrite) -> str:
+    padding = "=" * ((4 - len(cursor) % 4) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(cursor + padding))
+    rewrite(payload)
+    raw = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def test_researcher_registration_provenance_retry_and_bound_pagination(tmp_path):
@@ -407,3 +425,248 @@ def test_review_operations_never_overlap_study_and_workspace_locks_or_call_provi
     service.create_agent_suggestion(**_suggestion_arguments(fixture, "4"))
     service.validate_project_state()
     assert state == {"study": 0, "workspace": 0}
+
+
+def test_historical_result_requires_decision_before_tombstone(tmp_path):
+    fixture = _create_fixture(tmp_path)
+    service = ResearchReviewService(tmp_path, fixture.project_id)
+
+    later_suggestion = service.create_agent_suggestion(
+        **_suggestion_arguments(fixture, "5")
+    ).suggestion
+    later_reference = _create_reference(fixture)
+    service.append_reviewer_decision(
+        reviewer_decision_id=f"rvd_{'5' * 32}",
+        agent_suggestion_id=later_suggestion.agent_suggestion_id,
+        researcher_id=OWNER_ID,
+        expected_decision_number=0,
+        decision="accepted",
+        coding_reference_id=later_reference.coding_reference_id,
+    )
+    fixture.service.remove_reference(
+        researcher_id=OWNER_ID,
+        coding_reference_id=later_reference.coding_reference_id,
+    )
+    assert service.read_agent_suggestion(
+        later_suggestion.agent_suggestion_id
+    ).review_status == "accepted"
+
+    early_suggestion = service.create_agent_suggestion(
+        **_suggestion_arguments(fixture, "6")
+    ).suggestion
+    early_reference = _create_reference(fixture)
+    decision = service.append_reviewer_decision(
+        reviewer_decision_id=f"rvd_{'6' * 32}",
+        agent_suggestion_id=early_suggestion.agent_suggestion_id,
+        researcher_id=OWNER_ID,
+        expected_decision_number=0,
+        decision="accepted",
+        coding_reference_id=early_reference.coding_reference_id,
+    )
+    assert early_reference.created_at < decision.created_at
+    with sqlite3.connect(fixture.database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        connection.execute(
+            """
+            update coding_references set removed_by = ?, removed_at = ?
+            where coding_reference_id = ?
+            """,
+            (
+                OWNER_ID,
+                early_reference.created_at,
+                early_reference.coding_reference_id,
+            ),
+        )
+        connection.execute(
+            """
+            insert into qualitative_audit_events (
+              event_id, project_id, actor_id, event_type, subject_type,
+              subject_id, metadata_json, created_at
+            ) values (?, ?, ?, 'coding_reference.removed',
+                      'coding_reference', ?, '{}', ?)
+            """,
+            (
+                f"qae_{'6' * 32}",
+                fixture.project_id,
+                OWNER_ID,
+                early_reference.coding_reference_id,
+                early_reference.created_at,
+            ),
+        )
+    with pytest.raises(ReviewConflictError):
+        service.read_agent_suggestion(early_suggestion.agent_suggestion_id)
+
+
+def test_project_rejects_second_canonical_bootstrap_researcher(tmp_path):
+    fixture = _create_fixture(tmp_path)
+    service = ResearchReviewService(tmp_path, fixture.project_id)
+    with sqlite3.connect(fixture.database.db_path) as connection:
+        second_created_at = connection.execute(
+            "select created_at from researchers where researcher_id = ?",
+            (SECOND_ID,),
+        ).fetchone()[0]
+        digest = sha256(
+            f"{fixture.project_id}\0{SECOND_ID}".encode("utf-8")
+        ).hexdigest()
+        connection.execute(
+            """
+            insert into qualitative_audit_events (
+              event_id, project_id, actor_id, event_type, subject_type,
+              subject_id, metadata_json, created_at
+            ) values (?, ?, ?, 'qualitative.project.initialized',
+                      'project', ?, '{}', ?)
+            """,
+            (
+                f"qae_init_{digest[:32]}",
+                fixture.project_id,
+                SECOND_ID,
+                fixture.project_id,
+                second_created_at,
+            ),
+        )
+    with pytest.raises(ReviewConflictError):
+        service.read_researcher(OWNER_ID)
+    with pytest.raises(ReviewConflictError):
+        service.validate_project_state()
+
+
+def test_project_validation_requires_bootstrap_when_researchers_are_absent(tmp_path):
+    project_id = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Missing review bootstrap"}
+    ).id
+    database = QualitativeProjectDatabase(tmp_path, project_id)
+    database.initialize(
+        researcher_id=OWNER_ID,
+        researcher_name="Bootstrap Owner",
+    )
+    service = ResearchReviewService(tmp_path, project_id)
+    with sqlite3.connect(database.db_path) as connection:
+        trigger_sql = connection.execute(
+            """
+            select sql from sqlite_master
+            where type = 'trigger' and name = 'prevent_qualitative_audit_delete'
+            """
+        ).fetchone()[0]
+        connection.execute("drop trigger prevent_qualitative_audit_delete")
+        connection.execute("delete from qualitative_audit_events")
+        connection.execute("delete from researchers")
+        connection.execute(trigger_sql)
+
+    with pytest.raises(
+        ReviewConflictError,
+        match="bootstrap audit is missing",
+    ):
+        service.validate_project_state()
+
+
+def test_project_audit_validation_stops_at_second_candidate(tmp_path, monkeypatch):
+    fixture = _create_fixture(tmp_path)
+    service = ResearchReviewService(tmp_path, fixture.project_id)
+    suggestion = service.create_agent_suggestion(
+        **_suggestion_arguments(fixture, "7")
+    ).suggestion
+    original = service._audit_candidates_for_subject
+
+    def adversarial_candidates(connection, *, subject_id):
+        if subject_id != suggestion.agent_suggestion_id:
+            yield from original(connection, subject_id=subject_id)
+            return
+        candidate = next(original(connection, subject_id=subject_id))
+        yield candidate
+        yield candidate
+        raise AssertionError("audit candidates were materialized past the cap")
+
+    monkeypatch.setattr(
+        service,
+        "_audit_candidates_for_subject",
+        adversarial_candidates,
+    )
+    with pytest.raises(ReviewConflictError):
+        service.validate_project_state()
+
+
+def test_existing_decision_collision_precedes_missing_caller_dependencies(tmp_path):
+    fixture = _create_fixture(tmp_path)
+    service = ResearchReviewService(tmp_path, fixture.project_id)
+    suggestion = service.create_agent_suggestion(
+        **_suggestion_arguments(fixture, "8")
+    ).suggestion
+    decision_id = f"rvd_{'8' * 32}"
+    service.append_reviewer_decision(
+        reviewer_decision_id=decision_id,
+        agent_suggestion_id=suggestion.agent_suggestion_id,
+        researcher_id=OWNER_ID,
+        expected_decision_number=0,
+        decision="rejected",
+    )
+    with pytest.raises(ReviewConflictError):
+        service.append_reviewer_decision(
+            reviewer_decision_id=decision_id,
+            agent_suggestion_id=suggestion.agent_suggestion_id,
+            researcher_id="res_missing_collision_actor",
+            expected_decision_number=0,
+            decision="accepted",
+            coding_reference_id=f"cdr_{'8' * 32}",
+        )
+
+
+@pytest.mark.parametrize("timestamp_form", ("z", "space"))
+def test_cursor_rejects_noncanonical_parseable_utc_timestamp(
+    tmp_path,
+    timestamp_form,
+):
+    fixture = _create_fixture(tmp_path)
+    service = ResearchReviewService(tmp_path, fixture.project_id)
+    first = service.list_researchers(limit=1)
+    assert first.next_cursor is not None
+
+    def rewrite(payload):
+        timestamp = payload["after"]["created_at"]
+        if timestamp_form == "z":
+            payload["after"]["created_at"] = timestamp.removesuffix("+00:00") + "Z"
+        else:
+            payload["after"]["created_at"] = timestamp.replace("T", " ", 1)
+
+    malformed = _rewrite_cursor(first.next_cursor, rewrite)
+    with pytest.raises(ReviewValidationError):
+        service.list_researchers(limit=1, cursor=malformed)
+
+
+def test_stored_actor_absence_is_conflict_for_all_review_entities(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _create_fixture(tmp_path)
+    service = ResearchReviewService(tmp_path, fixture.project_id)
+    suggestion = service.create_agent_suggestion(
+        **_suggestion_arguments(fixture, "9", researcher_id=SECOND_ID)
+    ).suggestion
+    reference = _create_reference(fixture, researcher_id=SECOND_ID)
+    service.append_reviewer_decision(
+        reviewer_decision_id=f"rvd_{'9' * 32}",
+        agent_suggestion_id=suggestion.agent_suggestion_id,
+        researcher_id=SECOND_ID,
+        expected_decision_number=0,
+        decision="accepted",
+        coding_reference_id=reference.coding_reference_id,
+    )
+    with service._read() as connection:
+        decision_rows = tuple(
+            service._decision_record(row)
+            for row in connection.execute(
+                "select * from reviewer_decisions where agent_suggestion_id = ?",
+                (suggestion.agent_suggestion_id,),
+            )
+        )
+        coding_row = connection.execute(
+            "select * from coding_references where coding_reference_id = ?",
+            (reference.coding_reference_id,),
+        ).fetchone()
+        coding_record = service._coding_reference_record(coding_row)
+        monkeypatch.setattr(service, "_researcher_row", lambda *_args: None)
+        with pytest.raises(ReviewConflictError):
+            service._validate_suggestion_local(connection, suggestion)
+        with pytest.raises(ReviewConflictError):
+            service._validate_decision_chain(connection, suggestion, decision_rows)
+        with pytest.raises(ReviewConflictError):
+            service._validate_coding_reference_local(connection, coding_record)

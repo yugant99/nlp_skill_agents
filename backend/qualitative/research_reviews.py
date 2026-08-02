@@ -615,17 +615,17 @@ class ResearchReviewService:
                     )
             suggestion = self._require_suggestion(connection, suggestion_id)
             initial = self._load_suggestion_state(connection, suggestion)
-            self._require_researcher(connection, reviewer_id)
-            result = self._request_result_reference(
-                connection,
-                coding_reference_id=normalized_reference_id,
-            )
             mode = self._decision_mode(
                 initial,
                 reviewer_decision_id=decision_id,
                 reviewer_id=reviewer_id,
                 expected_decision_number=expected,
                 decision=normalized_decision,
+                coding_reference_id=normalized_reference_id,
+            )
+            self._require_researcher(connection, reviewer_id)
+            result = self._request_result_reference(
+                connection,
                 coding_reference_id=normalized_reference_id,
             )
             self._validate_decision_candidate(
@@ -798,6 +798,7 @@ class ResearchReviewService:
         external_targets: set[_ExternalTarget] = set()
         with self._read() as connection:
             self._require_project(connection)
+            self._require_canonical_bootstrap(connection)
             for row in connection.execute(
                 """
                 select * from researchers
@@ -841,6 +842,7 @@ class ResearchReviewService:
                     current_suggestion = self._require_suggestion(
                         connection,
                         decision_record.agent_suggestion_id,
+                        missing_is_not_found=False,
                     )
                     expected_number = 1
                     previous_at = _timestamp_instant(
@@ -857,6 +859,7 @@ class ResearchReviewService:
                 self._require_researcher(
                     connection,
                     decision_record.reviewed_by,
+                    missing_is_not_found=False,
                 )
                 self._validate_decision_audit(connection, decision_record)
                 result = self._request_result_reference(
@@ -1007,10 +1010,14 @@ class ResearchReviewService:
         self,
         connection: sqlite3.Connection,
         researcher_id: str,
+        *,
+        missing_is_not_found: bool = True,
     ) -> ResearcherRecord:
         row = self._researcher_row(connection, researcher_id)
         if row is None:
-            raise ReviewNotFoundError("Researcher not found")
+            if missing_is_not_found:
+                raise ReviewNotFoundError("Researcher not found")
+            raise ReviewConflictError("Stored researcher is unavailable")
         record = self._researcher_record_with_provenance(connection, row)
         if record.researcher_id != researcher_id:
             raise ReviewConflictError("Stored researcher identity is invalid")
@@ -1031,20 +1038,14 @@ class ResearchReviewService:
         connection: sqlite3.Connection,
         researcher: _ResearcherStorage,
     ) -> tuple[str, str | None]:
-        bootstrap_rows: list[sqlite3.Row] = []
-        registration_rows: list[sqlite3.Row] = []
+        bootstrap_actor_id = self._require_canonical_bootstrap(connection)
+        registration_row: sqlite3.Row | None = None
         for row in connection.execute(
             "select * from qualitative_audit_events order by event_id"
         ):
             event_marker = _normalized_marker(row["event_type"])
             subject_marker = _normalized_marker(row["subject_type"])
-            actor_marker = _normalized_marker(row["actor_id"])
             subject_id_marker = _normalized_marker(row["subject_id"])
-            if (
-                event_marker == "qualitative.project.initialized"
-                and actor_marker == researcher.researcher_id
-            ):
-                bootstrap_rows.append(row)
             if (
                 subject_id_marker == researcher.researcher_id
                 and (
@@ -1055,23 +1056,57 @@ class ResearchReviewService:
                     or _has_marker_prefix(row["subject_id"], "res_")
                 )
             ):
-                registration_rows.append(row)
+                if registration_row is not None:
+                    raise ReviewConflictError("Researcher provenance is ambiguous")
+                registration_row = row
 
-        if bootstrap_rows and registration_rows:
-            raise ReviewConflictError("Researcher provenance is ambiguous")
-        if len(bootstrap_rows) > 1 or len(registration_rows) > 1:
-            raise ReviewConflictError("Researcher provenance is ambiguous")
-        if bootstrap_rows:
-            self._validate_bootstrap_audit(bootstrap_rows[0], researcher)
+        if bootstrap_actor_id == researcher.researcher_id:
+            if registration_row is not None:
+                raise ReviewConflictError("Researcher provenance is ambiguous")
             return "bootstrap", researcher.researcher_id
-        if registration_rows:
+        if registration_row is not None:
             actor_id = self._validate_registration_audit(
                 connection,
-                registration_rows[0],
+                registration_row,
                 researcher,
             )
             return "registered", actor_id
         return "legacy_unverified", None
+
+    def _require_canonical_bootstrap(
+        self,
+        connection: sqlite3.Connection,
+    ) -> str:
+        bootstrap_row: sqlite3.Row | None = None
+        for row in connection.execute(
+            "select * from qualitative_audit_events order by event_id"
+        ):
+            if not (
+                _has_marker_prefix(row["event_type"], "qualitative.project.")
+                or (
+                    _normalized_marker(row["subject_type"]) == "project"
+                    and _normalized_marker(row["subject_id"]) == self.project_id
+                )
+            ):
+                continue
+            if bootstrap_row is not None:
+                raise ReviewConflictError(
+                    "Qualitative project bootstrap audit is ambiguous"
+                )
+            bootstrap_row = row
+        if bootstrap_row is None:
+            raise ReviewConflictError("Qualitative project bootstrap audit is missing")
+
+        actor_id = _stored_entity_id(
+            bootstrap_row["actor_id"],
+            "bootstrap actor_id",
+        )
+        actor_row = self._researcher_row(connection, actor_id)
+        if actor_row is None:
+            raise ReviewConflictError("Bootstrap researcher is unavailable")
+        actor = self._researcher_storage(actor_row)
+        self._validate_bootstrap_audit(bootstrap_row, actor)
+        return actor_id
 
     def _validate_bootstrap_audit(
         self,
@@ -1220,6 +1255,8 @@ class ResearchReviewService:
         self,
         connection: sqlite3.Connection,
         agent_suggestion_id: str,
+        *,
+        missing_is_not_found: bool = True,
     ) -> AgentSuggestionRecord:
         row = connection.execute(
             """
@@ -1229,7 +1266,9 @@ class ResearchReviewService:
             (self.project_id, agent_suggestion_id),
         ).fetchone()
         if row is None:
-            raise ReviewNotFoundError("Agent suggestion not found")
+            if missing_is_not_found:
+                raise ReviewNotFoundError("Agent suggestion not found")
+            raise ReviewConflictError("Stored agent suggestion is unavailable")
         return self._suggestion_record(row)
 
     def _suggestion_record(self, row: sqlite3.Row) -> AgentSuggestionRecord:
@@ -1286,22 +1325,22 @@ class ResearchReviewService:
         connection: sqlite3.Connection,
         suggestion: AgentSuggestionRecord,
     ) -> None:
-        self._require_researcher(connection, suggestion.created_by)
+        self._require_researcher(
+            connection,
+            suggestion.created_by,
+            missing_is_not_found=False,
+        )
         self._require_frozen_code(
             connection,
             codebook_version_id=suggestion.codebook_version_id,
             code_id=suggestion.code_id,
             missing_is_not_found=False,
         )
-        candidates = tuple(
-            self._audit_candidates_for_subject(
-                connection,
-                subject_id=suggestion.agent_suggestion_id,
-            )
+        row = self._require_single_audit_candidate(
+            connection,
+            subject_id=suggestion.agent_suggestion_id,
+            conflict_message="Suggestion audit history is invalid",
         )
-        if len(candidates) != 1:
-            raise ReviewConflictError("Suggestion audit history is invalid")
-        row = candidates[0]
         expected_metadata = _canonical_json(
             {"origin_kind": suggestion.origin_kind}
         )
@@ -1423,7 +1462,11 @@ class ResearchReviewService:
             if created_instant < previous_at:
                 raise ReviewConflictError("Stored decision chronology is invalid")
             previous_at = created_instant
-            self._require_researcher(connection, decision.reviewed_by)
+            self._require_researcher(
+                connection,
+                decision.reviewed_by,
+                missing_is_not_found=False,
+            )
             self._validate_decision_audit(connection, decision)
             result = self._request_result_reference(
                 connection,
@@ -1448,11 +1491,10 @@ class ResearchReviewService:
         connection: sqlite3.Connection,
         decision: ReviewerDecisionRecord,
     ) -> None:
-        candidates = tuple(
-            self._audit_candidates_for_subject(
-                connection,
-                subject_id=decision.reviewer_decision_id,
-            )
+        row = self._require_single_audit_candidate(
+            connection,
+            subject_id=decision.reviewer_decision_id,
+            conflict_message="Decision audit history is invalid",
         )
         expected_metadata = _canonical_json(
             {
@@ -1462,9 +1504,6 @@ class ResearchReviewService:
                 "decision_number": decision.decision_number,
             }
         )
-        if len(candidates) != 1:
-            raise ReviewConflictError("Decision audit history is invalid")
-        row = candidates[0]
         if (
             not _AUDIT_EVENT_ID.fullmatch(
                 _stored_text(row["event_id"], "audit event_id")
@@ -1604,15 +1643,17 @@ class ResearchReviewService:
             code_id=record.code_id,
             missing_is_not_found=False,
         )
-        self._require_researcher(connection, record.created_by)
-        if record.removed_by is not None:
-            self._require_researcher(connection, record.removed_by)
-        candidates = tuple(
-            self._audit_candidates_for_subject(
-                connection,
-                subject_id=record.coding_reference_id,
-            )
+        self._require_researcher(
+            connection,
+            record.created_by,
+            missing_is_not_found=False,
         )
+        if record.removed_by is not None:
+            self._require_researcher(
+                connection,
+                record.removed_by,
+                missing_is_not_found=False,
+            )
         expected: dict[str, tuple[str, str, str]] = {
             "coding_reference.created": (
                 record.created_by,
@@ -1634,7 +1675,10 @@ class ResearchReviewService:
                 "{}",
             )
         actual: dict[str, tuple[str, str, str]] = {}
-        for row in candidates:
+        for row in self._audit_candidates_for_subject(
+            connection,
+            subject_id=record.coding_reference_id,
+        ):
             event_id = _stored_text(row["event_id"], "audit event_id")
             event_type = _stored_text(row["event_type"], "audit event_type")
             if (
@@ -1645,6 +1689,7 @@ class ResearchReviewService:
                 != "coding_reference"
                 or _stored_text(row["subject_id"], "audit subject_id")
                 != record.coding_reference_id
+                or event_type not in expected
                 or event_type in actual
             ):
                 raise ReviewConflictError(
@@ -1780,6 +1825,13 @@ class ResearchReviewService:
             and result_created > _timestamp_instant(decision_created_at)
         ):
             raise ReviewConflictError("Decision result postdates the decision")
+        if (
+            decision_created_at is not None
+            and result.removed_at is not None
+            and _timestamp_instant(result.removed_at)
+            < _timestamp_instant(decision_created_at)
+        ):
+            raise ReviewConflictError("Decision postdates its result tombstone")
 
         suggestion_lineage = (
             suggestion.project_source_id,
@@ -1841,6 +1893,25 @@ class ResearchReviewService:
             # padded, or case-folded markers are candidates and must fail the
             # strict audit comparison instead of being skipped.
             yield row
+
+    def _require_single_audit_candidate(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        subject_id: str,
+        conflict_message: str,
+    ) -> sqlite3.Row:
+        candidate: sqlite3.Row | None = None
+        for row in self._audit_candidates_for_subject(
+            connection,
+            subject_id=subject_id,
+        ):
+            if candidate is not None:
+                raise ReviewConflictError(conflict_message)
+            candidate = row
+        if candidate is None:
+            raise ReviewConflictError(conflict_message)
+        return candidate
 
     def _append_audit(
         self,
@@ -2636,15 +2707,15 @@ def _input_cursor_timestamp(value: object) -> str:
         or value != value.strip()
     ):
         raise ReviewValidationError("cursor is invalid")
-    normalized = f"{value[:-1]}+00:00" if value.endswith("Z") else value
     try:
-        parsed = datetime.fromisoformat(normalized)
+        parsed = datetime.fromisoformat(value)
     except ValueError as exc:
         raise ReviewValidationError("cursor is invalid") from exc
     if (
         parsed.tzinfo is None
         or parsed.utcoffset() is None
         or parsed.utcoffset() != UTC.utcoffset(parsed)
+        or parsed.isoformat() != value
     ):
         raise ReviewValidationError("cursor is invalid")
     return value

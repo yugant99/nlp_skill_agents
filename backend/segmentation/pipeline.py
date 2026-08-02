@@ -15,7 +15,11 @@ from backend.evidence.identifiers import (
     source_import_identity,
     transcript_evidence_identity,
 )
-from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
+from backend.segmentation.adjudicator import (
+    CUNIT_TEXT_CONTRACT_VERSION,
+    adjudicate_cunit_boundaries,
+    validate_cunit_text_contract,
+)
 from backend.segmentation.corpus import generate_synthetic_corpus
 from backend.segmentation.descript import extract_descript_events
 from backend.segmentation.evaluator import evaluate_segmented_draft
@@ -31,6 +35,12 @@ from backend.segmentation.rulebook import SUPPORTED_RULE_IDS
 from backend.segmentation.synthetic import OFFICIAL_SOURCE_GUARD_TOKENS
 from backend.storage.atomic import atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.evidence_target_registry import (
+    EvidenceCUnitInput,
+    EvidencePassageInput,
+    EvidenceTargetRegistry,
+    PreparedEvidenceSet,
+)
 from backend.storage.segmentation_operation_store import (
     SEGMENTATION_OPERATION_KINDS,
     SegmentationOperationStore,
@@ -52,6 +62,7 @@ RULE_TO_SPECIALIST = {
 }
 
 SEGMENTATION_SOURCES = {"researcher_provided", "synthetic"}
+_EVIDENCE_SET_ID_PATTERN = re.compile(r"^evs_[0-9a-f]{32}$")
 
 
 class SegmentationSnapshotConflict(ValueError):
@@ -110,6 +121,7 @@ class SegmentationRun:
     evaluation: SegmentationEvaluation | None
     status: str
     failure_routes: list[dict[str, str]]
+    evidence_set_id: str = ""
     source: str = "researcher_provided"
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -299,8 +311,7 @@ class SegmentationRunStore:
         specialist_id: str,
         patches: list[PatchOperation],
     ) -> SegmentationRun:
-        run = self.load_run(run_id)
-        previous_payload_sha256 = _segmentation_payload_sha256(run)
+        run, previous_payload_sha256 = self._load_run_for_mutation(run_id)
         packet = next(
             (
                 packet
@@ -344,6 +355,12 @@ class SegmentationRunStore:
             forbidden_tokens=OFFICIAL_SOURCE_GUARD_TOKENS,
         )
         cunit_adjudication = adjudicate_cunit_boundaries(run.events)
+        if run.cunit_adjudication.cunit_text_contract_version == 0:
+            cunit_adjudication = replace(
+                cunit_adjudication,
+                cunit_text_contract_version=0,
+            )
+        status = _status_from_evaluation(evaluation, merge_evidence)
         updated_run = SegmentationRun(
             run_id=run.run_id,
             import_id=run.import_id,
@@ -365,8 +382,15 @@ class SegmentationRunStore:
             merge_evidence=merge_evidence,
             cunit_adjudication=cunit_adjudication,
             evaluation=evaluation,
-            status=_status_from_evaluation(evaluation, merge_evidence),
+            status=status,
             failure_routes=route_failures(evaluation.failures),
+            evidence_set_id=(
+                run.evidence_set_id
+                if status == "verified"
+                and cunit_adjudication.cunit_text_contract_version
+                == CUNIT_TEXT_CONTRACT_VERSION
+                else ""
+            ),
             source=run.source,
             created_at=run.created_at,
         )
@@ -377,13 +401,13 @@ class SegmentationRunStore:
         )
 
     def verify_run(self, run_id: str) -> SegmentationRun:
-        run = self.load_run(run_id)
-        previous_payload_sha256 = _segmentation_payload_sha256(run)
+        run, previous_payload_sha256 = self._load_run_for_mutation(run_id)
         evaluation = evaluate_segmented_draft(
             run.merged_draft,
             expected_rule_ids=run.rule_ids,
             forbidden_tokens=OFFICIAL_SOURCE_GUARD_TOKENS,
         )
+        status = _status_from_evaluation(evaluation, run.merge_evidence)
         updated = SegmentationRun(
             **{
                 **asdict(run),
@@ -393,8 +417,11 @@ class SegmentationRunStore:
                 "merge_evidence": run.merge_evidence,
                 "cunit_adjudication": adjudicate_cunit_boundaries(run.events),
                 "evaluation": evaluation,
-                "status": _status_from_evaluation(evaluation, run.merge_evidence),
+                "status": status,
                 "failure_routes": route_failures(evaluation.failures),
+                "evidence_set_id": (
+                    run.evidence_set_id if status == "verified" else ""
+                ),
             }
         )
         return self.persist_run(
@@ -411,6 +438,7 @@ class SegmentationRunStore:
         operation_kind: str,
         expected_previous_payload_sha256: str | None,
     ) -> SegmentationRun:
+        validate_cunit_text_contract(run.cunit_adjudication, run.events)
         run = replace(
             run,
             specialist_outputs=self._prepare_specialist_outputs(
@@ -418,8 +446,12 @@ class SegmentationRunStore:
                 run.specialist_outputs,
             ),
         )
-        payload_sha256 = _segmentation_payload_sha256(run)
         run_path = self.runs_dir / f"{run.run_id}.json"
+        run, prepared_evidence_set = self._prepare_evidence_target_set(
+            run,
+            operation_kind=operation_kind,
+        )
+        payload_sha256 = _segmentation_payload_sha256(run)
         previous_payload_sha256 = self._operation_previous_payload_sha256(
             operation_kind=operation_kind,
             expected_previous_payload_sha256=expected_previous_payload_sha256,
@@ -450,6 +482,14 @@ class SegmentationRunStore:
             journal.advance(operation_id, "source_blob_stored")
 
             EvidenceCatalog(self.root).record_import(_evidence_import_record(run))
+            if prepared_evidence_set is not None:
+                stored_evidence_set = EvidenceTargetRegistry(
+                    self.root
+                ).register_complete_set(prepared_evidence_set)
+                if stored_evidence_set.evidence_set_id != run.evidence_set_id:
+                    raise RuntimeError(
+                        "Registered evidence target set does not match the run"
+                    )
             journal.advance(operation_id, "evidence_cataloged")
 
             self._write_specialist_artifacts(
@@ -476,6 +516,44 @@ class SegmentationRunStore:
             raise
         return run
 
+    def _prepare_evidence_target_set(
+        self,
+        run: SegmentationRun,
+        *,
+        operation_kind: str,
+    ) -> tuple[SegmentationRun, PreparedEvidenceSet | None]:
+        _validate_evidence_set_id(run.evidence_set_id)
+        eligible = (
+            run.status == "verified"
+            and run.cunit_adjudication.cunit_text_contract_version
+            == CUNIT_TEXT_CONTRACT_VERSION
+            and _has_current_segmentation_lineage(run)
+        )
+        if run.evidence_set_id and not eligible:
+            raise ValueError(
+                "Only current verified C-unit segmentation can reference an evidence set"
+            )
+
+        should_prepare = eligible and (
+            operation_kind in {"create", "verify"}
+            or bool(run.evidence_set_id)
+        )
+        if not should_prepare:
+            return run, None
+
+        prepared = _prepare_segmentation_evidence_target_set(
+            EvidenceTargetRegistry(self.root),
+            run,
+        )
+        if (
+            run.evidence_set_id
+            and run.evidence_set_id != prepared.evidence_set_id
+        ):
+            raise ValueError(
+                "Segmentation evidence_set_id does not match the current producer"
+            )
+        return replace(run, evidence_set_id=prepared.evidence_set_id), prepared
+
     def persist_corpus_run(self, corpus_run: SegmentationCorpusRun) -> None:
         self.corpus_runs_dir.mkdir(parents=True, exist_ok=True)
         atomic_write_text(
@@ -490,6 +568,13 @@ class SegmentationRunStore:
         return segmentation_run_from_payload(
             json.loads(run_path.read_text(encoding="utf-8"))
         )
+
+    def _load_run_for_mutation(self, run_id: str) -> tuple[SegmentationRun, str]:
+        run_path = self.runs_dir / f"{run_id}.json"
+        if not run_path.exists():
+            raise FileNotFoundError(run_id)
+        payload = _read_segmentation_payload(run_path)
+        return segmentation_run_from_payload(payload), _payload_sha256(payload)
 
     def load_corpus_run(self, corpus_run_id: str) -> SegmentationCorpusRun:
         corpus_run_path = self.corpus_runs_dir / f"{corpus_run_id}.json"
@@ -619,7 +704,16 @@ class SegmentationRunStore:
         if not run_path.exists():
             raise FileNotFoundError(run.run_id)
         existing_payload = _read_segmentation_payload(run_path)
-        _validate_immutable_run_identity(existing_payload, run)
+        existing_run = _validate_immutable_run_identity(existing_payload, run)
+        if (
+            existing_run.cunit_adjudication.cunit_text_contract_version == 0
+            and run.cunit_adjudication.cunit_text_contract_version
+            == CUNIT_TEXT_CONTRACT_VERSION
+            and operation_kind != "verify"
+        ):
+            raise SegmentationSnapshotConflict(
+                "Only explicit verification can promote the C-unit text contract"
+            )
         stored_payload_sha256 = _payload_sha256(existing_payload)
         if expected_previous_payload_sha256 is None:
             raise ValueError(
@@ -830,7 +924,7 @@ def _segmentation_payload_sha256(run: SegmentationRun) -> str:
 def _validate_immutable_run_identity(
     existing_payload: dict[str, Any],
     target: SegmentationRun,
-) -> None:
+) -> SegmentationRun:
     try:
         existing = segmentation_run_from_payload(existing_payload)
     except (KeyError, TypeError, ValueError) as exc:
@@ -841,6 +935,7 @@ def _validate_immutable_run_identity(
         raise SegmentationSnapshotConflict(
             "Segmentation run identity conflicts with stored snapshot"
         )
+    return existing
 
 
 def _immutable_run_identity(run: SegmentationRun) -> tuple[str, ...]:
@@ -859,6 +954,72 @@ def _immutable_run_identity(run: SegmentationRun) -> tuple[str, ...]:
         run.descript_text,
         run.source,
         run.created_at,
+    )
+
+
+def _validate_evidence_set_id(value: object) -> str:
+    if type(value) is not str:
+        raise ValueError("Segmentation evidence_set_id must be a string")
+    if value and not _EVIDENCE_SET_ID_PATTERN.fullmatch(value):
+        raise ValueError("Segmentation evidence_set_id is invalid")
+    return value
+
+
+def _has_current_segmentation_lineage(run: SegmentationRun) -> bool:
+    return (
+        bool(run.import_id)
+        and not run.import_id.startswith("imp_legacy_")
+        and bool(run.project_source_id)
+        and not run.project_source_id.startswith("psrc_legacy_")
+        and run.workspace_id != "legacy"
+        and bool(run.source_blob_sha256)
+        and run.source_media_type != "unknown"
+    )
+
+
+def _prepare_segmentation_evidence_target_set(
+    registry: EvidenceTargetRegistry,
+    run: SegmentationRun,
+) -> PreparedEvidenceSet:
+    return registry.prepare_complete_set(
+        import_id=run.import_id,
+        workspace_id=run.workspace_id,
+        project_source_id=run.project_source_id,
+        transcript_revision_id=run.transcript_revision_id,
+        transcript_text=run.descript_text,
+        producer_kind="cunit_segmentation",
+        producer_version=CUNIT_TEXT_CONTRACT_VERSION,
+        producer_status="verified",
+        review_status=run.cunit_adjudication.validation_status,
+        passages=tuple(
+            EvidencePassageInput(
+                passage_id=event.passage_id,
+                passage_ordinal=event_index,
+                role=event.speaker,
+                text=event.text,
+                cunits=tuple(
+                    EvidenceCUnitInput(
+                        cunit_id=cunit_id,
+                        cunit_ordinal=cunit_ordinal,
+                        text=cunit_text,
+                    )
+                    for cunit_ordinal, (cunit_id, cunit_text) in enumerate(
+                        zip(
+                            decision.cunit_ids,
+                            decision.cunit_texts,
+                            strict=True,
+                        )
+                    )
+                ),
+            )
+            for event_index, (event, decision) in enumerate(
+                zip(
+                    run.events,
+                    run.cunit_adjudication.decisions,
+                    strict=True,
+                )
+            )
+        ),
     )
 
 
@@ -883,7 +1044,7 @@ def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
         payload.get("events", []),
         transcript_revision_id=transcript_revision_id,
     )
-    return SegmentationRun(
+    run = SegmentationRun(
         run_id=str(payload["run_id"]),
         import_id=import_id,
         project_source_id=str(
@@ -960,9 +1121,31 @@ def segmentation_run_from_payload(payload: dict[str, Any]) -> SegmentationRun:
             }
             for route in payload.get("failure_routes", [])
         ],
+        evidence_set_id=_validate_evidence_set_id(
+            payload.get("evidence_set_id", "")
+        ),
         source=str(payload.get("source") or "synthetic"),
         created_at=str(payload.get("created_at") or datetime.now(UTC).isoformat()),
     )
+    if run.evidence_set_id and (
+        run.status != "verified"
+        or run.cunit_adjudication.cunit_text_contract_version
+        != CUNIT_TEXT_CONTRACT_VERSION
+        or not _has_current_segmentation_lineage(run)
+    ):
+        raise ValueError(
+            "Stored segmentation evidence_set_id is not eligible"
+        )
+    if run.evidence_set_id:
+        canonical_set = _prepare_segmentation_evidence_target_set(
+            EvidenceTargetRegistry(),
+            run,
+        )
+        if canonical_set.evidence_set_id != run.evidence_set_id:
+            raise ValueError(
+                "Stored segmentation evidence_set_id does not match the current producer"
+            )
+    return run
 
 
 def segmentation_corpus_run_from_payload(
@@ -1182,8 +1365,21 @@ def _adjudication_from_payload(
     transcript_revision_id: str,
 ) -> CUnitAdjudication:
     if not payload:
-        return adjudicate_cunit_boundaries(events)
-    return CUnitAdjudication(
+        return replace(
+            adjudicate_cunit_boundaries(events),
+            cunit_text_contract_version=0,
+        )
+    raw_contract_version = payload.get("cunit_text_contract_version", 0)
+    if type(raw_contract_version) is not int or raw_contract_version not in (
+        0,
+        CUNIT_TEXT_CONTRACT_VERSION,
+    ):
+        raise ValueError("Stored C-unit text contract version is invalid")
+    canonical_decisions = {
+        decision.event_index: decision
+        for decision in adjudicate_cunit_boundaries(events).decisions
+    }
+    adjudication = CUnitAdjudication(
         total_event_count=int(payload.get("total_event_count", 0)),
         participant_turn_count=int(payload.get("participant_turn_count", 0)),
         examiner_turn_count=int(payload.get("examiner_turn_count", 0)),
@@ -1198,6 +1394,10 @@ def _adjudication_from_payload(
                 decision,
                 events=events,
                 transcript_revision_id=transcript_revision_id,
+                cunit_text_contract_version=raw_contract_version,
+                canonical_decision=canonical_decisions.get(
+                    int(decision.get("event_index", 0))
+                ),
             )
             for decision in payload.get("decisions", [])
         ],
@@ -1208,7 +1408,10 @@ def _adjudication_from_payload(
             payload.get("evidence_scope")
             or "deterministic_heuristics_and_synthetic_fixtures"
         ),
+        cunit_text_contract_version=raw_contract_version,
     )
+    validate_cunit_text_contract(adjudication, events)
+    return adjudication
 
 
 def _events_from_payload(
@@ -1236,20 +1439,49 @@ def _boundary_decision_from_payload(
     *,
     events: list[RawTranscriptEvent],
     transcript_revision_id: str,
+    cunit_text_contract_version: int,
+    canonical_decision: CUnitBoundaryDecision | None,
 ) -> CUnitBoundaryDecision:
     event_index = int(payload.get("event_index", 0))
-    cunit_count = int(payload.get("cunit_count", 0))
+    raw_cunit_count = payload.get("cunit_count", 0)
+    if (
+        cunit_text_contract_version == CUNIT_TEXT_CONTRACT_VERSION
+        and type(raw_cunit_count) is not int
+    ):
+        raise ValueError("Stored C-unit count is invalid")
+    cunit_count = int(raw_cunit_count)
     passage_id = str(payload.get("passage_id") or "")
     if not passage_id and 0 <= event_index < len(events):
         passage_id = events[event_index].passage_id
     if not passage_id:
         passage_id = passage_evidence_id(transcript_revision_id, event_index)
-    cunit_ids = [str(value) for value in payload.get("cunit_ids", [])]
-    if not cunit_ids:
-        cunit_ids = [
-            cunit_evidence_id(passage_id, ordinal)
-            for ordinal in range(cunit_count)
-        ]
+    raw_cunit_ids = payload.get("cunit_ids", [])
+    raw_cunit_texts = payload.get("cunit_texts", [])
+    if cunit_text_contract_version == CUNIT_TEXT_CONTRACT_VERSION:
+        if (
+            not isinstance(raw_cunit_ids, list)
+            or any(type(value) is not str for value in raw_cunit_ids)
+            or not isinstance(raw_cunit_texts, list)
+            or any(type(value) is not str for value in raw_cunit_texts)
+        ):
+            raise ValueError("Stored C-unit target lists are invalid")
+        cunit_ids = list(raw_cunit_ids)
+        cunit_texts = list(raw_cunit_texts)
+    else:
+        cunit_ids = [str(value) for value in raw_cunit_ids]
+        cunit_texts = [str(value) for value in raw_cunit_texts]
+        if not cunit_ids:
+            cunit_ids = [
+                cunit_evidence_id(passage_id, ordinal)
+                for ordinal in range(cunit_count)
+            ]
+        if (
+            not cunit_texts
+            and canonical_decision is not None
+            and canonical_decision.passage_id == passage_id
+            and canonical_decision.cunit_count == cunit_count
+        ):
+            cunit_texts = list(canonical_decision.cunit_texts)
     return CUnitBoundaryDecision(
         event_index=event_index,
         speaker=str(payload.get("speaker") or ""),
@@ -1265,6 +1497,7 @@ def _boundary_decision_from_payload(
         evidence_terms=[str(term) for term in payload.get("evidence_terms", [])],
         passage_id=passage_id,
         cunit_ids=cunit_ids,
+        cunit_texts=cunit_texts,
     )
 
 

@@ -46,10 +46,11 @@ def test_qualitative_database_initializes_once_with_attributable_identity(
         tmp_path / "studies" / project_id / "qualitative.sqlite3"
     )
     assert [record["name"] for record in database.migration_status()] == [
-        "create-qualitative-core-contract"
+        "create-qualitative-core-contract",
+        "add-coding-reference-contract",
     ]
     with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 1
+        assert connection.execute("pragma user_version").fetchone()[0] == 2
         assert connection.execute("pragma foreign_key_check").fetchall() == []
         assert connection.execute(
             "select project_id from qualitative_projects"
@@ -348,7 +349,7 @@ def test_qualitative_schema_failure_rolls_back_partial_migration(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    study = StudyWorkspaceStore(tmp_path).create_study({"name": "Migration Study"})
+    _, baseline = _create_project(tmp_path)
 
     def fail_after_schema_change(connection: sqlite3.Connection) -> None:
         connection.execute("create table partial_qualitative_records (id text)")
@@ -358,17 +359,17 @@ def test_qualitative_schema_failure_rolls_back_partial_migration(
         qualitative_database,
         "QUALITATIVE_MIGRATIONS",
         (
-            qualitative_database.QUALITATIVE_MIGRATIONS[0],
-            Migration(2, "fail-after-schema-change", fail_after_schema_change),
+            *qualitative_database.QUALITATIVE_MIGRATIONS,
+            Migration(3, "fail-after-schema-change", fail_after_schema_change),
         ),
     )
-    database = QualitativeProjectDatabase(tmp_path, study.id)
+    database = QualitativeProjectDatabase(tmp_path, baseline.project_id)
 
-    with pytest.raises(SchemaCompatibilityError, match="migration 2"):
+    with pytest.raises(SchemaCompatibilityError, match="migration 3"):
         database.migration_status()
 
     with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 1
+        assert connection.execute("pragma user_version").fetchone()[0] == 2
         assert connection.execute(
             """
             select count(*) from sqlite_master
@@ -611,7 +612,7 @@ def test_qualitative_database_is_preserved_by_project_backup_restore(
     ProjectArchiveStore(restore_root).restore_archive(archive.archive_path)
     restored = QualitativeProjectDatabase(restore_root, project_id)
 
-    assert restored.migration_status()[-1]["version"] == 1
+    assert restored.migration_status()[-1]["version"] == 2
     with sqlite3.connect(restored.db_path) as connection:
         assert connection.execute(
             "select case_id, label from cases"
@@ -621,6 +622,7 @@ def test_qualitative_database_is_preserved_by_project_backup_restore(
 def test_qualitative_ids_use_known_entity_prefixes() -> None:
     assert new_qualitative_id("codebook").startswith("cbk_")
     assert new_qualitative_id("case").startswith("cas_")
+    assert new_qualitative_id("coding_reference").startswith("cdr_")
     assert new_qualitative_id("audit_event").startswith("qae_")
     with pytest.raises(ValueError, match="Unknown qualitative entity type"):
         new_qualitative_id("unknown")

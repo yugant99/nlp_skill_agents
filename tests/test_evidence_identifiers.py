@@ -1,5 +1,6 @@
 from backend.evidence.identifiers import (
     cunit_evidence_id,
+    evidence_set_id,
     passage_evidence_id,
     source_import_identity,
     transcript_evidence_identity,
@@ -67,3 +68,17 @@ def test_source_import_identity_hashes_original_blob_bytes() -> None:
         project_source_id=first.project_source_id,
     )
     assert revised.project_source_id == first.project_source_id
+
+
+def test_evidence_set_id_uses_full_validated_snapshot_digest() -> None:
+    digest = "a" * 64
+
+    assert evidence_set_id(digest) == f"evs_{'a' * 32}"
+
+    for invalid in ("a" * 63, "A" * 64, "g" * 64, ""):
+        try:
+            evidence_set_id(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid snapshot digest was accepted")

@@ -848,3 +848,71 @@ def test_segmentation_persistence_rechecks_snapshot_after_claiming_operation(
     assert "P: Concurrent update wins." in current.merged_draft
     assert "P: Good morning." not in current.merged_draft
     assert _segmentation_payload_sha256(current) != stale_hash
+
+
+def test_segmentation_evidence_registration_retries_before_catalog_stage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from backend.storage.evidence_target_registry import EvidenceTargetRegistry
+
+    store = SegmentationRunStore(tmp_path)
+    created = store.create_run(
+        source_filename="session.txt",
+        descript_text="[00:00:00] P: Good morning.",
+        rule_ids=["speaker-markers"],
+    )
+    patches = [
+        PatchOperation(
+            operation="event_line",
+            event_index=0,
+            text="P: Updated greeting.",
+            reason="evidence registration retry proof",
+        )
+    ]
+    original_register = EvidenceTargetRegistry.register_complete_set
+    registered_ids: list[str] = []
+
+    def register_then_interrupt(self, prepared):
+        stored = original_register(self, prepared)
+        registered_ids.append(stored.evidence_set_id)
+        raise InterruptedError("interrupt after durable evidence registration")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            EvidenceTargetRegistry,
+            "register_complete_set",
+            register_then_interrupt,
+        )
+        with pytest.raises(InterruptedError, match="durable evidence"):
+            store.apply_specialist_patches(
+                created.run_id,
+                specialist_id="speaker_turn",
+                patches=patches,
+            )
+
+    failed = next(
+        operation
+        for operation in SegmentationOperationStore(tmp_path).list_operations()
+        if operation["operation_kind"] == "patch"
+    )
+    assert failed["stage"] == "source_blob_stored"
+    assert failed["status"] == "failed"
+    assert failed["last_error_type"] == "InterruptedError"
+    assert registered_ids == [created.evidence_set_id]
+    assert store.load_run(created.run_id) == created
+
+    retried = store.apply_specialist_patches(
+        created.run_id,
+        specialist_id="speaker_turn",
+        patches=patches,
+    )
+    completed = next(
+        operation
+        for operation in SegmentationOperationStore(tmp_path).list_operations()
+        if operation["operation_kind"] == "patch"
+    )
+    assert retried.evidence_set_id == created.evidence_set_id
+    assert completed["status"] == "completed"
+    assert completed["stage"] == "completed"
+    assert completed["attempt_count"] == 2

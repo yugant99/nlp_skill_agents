@@ -152,11 +152,19 @@ catalog, target registry, evidence-text blob, and canonical identifier functions
 The adjacent study-scoped segmentation routes create the persisted evidence sets
 required for coding without exposing one study's runs through another study.
 
+The memo and annotation APIs now attach attributable, revisioned notes to an
+exact study, project source, case, frozen code, or evidence excerpt. Immutable
+revision history uses compare-and-append retries, one-way removal tombstones, and
+privacy-minimized atomic audit events. Strict reads revalidate local relations,
+canonical evidence targets, bounded UTF-8 content, pagination cursors, and audit
+pairing; format-2 backup and staged restore preserve every revision and reject
+tampered or incomplete note state before publication.
+
 These are backend/API Phase 1 services, not yet a researcher-facing codebook, case,
-or manual-coding workbench. Source selection, coding stripes, retrieval, undo,
-memos, annotations, search, and identity/role administration remain later slices.
-The existing JSON `StudySchema` and casebook CSV helpers continue unchanged until a
-separately reviewed migration is defined.
+manual-coding, or note-authoring workbench. Source selection, coding stripes,
+retrieval, undo, memo/annotation editing UI, search, and identity/role
+administration remain later slices. The existing JSON `StudySchema` and casebook
+CSV helpers continue unchanged until a separately reviewed migration is defined.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

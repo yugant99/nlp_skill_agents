@@ -12,7 +12,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from backend.analysis.diagnostics import analyze_transcript_quality
 from backend.analysis.pipeline import execute_analysis, metric_plugin_catalog
@@ -65,6 +65,12 @@ from backend.qualitative.coding_references import (
     CodingReferenceNotFoundError,
     CodingReferenceService,
     CodingReferenceValidationError,
+)
+from backend.qualitative.notes import (
+    NoteConflictError,
+    NoteNotFoundError,
+    NoteService,
+    NoteValidationError,
 )
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import SyntheticSegmentationCase
@@ -127,6 +133,8 @@ async def _content_safe_validation_error(
     path = request.url.path
     if path.startswith("/api/studies/") and (
         "/qualitative/coding-references" in path
+        or "/qualitative/memos" in path
+        or "/qualitative/annotations" in path
         or "/segmentation/runs" in path
     ):
         return JSONResponse(
@@ -155,6 +163,12 @@ _CASE_API_ERRORS = (
     SchemaCompatibilityError,
     StudyBatchOperationConflict,
     QualitativeDatabaseConflict,
+)
+
+_NOTE_API_ERRORS = (
+    NoteValidationError,
+    NoteNotFoundError,
+    NoteConflictError,
 )
 
 _STUDY_SEGMENTATION_CONFLICT_ERRORS = (
@@ -416,6 +430,129 @@ class CodingReferenceListQuery(BaseModel):
         if value == "false":
             return False
         raise ValueError("include_removed must be true or false")
+
+
+class _StrictNoteAPIModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class NoteStudyTargetRequest(_StrictNoteAPIModel):
+    kind: Literal["study"]
+
+
+class NoteSourceTargetRequest(_StrictNoteAPIModel):
+    kind: Literal["source"]
+    project_source_id: str
+
+
+class NoteCaseTargetRequest(_StrictNoteAPIModel):
+    kind: Literal["case"]
+    case_id: str
+
+
+class NoteCodeTargetRequest(_StrictNoteAPIModel):
+    kind: Literal["code"]
+    codebook_version_id: str
+    code_id: str
+
+
+class NoteExcerptTargetRequest(_StrictNoteAPIModel):
+    kind: Literal["excerpt"]
+    project_source_id: str
+    transcript_revision_id: str
+    evidence_set_id: str
+    excerpt_target_kind: Literal["passage", "cunit"]
+    passage_id: str
+    cunit_id: str | None = None
+    start_offset: Annotated[int, Field(strict=True)]
+    end_offset: Annotated[int, Field(strict=True)]
+
+    @model_validator(mode="after")
+    def validate_cunit_shape(self):
+        supplied_cunit = "cunit_id" in self.model_fields_set
+        if self.excerpt_target_kind == "passage" and supplied_cunit:
+            raise ValueError("Passage excerpt targets must omit cunit_id")
+        if self.excerpt_target_kind == "cunit" and (
+            not supplied_cunit or self.cunit_id is None
+        ):
+            raise ValueError("C-unit excerpt targets require cunit_id")
+        return self
+
+
+NoteTargetRequest = Annotated[
+    NoteStudyTargetRequest
+    | NoteSourceTargetRequest
+    | NoteCaseTargetRequest
+    | NoteCodeTargetRequest
+    | NoteExcerptTargetRequest,
+    Field(discriminator="kind"),
+]
+
+
+class MemoCreateRequest(_StrictNoteAPIModel):
+    researcher_id: str
+    title: str
+    body: str
+    target: NoteTargetRequest
+
+
+class AnnotationCreateRequest(_StrictNoteAPIModel):
+    researcher_id: str
+    body: str
+    target: NoteTargetRequest
+
+
+class MemoRevisionRequest(_StrictNoteAPIModel):
+    researcher_id: str
+    expected_revision_number: Annotated[int, Field(strict=True)]
+    title: str
+    body: str
+
+
+class AnnotationRevisionRequest(_StrictNoteAPIModel):
+    researcher_id: str
+    expected_revision_number: Annotated[int, Field(strict=True)]
+    body: str
+
+
+class NoteRemoveRequest(_StrictNoteAPIModel):
+    researcher_id: str
+
+
+class NoteListQuery(_StrictNoteAPIModel):
+    target_kind: Literal["study", "source", "case", "code", "excerpt"] | None = (
+        None
+    )
+    created_by: str | None = None
+    include_removed: bool = False
+    limit: int = 20
+    cursor: str | None = None
+
+    @field_validator("include_removed", mode="before")
+    @classmethod
+    def validate_include_removed(cls, value: object) -> bool:
+        if type(value) is bool:
+            return value
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        raise ValueError("include_removed must be true or false")
+
+    @field_validator("limit", mode="before")
+    @classmethod
+    def validate_limit(cls, value: object) -> int:
+        return _canonical_note_page_limit(value)
+
+
+class NoteRevisionListQuery(_StrictNoteAPIModel):
+    limit: int = 20
+    cursor: str | None = None
+
+    @field_validator("limit", mode="before")
+    @classmethod
+    def validate_limit(cls, value: object) -> int:
+        return _canonical_note_page_limit(value)
 
 
 class LibraryApprovalRequest(BaseModel):
@@ -1238,6 +1375,270 @@ def remove_qualitative_coding_reference(
     ) as exc:
         _raise_coding_reference_http_error(exc)
     return {"coding_reference": _coding_reference_payload(coding_reference)}
+
+
+@app.post("/api/studies/{study_id}/qualitative/memos")
+def create_qualitative_memo(
+    study_id: str,
+    request: MemoCreateRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshot = NoteService(root, study_id).create_note(
+            note_kind="memo",
+            researcher_id=request.researcher_id,
+            title=request.title,
+            body=request.body,
+            target=request.target.model_dump(exclude_none=True),
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {"memo": _note_snapshot_payload(snapshot)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/memos")
+def list_qualitative_memos(
+    study_id: str,
+    raw_request: Request,
+    query: Annotated[NoteListQuery, Query()],
+) -> dict:
+    _reject_repeated_query_parameters(
+        raw_request,
+        {"target_kind", "created_by", "include_removed", "limit", "cursor"},
+    )
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshots, next_cursor = NoteService(root, study_id).list_notes(
+            note_kind="memo",
+            **query.model_dump(),
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {
+        "memos": [_note_snapshot_payload(snapshot) for snapshot in snapshots],
+        "next_cursor": next_cursor,
+    }
+
+
+@app.get("/api/studies/{study_id}/qualitative/memos/{memo_id}")
+def get_qualitative_memo(study_id: str, memo_id: str) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshot = NoteService(root, study_id).read_note(
+            note_kind="memo",
+            note_id=memo_id,
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {"memo": _note_snapshot_payload(snapshot)}
+
+
+@app.post(
+    "/api/studies/{study_id}/qualitative/memos/{memo_id}/revisions"
+)
+def revise_qualitative_memo(
+    study_id: str,
+    memo_id: str,
+    request: MemoRevisionRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshot = NoteService(root, study_id).revise_note(
+            note_kind="memo",
+            note_id=memo_id,
+            researcher_id=request.researcher_id,
+            expected_revision_number=request.expected_revision_number,
+            title=request.title,
+            body=request.body,
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {"memo": _note_snapshot_payload(snapshot)}
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/memos/{memo_id}/revisions"
+)
+def list_qualitative_memo_revisions(
+    study_id: str,
+    memo_id: str,
+    raw_request: Request,
+    query: Annotated[NoteRevisionListQuery, Query()],
+) -> dict:
+    _reject_repeated_query_parameters(raw_request, {"limit", "cursor"})
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        revisions, next_cursor = NoteService(root, study_id).list_revisions(
+            note_kind="memo",
+            note_id=memo_id,
+            **query.model_dump(),
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {
+        "revisions": [_note_revision_payload(revision) for revision in revisions],
+        "next_cursor": next_cursor,
+    }
+
+
+@app.delete("/api/studies/{study_id}/qualitative/memos/{memo_id}")
+def remove_qualitative_memo(
+    study_id: str,
+    memo_id: str,
+    request: NoteRemoveRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshot = NoteService(root, study_id).remove_note(
+            note_kind="memo",
+            note_id=memo_id,
+            researcher_id=request.researcher_id,
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {"memo": _note_snapshot_payload(snapshot)}
+
+
+@app.post("/api/studies/{study_id}/qualitative/annotations")
+def create_qualitative_annotation(
+    study_id: str,
+    request: AnnotationCreateRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshot = NoteService(root, study_id).create_note(
+            note_kind="annotation",
+            researcher_id=request.researcher_id,
+            title="",
+            body=request.body,
+            target=request.target.model_dump(exclude_none=True),
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {"annotation": _note_snapshot_payload(snapshot)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/annotations")
+def list_qualitative_annotations(
+    study_id: str,
+    raw_request: Request,
+    query: Annotated[NoteListQuery, Query()],
+) -> dict:
+    _reject_repeated_query_parameters(
+        raw_request,
+        {"target_kind", "created_by", "include_removed", "limit", "cursor"},
+    )
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshots, next_cursor = NoteService(root, study_id).list_notes(
+            note_kind="annotation",
+            **query.model_dump(),
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {
+        "annotations": [
+            _note_snapshot_payload(snapshot) for snapshot in snapshots
+        ],
+        "next_cursor": next_cursor,
+    }
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/annotations/{annotation_id}"
+)
+def get_qualitative_annotation(study_id: str, annotation_id: str) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshot = NoteService(root, study_id).read_note(
+            note_kind="annotation",
+            note_id=annotation_id,
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {"annotation": _note_snapshot_payload(snapshot)}
+
+
+@app.post(
+    "/api/studies/{study_id}/qualitative/annotations/"
+    "{annotation_id}/revisions"
+)
+def revise_qualitative_annotation(
+    study_id: str,
+    annotation_id: str,
+    request: AnnotationRevisionRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshot = NoteService(root, study_id).revise_note(
+            note_kind="annotation",
+            note_id=annotation_id,
+            researcher_id=request.researcher_id,
+            expected_revision_number=request.expected_revision_number,
+            title="",
+            body=request.body,
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {"annotation": _note_snapshot_payload(snapshot)}
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/annotations/"
+    "{annotation_id}/revisions"
+)
+def list_qualitative_annotation_revisions(
+    study_id: str,
+    annotation_id: str,
+    raw_request: Request,
+    query: Annotated[NoteRevisionListQuery, Query()],
+) -> dict:
+    _reject_repeated_query_parameters(raw_request, {"limit", "cursor"})
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        revisions, next_cursor = NoteService(root, study_id).list_revisions(
+            note_kind="annotation",
+            note_id=annotation_id,
+            **query.model_dump(),
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {
+        "revisions": [_note_revision_payload(revision) for revision in revisions],
+        "next_cursor": next_cursor,
+    }
+
+
+@app.delete(
+    "/api/studies/{study_id}/qualitative/annotations/{annotation_id}"
+)
+def remove_qualitative_annotation(
+    study_id: str,
+    annotation_id: str,
+    request: NoteRemoveRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        snapshot = NoteService(root, study_id).remove_note(
+            note_kind="annotation",
+            note_id=annotation_id,
+            researcher_id=request.researcher_id,
+        )
+    except _NOTE_API_ERRORS as exc:
+        _raise_note_http_error(exc)
+    return {"annotation": _note_snapshot_payload(snapshot)}
 
 
 @app.post("/api/studies/{study_id}/qualitative/cases")
@@ -2288,6 +2689,40 @@ def _raise_coding_reference_http_error(exc: Exception) -> NoReturn:
     ) from exc
 
 
+def _raise_note_http_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, NoteValidationError):
+        raise HTTPException(
+            status_code=400,
+            detail="Note request is invalid",
+        ) from exc
+    if isinstance(exc, NoteNotFoundError):
+        raise HTTPException(
+            status_code=404,
+            detail="Note dependency was not found",
+        ) from exc
+    raise HTTPException(
+        status_code=409,
+        detail="Note state conflicts with stored data",
+    ) from exc
+
+
+def _canonical_note_page_limit(value: object) -> int:
+    if type(value) is int:
+        parsed = value
+    elif (
+        isinstance(value, str)
+        and value.isascii()
+        and value.isdecimal()
+        and (value == "0" or not value.startswith("0"))
+    ):
+        parsed = int(value)
+    else:
+        raise ValueError("limit must be a canonical ASCII decimal")
+    if not 1 <= parsed <= 50:
+        raise ValueError("limit must be between 1 and 50")
+    return parsed
+
+
 def _reject_repeated_query_parameters(
     request: Request,
     parameter_names: set[str],
@@ -2320,6 +2755,69 @@ def _coding_reference_payload(coding_reference) -> dict:
         "created_at": coding_reference.created_at,
         "removed_by": coding_reference.removed_by,
         "removed_at": coding_reference.removed_at,
+    }
+
+
+def _note_target_payload(target) -> dict:
+    if target.kind == "study":
+        return {"kind": "study"}
+    if target.kind == "source":
+        return {
+            "kind": "source",
+            "project_source_id": target.project_source_id,
+        }
+    if target.kind == "case":
+        return {"kind": "case", "case_id": target.case_id}
+    if target.kind == "code":
+        return {
+            "kind": "code",
+            "codebook_version_id": target.codebook_version_id,
+            "code_id": target.code_id,
+        }
+    payload = {
+        "kind": "excerpt",
+        "project_source_id": target.project_source_id,
+        "transcript_revision_id": target.transcript_revision_id,
+        "evidence_set_id": target.evidence_set_id,
+        "excerpt_target_kind": target.excerpt_target_kind,
+        "passage_id": target.passage_id,
+        "start_offset": target.start_offset,
+        "end_offset": target.end_offset,
+    }
+    if target.excerpt_target_kind == "cunit":
+        payload["cunit_id"] = target.cunit_id
+    return payload
+
+
+def _note_record_payload(note) -> dict:
+    return {
+        "note_id": note.note_id,
+        "note_kind": note.note_kind,
+        "project_id": note.project_id,
+        "target": _note_target_payload(note.target),
+        "created_by": note.created_by,
+        "created_at": note.created_at,
+        "removed_by": note.removed_by,
+        "removed_at": note.removed_at,
+    }
+
+
+def _note_revision_payload(revision) -> dict:
+    return {
+        "note_revision_id": revision.note_revision_id,
+        "note_id": revision.note_id,
+        "revision_number": revision.revision_number,
+        "title": revision.title,
+        "body": revision.body,
+        "created_by": revision.created_by,
+        "created_at": revision.created_at,
+    }
+
+
+def _note_snapshot_payload(snapshot) -> dict:
+    return {
+        "note": _note_record_payload(snapshot.note),
+        "current_revision": _note_revision_payload(snapshot.current_revision),
     }
 
 

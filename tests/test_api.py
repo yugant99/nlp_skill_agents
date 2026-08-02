@@ -10,6 +10,11 @@ from fastapi.testclient import TestClient
 
 from backend.app.main import app
 from backend.qualitative.coding_references import CodingReferenceConflictError
+from backend.qualitative.notes import (
+    NoteConflictError,
+    NoteNotFoundError,
+    NoteValidationError,
+)
 from backend.segmentation.pipeline import SegmentationRunStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.segmentation_operation_store import SegmentationOperationStore
@@ -232,7 +237,7 @@ def test_qualitative_schema_status_reports_per_study_contract(
     assert response.json() == {
         "compatible": True,
         "project_id": study_id,
-        "current_version": 2,
+        "current_version": 3,
         "migrations": [
             {
                 "version": 1,
@@ -243,6 +248,11 @@ def test_qualitative_schema_status_reports_per_study_contract(
                 "version": 2,
                 "name": "add-coding-reference-contract",
                 "applied_at": response.json()["migrations"][1]["applied_at"],
+            },
+            {
+                "version": 3,
+                "name": "add-memo-annotation-contract",
+                "applied_at": response.json()["migrations"][2]["applied_at"],
             },
         ],
     }
@@ -285,7 +295,7 @@ def test_qualitative_schema_status_rejects_missing_or_newer_project(
 
     assert missing.status_code == 404
     assert newer.status_code == 409
-    assert "newer than supported version 2" in newer.json()["detail"]
+    assert "newer than supported version 3" in newer.json()["detail"]
     assert tampered.status_code == 409
     assert tampered.json()["detail"] == "Qualitative database is invalid"
 
@@ -1058,6 +1068,519 @@ def test_coding_reference_api_maps_domain_errors_without_private_details(
         "detail": "Coding reference state conflicts with stored data"
     }
     assert private_detail not in private_conflict.text
+
+
+def _assert_note_api_snapshot(
+    snapshot: dict,
+    *,
+    note_kind: str,
+    target: dict,
+    title: str,
+    body: str,
+) -> None:
+    assert set(snapshot) == {"note", "current_revision"}
+    note = snapshot["note"]
+    revision = snapshot["current_revision"]
+    assert set(note) == {
+        "note_id",
+        "note_kind",
+        "project_id",
+        "target",
+        "created_by",
+        "created_at",
+        "removed_by",
+        "removed_at",
+    }
+    assert set(revision) == {
+        "note_revision_id",
+        "note_id",
+        "revision_number",
+        "title",
+        "body",
+        "created_by",
+        "created_at",
+    }
+    assert note["note_kind"] == note_kind
+    assert note["target"] == target
+    assert revision["note_id"] == note["note_id"]
+    assert revision["title"] == title
+    assert revision["body"] == body
+
+
+def test_memo_annotation_api_all_routes_targets_and_pagination(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    fixture = _bootstrap_coding_reference_api(
+        client,
+        name="Memo Annotation Lifecycle API",
+    )
+    study_id = fixture["study_id"]
+    researcher_id = fixture["researcher_id"]
+    run = fixture["run"]
+    assert isinstance(study_id, str)
+    assert isinstance(researcher_id, str)
+    assert isinstance(run, dict)
+
+    cases_url = f"/api/studies/{study_id}/qualitative/cases"
+    case_response = client.post(
+        cases_url,
+        json={
+            "researcher_id": researcher_id,
+            "case_kind": "participant",
+            "label": "Memo participant",
+        },
+    )
+    assert case_response.status_code == 200
+    case_id = case_response.json()["case"]["case_id"]
+    event = run["events"][0]
+    decision = run["cunit_adjudication"]["decisions"][0]
+
+    targets = {
+        "study": {"kind": "study"},
+        "source": {
+            "kind": "source",
+            "project_source_id": run["project_source_id"],
+        },
+        "case": {"kind": "case", "case_id": case_id},
+        "code": {
+            "kind": "code",
+            "codebook_version_id": fixture["codebook_version_id"],
+            "code_id": fixture["code_id"],
+        },
+        "excerpt": {
+            "kind": "excerpt",
+            "project_source_id": run["project_source_id"],
+            "transcript_revision_id": run["transcript_revision_id"],
+            "evidence_set_id": run["evidence_set_id"],
+            "excerpt_target_kind": "passage",
+            "passage_id": event["passage_id"],
+            "start_offset": 0,
+            "end_offset": 1,
+        },
+    }
+    memo_base = f"/api/studies/{study_id}/qualitative/memos"
+    memo_snapshots: dict[str, dict] = {}
+    for target_kind, target in targets.items():
+        response = client.post(
+            memo_base,
+            json={
+                "researcher_id": researcher_id,
+                "title": f" {target_kind.title()} memo ",
+                "body": f"Exact {target_kind} memo body\n",
+                "target": target,
+            },
+        )
+        assert response.status_code == 200
+        assert set(response.json()) == {"memo"}
+        snapshot = response.json()["memo"]
+        _assert_note_api_snapshot(
+            snapshot,
+            note_kind="memo",
+            target=target,
+            title=f"{target_kind.title()} memo",
+            body=f"Exact {target_kind} memo body\n",
+        )
+        assert snapshot["note"]["note_id"].startswith("mem_")
+        assert snapshot["current_revision"]["revision_number"] == 1
+        memo_snapshots[target_kind] = snapshot
+
+    complete_list = client.get(memo_base)
+    assert complete_list.status_code == 200
+    assert set(complete_list.json()) == {"memos", "next_cursor"}
+    assert complete_list.json()["next_cursor"] is None
+    expected_ids = [
+        snapshot["note"]["note_id"]
+        for snapshot in complete_list.json()["memos"]
+    ]
+    assert set(expected_ids) == {
+        snapshot["note"]["note_id"] for snapshot in memo_snapshots.values()
+    }
+
+    paged_ids: list[str] = []
+    cursor = None
+    while True:
+        params = {"limit": "2"}
+        if cursor is not None:
+            params["cursor"] = cursor
+        page = client.get(memo_base, params=params)
+        assert page.status_code == 200
+        assert set(page.json()) == {"memos", "next_cursor"}
+        page_snapshots = page.json()["memos"]
+        assert 1 <= len(page_snapshots) <= 2
+        paged_ids.extend(item["note"]["note_id"] for item in page_snapshots)
+        next_cursor = page.json()["next_cursor"]
+        if next_cursor is None:
+            break
+        assert next_cursor == page_snapshots[-1]["note"]["note_id"]
+        cursor = next_cursor
+    assert paged_ids == expected_ids
+
+    code_filtered = client.get(memo_base, params={"target_kind": "code"})
+    actor_filtered = client.get(
+        memo_base,
+        params={"created_by": researcher_id},
+    )
+    assert [
+        item["note"]["note_id"] for item in code_filtered.json()["memos"]
+    ] == [memo_snapshots["code"]["note"]["note_id"]]
+    assert len(actor_filtered.json()["memos"]) == len(targets)
+
+    study_memo_id = memo_snapshots["study"]["note"]["note_id"]
+    memo_item_url = f"{memo_base}/{study_memo_id}"
+    fetched = client.get(memo_item_url)
+    assert fetched.status_code == 200
+    assert fetched.json() == {"memo": memo_snapshots["study"]}
+    revision_request = {
+        "researcher_id": researcher_id,
+        "expected_revision_number": 1,
+        "title": "Revised study memo",
+        "body": "Revised exact body",
+    }
+    revised = client.post(f"{memo_item_url}/revisions", json=revision_request)
+    retried = client.post(f"{memo_item_url}/revisions", json=revision_request)
+    assert revised.status_code == 200
+    assert retried.status_code == 200
+    assert retried.json() == revised.json()
+    assert revised.json()["memo"]["current_revision"]["revision_number"] == 2
+    assert client.get(memo_item_url).json() == revised.json()
+
+    first_history = client.get(
+        f"{memo_item_url}/revisions",
+        params={"limit": "1"},
+    )
+    assert first_history.status_code == 200
+    assert set(first_history.json()) == {"revisions", "next_cursor"}
+    assert [
+        revision["revision_number"]
+        for revision in first_history.json()["revisions"]
+    ] == [1]
+    assert first_history.json()["next_cursor"] == first_history.json()[
+        "revisions"
+    ][0]["note_revision_id"]
+    second_history = client.get(
+        f"{memo_item_url}/revisions",
+        params={
+            "limit": "1",
+            "cursor": first_history.json()["next_cursor"],
+        },
+    )
+    assert [
+        revision["revision_number"]
+        for revision in second_history.json()["revisions"]
+    ] == [2]
+    assert second_history.json()["next_cursor"] is None
+
+    removed = client.request(
+        "DELETE",
+        memo_item_url,
+        json={"researcher_id": researcher_id},
+    )
+    removed_retry = client.request(
+        "DELETE",
+        memo_item_url,
+        json={"researcher_id": researcher_id},
+    )
+    assert removed.status_code == 200
+    assert removed_retry.json() == removed.json()
+    assert removed.json()["memo"]["note"]["removed_by"] == researcher_id
+    assert study_memo_id not in {
+        item["note"]["note_id"] for item in client.get(memo_base).json()["memos"]
+    }
+    included = client.get(memo_base, params={"include_removed": "true"})
+    assert study_memo_id in {
+        item["note"]["note_id"] for item in included.json()["memos"]
+    }
+    assert client.get(memo_item_url).json() == removed.json()
+    assert client.get(f"{memo_item_url}/revisions").status_code == 200
+
+    annotation_base = f"/api/studies/{study_id}/qualitative/annotations"
+    annotation_target = {
+        "kind": "excerpt",
+        "project_source_id": run["project_source_id"],
+        "transcript_revision_id": run["transcript_revision_id"],
+        "evidence_set_id": run["evidence_set_id"],
+        "excerpt_target_kind": "cunit",
+        "passage_id": event["passage_id"],
+        "cunit_id": decision["cunit_ids"][0],
+        "start_offset": 0,
+        "end_offset": 1,
+    }
+    annotation_created = client.post(
+        annotation_base,
+        json={
+            "researcher_id": researcher_id,
+            "body": "Exact annotation body",
+            "target": annotation_target,
+        },
+    )
+    assert annotation_created.status_code == 200
+    assert set(annotation_created.json()) == {"annotation"}
+    annotation_snapshot = annotation_created.json()["annotation"]
+    _assert_note_api_snapshot(
+        annotation_snapshot,
+        note_kind="annotation",
+        target=annotation_target,
+        title="",
+        body="Exact annotation body",
+    )
+    annotation_id = annotation_snapshot["note"]["note_id"]
+    annotation_item_url = f"{annotation_base}/{annotation_id}"
+    assert client.get(
+        memo_base,
+        params={"cursor": annotation_id},
+    ).status_code == 404
+    assert client.get(
+        annotation_base,
+        params={"cursor": study_memo_id},
+    ).status_code == 404
+    annotation_list = client.get(annotation_base)
+    assert annotation_list.json() == {
+        "annotations": [annotation_snapshot],
+        "next_cursor": None,
+    }
+    assert client.get(annotation_item_url).json() == annotation_created.json()
+    annotation_revision = client.post(
+        f"{annotation_item_url}/revisions",
+        json={
+            "researcher_id": researcher_id,
+            "expected_revision_number": 1,
+            "body": "Revised annotation body",
+        },
+    )
+    assert annotation_revision.status_code == 200
+    assert annotation_revision.json()["annotation"]["current_revision"][
+        "title"
+    ] == ""
+    annotation_history = client.get(f"{annotation_item_url}/revisions")
+    assert set(annotation_history.json()) == {"revisions", "next_cursor"}
+    assert [
+        revision["revision_number"]
+        for revision in annotation_history.json()["revisions"]
+    ] == [1, 2]
+    annotation_removed = client.request(
+        "DELETE",
+        annotation_item_url,
+        json={"researcher_id": researcher_id},
+    )
+    assert annotation_removed.status_code == 200
+    assert annotation_removed.json()["annotation"]["note"]["removed_at"]
+
+
+def test_memo_annotation_api_strict_validation_queries_and_privacy(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id, researcher_id = _bootstrap_qualitative_project(
+        client,
+        name="Strict Memo Annotation API",
+    )
+    memo_base = f"/api/studies/{study_id}/qualitative/memos"
+    annotation_base = f"/api/studies/{study_id}/qualitative/annotations"
+    valid_request = {
+        "researcher_id": researcher_id,
+        "title": "Strict memo",
+        "body": "Strict body",
+        "target": {"kind": "study"},
+    }
+    created = client.post(memo_base, json=valid_request)
+    assert created.status_code == 200
+    memo_id = created.json()["memo"]["note"]["note_id"]
+    revision_url = f"{memo_base}/{memo_id}/revisions"
+
+    private_sentinel = "PRIVATE-NOTE /private/note/path SQL select secret"
+    structural_requests = [
+        {**valid_request, "private_extra": private_sentinel},
+        {**valid_request, "target": {"kind": "study", "case_id": "cas_bad"}},
+        {**valid_request, "target": {"kind": "unknown"}},
+        {
+            **valid_request,
+            "target": {
+                "kind": "excerpt",
+                "project_source_id": "psrc_private",
+                "transcript_revision_id": "trv_" + "1" * 32,
+                "evidence_set_id": "evs_" + "2" * 32,
+                "excerpt_target_kind": "passage",
+                "passage_id": "psg_" + "3" * 32,
+                "cunit_id": None,
+                "start_offset": 0,
+                "end_offset": 1,
+            },
+        },
+        {
+            **valid_request,
+            "target": {
+                "kind": "excerpt",
+                "project_source_id": "psrc_private",
+                "transcript_revision_id": "trv_" + "1" * 32,
+                "evidence_set_id": "evs_" + "2" * 32,
+                "excerpt_target_kind": "cunit",
+                "passage_id": "psg_" + "3" * 32,
+                "start_offset": 0,
+                "end_offset": 1,
+            },
+        },
+        {
+            **valid_request,
+            "target": {
+                "kind": "excerpt",
+                "project_source_id": "psrc_private",
+                "transcript_revision_id": "trv_" + "1" * 32,
+                "evidence_set_id": "evs_" + "2" * 32,
+                "excerpt_target_kind": "passage",
+                "passage_id": "psg_" + "3" * 32,
+                "start_offset": True,
+                "end_offset": 1,
+            },
+        },
+    ]
+    for request in structural_requests:
+        response = client.post(memo_base, json=request)
+        assert response.status_code == 422
+        assert response.json() == {"detail": "Request validation failed"}
+        assert private_sentinel not in response.text
+
+    annotation_with_title = client.post(
+        annotation_base,
+        json={
+            "researcher_id": researcher_id,
+            "title": private_sentinel,
+            "body": "Annotation body",
+            "target": {"kind": "study"},
+        },
+    )
+    annotation_revision_with_title = client.post(
+        f"{annotation_base}/{'ann_' + '0' * 32}/revisions",
+        json={
+            "researcher_id": researcher_id,
+            "expected_revision_number": 1,
+            "title": private_sentinel,
+            "body": "Annotation body",
+        },
+    )
+    malformed = client.post(
+        memo_base,
+        content='{"body":"' + private_sentinel,
+        headers={"content-type": "application/json"},
+    )
+    for response in (
+        annotation_with_title,
+        annotation_revision_with_title,
+        malformed,
+    ):
+        assert response.status_code == 422
+        assert response.json() == {"detail": "Request validation failed"}
+        assert private_sentinel not in response.text
+
+    for invalid_expected in (True, "1", 1.0):
+        response = client.post(
+            revision_url,
+            json={
+                "researcher_id": researcher_id,
+                "expected_revision_number": invalid_expected,
+                "title": "Revision",
+                "body": "Revision body",
+            },
+        )
+        assert response.status_code == 422
+        assert response.json() == {"detail": "Request validation failed"}
+
+    invalid_semantic_requests = [
+        {**valid_request, "body": "   \n\t"},
+        {**valid_request, "title": "x" * 513},
+        {**valid_request, "body": "x" * 262_145},
+    ]
+    for request in invalid_semantic_requests:
+        response = client.post(memo_base, json=request)
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Note request is invalid"}
+    invalid_revision_number = client.post(
+        revision_url,
+        json={
+            "researcher_id": researcher_id,
+            "expected_revision_number": 0,
+            "title": "Revision",
+            "body": "Revision body",
+        },
+    )
+    assert invalid_revision_number.status_code == 400
+    assert invalid_revision_number.json() == {"detail": "Note request is invalid"}
+
+    for invalid_limit in ("0", "00", "01", "+1", "1.0", "51", "true", "١"):
+        list_response = client.get(memo_base, params={"limit": invalid_limit})
+        history_response = client.get(
+            revision_url,
+            params={"limit": invalid_limit},
+        )
+        for response in (list_response, history_response):
+            assert response.status_code == 422
+            assert response.json() == {"detail": "Request validation failed"}
+    assert client.get(memo_base, params={"limit": "1"}).status_code == 200
+    assert client.get(memo_base, params={"limit": "50"}).status_code == 200
+
+    rejected_queries = [
+        client.get(f"{memo_base}?limit=1&limit=2"),
+        client.get(f"{memo_base}?target_kind=study&target_kind=case"),
+        client.get(memo_base, params={"include_removed": "TRUE"}),
+        client.get(memo_base, params={"target_kind": "unknown"}),
+        client.get(memo_base, params={"private_query": private_sentinel}),
+        client.get(f"{revision_url}?cursor=a&cursor=b"),
+        client.get(revision_url, params={"unknown": private_sentinel}),
+    ]
+    for response in rejected_queries:
+        assert response.status_code == 422
+        assert private_sentinel not in response.text
+
+    missing_cursor = client.get(
+        memo_base,
+        params={"cursor": "mem_" + "0" * 32},
+    )
+    assert missing_cursor.status_code == 404
+    assert missing_cursor.json() == {"detail": "Note dependency was not found"}
+    missing_study = client.get("/api/studies/missing/qualitative/memos")
+    assert missing_study.status_code == 404
+    assert missing_study.json() == {"detail": "Study not found"}
+
+
+@pytest.mark.parametrize(
+    ("error_type", "status_code", "detail"),
+    [
+        (NoteValidationError, 400, "Note request is invalid"),
+        (NoteNotFoundError, 404, "Note dependency was not found"),
+        (NoteConflictError, 409, "Note state conflicts with stored data"),
+    ],
+)
+def test_memo_annotation_api_maps_domain_errors_without_private_details(
+    tmp_path,
+    monkeypatch,
+    error_type,
+    status_code,
+    detail,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    study_id, _ = _bootstrap_qualitative_project(
+        client,
+        name=f"Note Error {status_code}",
+    )
+    private_detail = "PRIVATE-NOTE-CONTENT /private/note.sqlite SQL secret"
+
+    def reject_list(self, **kwargs):
+        raise error_type(private_detail)
+
+    monkeypatch.setattr(
+        "backend.app.main.NoteService.list_notes",
+        reject_list,
+    )
+    response = client.get(f"/api/studies/{study_id}/qualitative/memos")
+
+    assert response.status_code == status_code
+    assert response.json() == {"detail": detail}
+    assert private_detail not in response.text
 
 
 def test_case_attribute_api_happy_flow_and_exact_envelopes(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,6 +12,10 @@ from typing import BinaryIO
 _LOCKS_GUARD = Lock()
 _THREAD_LOCKS: dict[str, RLock] = {}
 _LOCK_STATE = local()
+
+
+class WorkspaceLockError(ValueError):
+    pass
 
 
 @contextmanager
@@ -37,7 +42,7 @@ def workspace_mutation_lock(root: Path | str) -> Iterator[None]:
             return
 
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_file = lock_path.open("a+b")
+        lock_file = _open_lock_file(lock_path)
         try:
             _acquire_process_lock(lock_file)
             held_locks[lock_key] = [1, lock_file]
@@ -48,6 +53,64 @@ def workspace_mutation_lock(root: Path | str) -> Iterator[None]:
                 _release_process_lock(lock_file)
         finally:
             lock_file.close()
+
+
+def _open_lock_file(lock_path: Path) -> BinaryIO:
+    if lock_path.exists() or lock_path.is_symlink():
+        try:
+            existing_mode = lock_path.lstat().st_mode
+        except OSError as exc:
+            raise WorkspaceLockError(
+                "Workspace mutation lock is unavailable"
+            ) from exc
+        if not stat.S_ISREG(existing_mode):
+            raise WorkspaceLockError(
+                "Workspace mutation lock must be a non-symlink regular file"
+            )
+
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_BINARY"):
+        flags |= os.O_BINARY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        try:
+            unsafe_mode = lock_path.lstat().st_mode
+        except OSError:
+            raise WorkspaceLockError(
+                "Workspace mutation lock is unavailable"
+            ) from exc
+        if not stat.S_ISREG(unsafe_mode):
+            raise WorkspaceLockError(
+                "Workspace mutation lock must be a non-symlink regular file"
+            ) from exc
+        raise WorkspaceLockError(
+            "Workspace mutation lock is unavailable"
+        ) from exc
+
+    try:
+        descriptor_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_stat.st_mode):
+            raise WorkspaceLockError(
+                "Workspace mutation lock must be a non-symlink regular file"
+            )
+        path_stat = lock_path.lstat()
+        if (
+            not stat.S_ISREG(path_stat.st_mode)
+            or path_stat.st_dev != descriptor_stat.st_dev
+            or path_stat.st_ino != descriptor_stat.st_ino
+        ):
+            raise WorkspaceLockError(
+                "Workspace mutation lock changed while it was opened"
+            )
+        return os.fdopen(descriptor, "r+b")
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def _acquire_process_lock(lock_file: BinaryIO) -> None:

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import backend.qualitative.coding_references as coding_references_module
 from backend.evidence.identifiers import (
     cunit_evidence_id,
     passage_evidence_id,
@@ -27,7 +28,10 @@ from backend.storage.evidence_target_registry import (
     EvidenceTargetRegistry,
 )
 from backend.storage.study_store import StudyWorkspaceStore
-from backend.storage.study_batch_operation_store import StudyBatchOperationConflict
+from backend.storage.study_batch_operation_store import (
+    StudyBatchOperationConflict,
+    StudyBatchOperationStore,
+)
 
 
 OWNER_ID = "res_coding_owner"
@@ -542,6 +546,93 @@ def test_storage_boundary_failures_use_the_coding_conflict_taxonomy(
         match="storage is unavailable or corrupt",
     ):
         fixture.service.read_reference(created.coding_reference_id)
+
+
+def test_coding_reference_runtime_never_nests_study_guard_under_workspace_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _create_fixture(tmp_path)
+    workspace_depth = 0
+    workspace_entries = 0
+    database_entries: list[tuple[str, int]] = []
+    study_guard_entries: list[int] = []
+    original_workspace_lock = coding_references_module.workspace_mutation_lock
+    original_transaction = QualitativeProjectDatabase.transaction
+    original_read = QualitativeProjectDatabase.read
+    original_study_guard = StudyBatchOperationStore.study_mutation_guard
+
+    @contextmanager
+    def tracked_workspace_lock(root):
+        nonlocal workspace_depth, workspace_entries
+        same_root = Path(root) == tmp_path
+        with original_workspace_lock(root):
+            if same_root:
+                workspace_depth += 1
+                workspace_entries += 1
+            try:
+                yield
+            finally:
+                if same_root:
+                    workspace_depth -= 1
+
+    @contextmanager
+    def tracked_transaction(database):
+        if database.root == tmp_path:
+            database_entries.append(("transaction", workspace_depth))
+            assert workspace_depth == 0
+        with original_transaction(database) as connection:
+            yield connection
+
+    @contextmanager
+    def tracked_read(database):
+        if database.root == tmp_path:
+            database_entries.append(("read", workspace_depth))
+            assert workspace_depth == 0
+        with original_read(database) as connection:
+            yield connection
+
+    @contextmanager
+    def tracked_study_guard(store):
+        if store.root == tmp_path:
+            study_guard_entries.append(workspace_depth)
+            assert workspace_depth == 0
+        with original_study_guard(store):
+            yield
+
+    monkeypatch.setattr(
+        coding_references_module,
+        "workspace_mutation_lock",
+        tracked_workspace_lock,
+    )
+    monkeypatch.setattr(
+        QualitativeProjectDatabase,
+        "transaction",
+        tracked_transaction,
+    )
+    monkeypatch.setattr(
+        QualitativeProjectDatabase,
+        "read",
+        tracked_read,
+    )
+    monkeypatch.setattr(
+        StudyBatchOperationStore,
+        "study_mutation_guard",
+        tracked_study_guard,
+    )
+
+    created = _create_reference(fixture)
+    assert fixture.service.read_reference(created.coding_reference_id) == created
+    assert fixture.service.list_references() == (created,)
+    fixture.service.validate_project_state()
+
+    assert workspace_entries >= 4
+    assert any(kind == "transaction" for kind, _ in database_entries)
+    assert sum(kind == "read" for kind, _ in database_entries) >= 3
+    assert all(depth == 0 for _, depth in database_entries)
+    assert study_guard_entries
+    assert all(depth == 0 for depth in study_guard_entries)
+    assert workspace_depth == 0
 
 
 def test_missing_foreign_and_inactive_researchers_cannot_code_or_remove(

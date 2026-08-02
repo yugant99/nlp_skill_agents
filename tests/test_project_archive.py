@@ -1,16 +1,32 @@
 import json
 import os
 import sqlite3
+import threading
+from contextlib import contextmanager
 from hashlib import sha256
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
+import backend.storage.project_archive as project_archive_module
+from backend.evidence.identifiers import (
+    cunit_evidence_id,
+    passage_evidence_id,
+    transcript_evidence_identity,
+)
 from backend.qualitative.cases import CaseService
+from backend.qualitative.codebooks import CodebookService
+from backend.qualitative.coding_references import CodingReferenceService
 from backend.qualitative.database import QualitativeProjectDatabase
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.evidence_target_registry import (
+    EvidenceCUnitInput,
+    EvidencePassageInput,
+    EvidenceTargetRegistry,
+)
+from backend.storage.evidence_text_blob_store import EvidenceTextBlobStore
 from backend.storage.project_archive import (
     ProjectArchiveConflict,
     ProjectArchiveError,
@@ -85,6 +101,144 @@ def _build_qualitative_archive(root: Path):
         project_source_id,
         exported,
     )
+
+
+def _add_cunit_evidence(root: Path, study_id: str):
+    transcript_text = "P: I came and I stayed."
+    passage_text = "I came and I stayed."
+    identity = transcript_evidence_identity(transcript_text)
+    source_digest = sha256(transcript_text.encode("utf-8")).hexdigest()
+    import_record = EvidenceImportRecord(
+        import_id="imp_archive_cunit",
+        run_id="run_archive_cunit",
+        pipeline="study_segmentation",
+        source_id=identity.source_id,
+        source_filename="cunit-session.txt",
+        source_media_type="text/plain",
+        source_blob_sha256=source_digest,
+        transcript_revision_id=identity.transcript_revision_id,
+        transcript_sha256=identity.transcript_sha256,
+        imported_at="2026-08-01T12:00:00+00:00",
+        project_source_id="psrc_archive_cunit",
+        workspace_id=study_id,
+    )
+    SourceBlobStore(root).store(transcript_text.encode("utf-8"), source_digest)
+    EvidenceCatalog(root).record_import(import_record)
+    passage_id = passage_evidence_id(identity.transcript_revision_id, 0)
+    cunit_ids = (
+        cunit_evidence_id(passage_id, 0),
+        cunit_evidence_id(passage_id, 1),
+    )
+    registry = EvidenceTargetRegistry(root)
+    prepared = registry.prepare_complete_set(
+        import_id=import_record.import_id,
+        workspace_id=study_id,
+        project_source_id=import_record.project_source_id,
+        transcript_revision_id=identity.transcript_revision_id,
+        transcript_text=transcript_text,
+        producer_kind="cunit_segmentation",
+        producer_version=1,
+        producer_status="verified",
+        review_status="not_domain_validated",
+        passages=(
+            EvidencePassageInput(
+                passage_id=passage_id,
+                passage_ordinal=0,
+                role="P",
+                text=passage_text,
+                cunits=(
+                    EvidenceCUnitInput(
+                        cunit_id=cunit_ids[0],
+                        cunit_ordinal=0,
+                        text="I came",
+                    ),
+                    EvidenceCUnitInput(
+                        cunit_id=cunit_ids[1],
+                        cunit_ordinal=1,
+                        text="and I stayed.",
+                    ),
+                ),
+            ),
+        ),
+    )
+    registry.register_complete_set(prepared)
+    return import_record, prepared, passage_id, cunit_ids
+
+
+def _build_coding_reference_archive(root: Path):
+    study_id, _ = _build_study(root)
+    import_record, prepared, passage_id, cunit_ids = _add_cunit_evidence(
+        root,
+        study_id,
+    )
+    researcher_id = "res_archive_coder"
+    QualitativeProjectDatabase(root, study_id).initialize(
+        researcher_id=researcher_id,
+        researcher_name="Archive Coder",
+    )
+    codebooks = CodebookService(root, study_id)
+    codebook = codebooks.create_codebook(
+        researcher_id=researcher_id,
+        title="Archive coding",
+    )
+    draft = codebooks.create_draft(
+        researcher_id=researcher_id,
+        codebook_id=codebook.codebook_id,
+    )
+    code = codebooks.add_code(
+        researcher_id=researcher_id,
+        codebook_id=codebook.codebook_id,
+        codebook_version_id=draft.version.codebook_version_id,
+        stable_code_key="arrival",
+        label="Arrival",
+    )
+    codebooks.freeze_version(
+        researcher_id=researcher_id,
+        codebook_id=codebook.codebook_id,
+        codebook_version_id=draft.version.codebook_version_id,
+    )
+    reference = CodingReferenceService(root, study_id).create_reference(
+        researcher_id=researcher_id,
+        project_source_id=import_record.project_source_id,
+        transcript_revision_id=import_record.transcript_revision_id,
+        evidence_set_id=prepared.evidence_set_id,
+        target_kind="cunit",
+        passage_id=passage_id,
+        cunit_id=cunit_ids[0],
+        start_offset=0,
+        end_offset=len("I came"),
+        codebook_version_id=draft.version.codebook_version_id,
+        code_id=code.code_id,
+    )
+    exported = ProjectArchiveStore(root).create_archive(study_id)
+    return study_id, import_record, prepared, reference, exported
+
+
+def _build_cunit_target_archive(root: Path):
+    study = StudyWorkspaceStore(root).create_study(
+        {"name": "Archive C-unit Target"}
+    )
+    import_record, prepared, passage_id, cunit_ids = _add_cunit_evidence(
+        root,
+        study.id,
+    )
+    exported = ProjectArchiveStore(root).create_archive(study.id)
+    return (
+        study.id,
+        import_record,
+        prepared,
+        passage_id,
+        cunit_ids,
+        exported,
+    )
+
+
+def _prepared_text_blob_sha256s(prepared) -> tuple[str, ...]:
+    digests = {prepared.transcript_text_sha256}
+    for passage in prepared.passages:
+        digests.add(passage.text_sha256)
+        digests.update(cunit.text_sha256 for cunit in passage.cunits)
+    return tuple(sorted(digests))
 
 
 def _rewrite_qualitative_database(
@@ -200,12 +354,77 @@ def _rewrite_archive_manifest(
             archive.writestr(name, content)
 
 
+def _remove_evidence_set_ids(value):
+    if isinstance(value, dict):
+        value.pop("evidence_set_id", None)
+        for item in value.values():
+            _remove_evidence_set_ids(item)
+    elif isinstance(value, list):
+        for item in value:
+            _remove_evidence_set_ids(item)
+
+
+def _rewrite_archive_as_v1(
+    archive_path: Path,
+    output_path: Path,
+    mutate=None,
+) -> None:
+    with ZipFile(archive_path) as archive:
+        members = {
+            name: archive.read(name)
+            for name in archive.namelist()
+            if name != "manifest.json"
+        }
+        manifest = json.loads(archive.read("manifest.json"))
+    members.pop("evidence/targets.json", None)
+    for name in list(members):
+        if name.startswith("evidence_text_blobs/"):
+            members.pop(name)
+        elif name.endswith(".json"):
+            payload = json.loads(members[name])
+            _remove_evidence_set_ids(payload)
+            members[name] = json.dumps(payload, sort_keys=True).encode("utf-8")
+    if mutate is not None:
+        mutate(members)
+    manifest["format_version"] = 1
+    manifest["members"] = [
+        {
+            "path": name,
+            "size_bytes": len(content),
+            "sha256": sha256(content).hexdigest(),
+        }
+        for name, content in sorted(members.items())
+    ]
+    with ZipFile(output_path, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "manifest.json",
+            json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
+        )
+        for name, content in sorted(members.items()):
+            archive.writestr(name, content)
+
+
 def _destination_files(root: Path) -> dict[str, bytes]:
     return {
         path.relative_to(root).as_posix(): path.read_bytes()
         for path in root.rglob("*")
         if path.is_file() and path.name != ".workspace-mutation.lock"
     }
+
+
+def _destination_tree(root: Path) -> dict[str, tuple[str, bytes | str | None]]:
+    if not root.exists() and not root.is_symlink():
+        return {}
+    tree: dict[str, tuple[str, bytes | str | None]] = {}
+    for path in (root, *sorted(root.rglob("*"))):
+        relative = "." if path == root else path.relative_to(root).as_posix()
+        if path.is_symlink():
+            tree[relative] = ("symlink", os.readlink(path))
+        elif path.is_dir():
+            tree[relative] = ("directory", None)
+        else:
+            tree[relative] = ("file", path.read_bytes())
+    return tree
 
 
 def test_project_archive_round_trips_study_evidence_and_source_blobs(tmp_path) -> None:
@@ -316,6 +535,425 @@ def test_project_archive_round_trips_qualitative_case_state(tmp_path: Path) -> N
     assert restored_snapshot == source_snapshot
     assert restored_value.value == 3
     assert restored_snapshot.project_source_ids == (project_source_id,)
+
+
+def test_project_archive_v2_round_trips_coding_reference_target_closure(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    (
+        study_id,
+        import_record,
+        prepared,
+        reference,
+        exported,
+    ) = _build_coding_reference_archive(source_root)
+
+    with ZipFile(exported.archive_path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        target_document = json.loads(archive.read("evidence/targets.json"))
+        text_members = {
+            name
+            for name in archive.namelist()
+            if name.startswith("evidence_text_blobs/")
+        }
+    assert manifest["format_version"] == 2
+    assert prepared.evidence_set_id in {
+        record["evidence_set_id"] for record in target_document["sets"]
+    }
+    assert {
+        f"evidence_text_blobs/{digest}.utf8"
+        for digest in _prepared_text_blob_sha256s(prepared)
+    }.issubset(text_members)
+
+    ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert CodingReferenceService(restore_root, study_id).read_reference(
+        reference.coding_reference_id
+    ) == reference
+    restored_target = EvidenceTargetRegistry(restore_root).resolve(
+        study_id,
+        import_record.project_source_id,
+        import_record.transcript_revision_id,
+        prepared.evidence_set_id,
+        reference.passage_id,
+        reference.cunit_id,
+    )
+    assert restored_target.text == "I came"
+    assert prepared.evidence_set_id in {
+        snapshot.evidence_set_id
+        for snapshot in EvidenceTargetRegistry(restore_root).workspace_snapshot(
+            study_id
+        )
+    }
+    for digest in _prepared_text_blob_sha256s(prepared):
+        assert EvidenceTextBlobStore(restore_root).read_verified(digest)
+
+
+def test_project_archive_concurrent_coding_write_is_attributably_atomic(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    (
+        study_id,
+        import_record,
+        prepared,
+        existing_reference,
+        _,
+    ) = _build_coding_reference_archive(source_root)
+    barrier = threading.Barrier(3)
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def create_archive() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results["archive"] = ProjectArchiveStore(source_root).create_archive(
+                study_id
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def create_reference() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results["reference"] = CodingReferenceService(
+                source_root,
+                study_id,
+            ).create_reference(
+                researcher_id=existing_reference.created_by,
+                project_source_id=import_record.project_source_id,
+                transcript_revision_id=import_record.transcript_revision_id,
+                evidence_set_id=prepared.evidence_set_id,
+                target_kind="passage",
+                passage_id=existing_reference.passage_id,
+                cunit_id="",
+                start_offset=0,
+                end_offset=len("I came"),
+                codebook_version_id=existing_reference.codebook_version_id,
+                code_id=existing_reference.code_id,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    archive_thread = threading.Thread(target=create_archive)
+    reference_thread = threading.Thread(target=create_reference)
+    archive_thread.start()
+    reference_thread.start()
+    barrier.wait(timeout=5)
+    archive_thread.join(timeout=15)
+    reference_thread.join(timeout=15)
+
+    assert not archive_thread.is_alive()
+    assert not reference_thread.is_alive()
+    assert errors == []
+    concurrent_reference = results["reference"]
+    exported = results["archive"]
+    database_copy = tmp_path / "concurrent-archive.sqlite3"
+    with ZipFile(exported.archive_path) as archive:
+        database_copy.write_bytes(archive.read("study/qualitative.sqlite3"))
+    with sqlite3.connect(database_copy) as connection:
+        coding_count = connection.execute(
+            """
+            select count(*) from coding_references
+            where coding_reference_id = ?
+            """,
+            (concurrent_reference.coding_reference_id,),
+        ).fetchone()[0]
+        audit_count = connection.execute(
+            """
+            select count(*) from qualitative_audit_events
+            where event_type = 'coding_reference.created'
+              and subject_id = ?
+            """,
+            (concurrent_reference.coding_reference_id,),
+        ).fetchone()[0]
+
+    assert (coding_count, audit_count) in {(0, 0), (1, 1)}
+
+
+def test_project_archive_enters_live_guards_before_destination_workspace_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source"
+    study_id, _, _, _, _ = _build_coding_reference_archive(source_root)
+    destination_lock_depth = 0
+    study_guard_entries: list[int] = []
+    qualitative_validation_roots: list[Path] = []
+    original_workspace_lock = project_archive_module.workspace_mutation_lock
+    original_archive_guard = StudyBatchOperationStore.archive_snapshot_guard
+    original_case_validation = CaseService.validate_project_state
+    original_coding_validation = CodingReferenceService.validate_project_state
+
+    @contextmanager
+    def tracked_workspace_lock(root):
+        nonlocal destination_lock_depth
+        is_destination = Path(root) == source_root
+        with original_workspace_lock(root):
+            if is_destination:
+                destination_lock_depth += 1
+            try:
+                yield
+            finally:
+                if is_destination:
+                    destination_lock_depth -= 1
+
+    @contextmanager
+    def tracked_archive_guard(store):
+        study_guard_entries.append(destination_lock_depth)
+        assert destination_lock_depth == 0
+        with original_archive_guard(store):
+            yield
+
+    def tracked_case_validation(service):
+        qualitative_validation_roots.append(service.root)
+        if destination_lock_depth:
+            assert service.root != source_root
+        return original_case_validation(service)
+
+    def tracked_coding_validation(service):
+        qualitative_validation_roots.append(service.root)
+        if destination_lock_depth:
+            assert service.root != source_root
+        return original_coding_validation(service)
+
+    monkeypatch.setattr(
+        project_archive_module,
+        "workspace_mutation_lock",
+        tracked_workspace_lock,
+    )
+    monkeypatch.setattr(
+        StudyBatchOperationStore,
+        "archive_snapshot_guard",
+        tracked_archive_guard,
+    )
+    monkeypatch.setattr(
+        CaseService,
+        "validate_project_state",
+        tracked_case_validation,
+    )
+    monkeypatch.setattr(
+        CodingReferenceService,
+        "validate_project_state",
+        tracked_coding_validation,
+    )
+
+    ProjectArchiveStore(source_root).create_archive(study_id)
+
+    assert study_guard_entries == [0]
+    assert qualitative_validation_roots
+    assert all(root != source_root for root in qualitative_validation_roots)
+    assert destination_lock_depth == 0
+
+
+@pytest.mark.parametrize("closure_kind", ["missing", "extra"])
+def test_project_archive_rejects_inexact_evidence_text_blob_closure(
+    tmp_path: Path,
+    closure_kind: str,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, prepared, _, _, exported = _build_cunit_target_archive(
+        source_root
+    )
+    forged_archive = tmp_path / f"{closure_kind}-text-closure.nlpstudy.zip"
+
+    def mutate(members):
+        if closure_kind == "missing":
+            digest = _prepared_text_blob_sha256s(prepared)[0]
+            members.pop(f"evidence_text_blobs/{digest}.utf8")
+        else:
+            content = b"unreferenced evidence text"
+            digest = sha256(content).hexdigest()
+            members[f"evidence_text_blobs/{digest}.utf8"] = content
+
+    _rewrite_archive_members(
+        exported.archive_path,
+        forged_archive,
+        mutate,
+    )
+
+    with pytest.raises(ProjectArchiveError, match="blob closure"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+@pytest.mark.parametrize(
+    ("fault_kind", "message"),
+    [
+        ("wrong_hash", "blob hash is invalid"),
+        ("invalid_utf8", "not valid UTF-8"),
+    ],
+)
+def test_project_archive_rejects_invalid_evidence_text_members(
+    tmp_path: Path,
+    fault_kind: str,
+    message: str,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, _, exported = _build_cunit_target_archive(source_root)
+    forged_archive = tmp_path / f"{fault_kind}-text-member.nlpstudy.zip"
+
+    def mutate(members):
+        document = json.loads(members["evidence/targets.json"])
+        cunit = document["sets"][0]["passages"][0]["cunits"][0]
+        original_digest = cunit["text_sha256"]
+        original_name = f"evidence_text_blobs/{original_digest}.utf8"
+        if fault_kind == "wrong_hash":
+            members[original_name] = b"different valid UTF-8 text"
+            return
+        invalid_content = b"\xff"
+        invalid_digest = sha256(invalid_content).hexdigest()
+        cunit["text_sha256"] = invalid_digest
+        members.pop(original_name)
+        members[f"evidence_text_blobs/{invalid_digest}.utf8"] = invalid_content
+        members["evidence/targets.json"] = json.dumps(
+            document,
+            sort_keys=True,
+        ).encode("utf-8")
+
+    _rewrite_archive_members(
+        exported.archive_path,
+        forged_archive,
+        mutate,
+    )
+
+    with pytest.raises(ProjectArchiveError, match=message):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+@pytest.mark.parametrize(
+    ("tamper_kind", "message"),
+    [
+        ("ownership", "belongs to another workspace"),
+        ("ordinal", "records are malformed"),
+        ("count", "identity is invalid"),
+        ("id", "identity is invalid"),
+    ],
+)
+def test_project_archive_rejects_rehashed_target_record_tampering(
+    tmp_path: Path,
+    tamper_kind: str,
+    message: str,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, _, exported = _build_cunit_target_archive(source_root)
+    forged_archive = tmp_path / f"{tamper_kind}-target-record.nlpstudy.zip"
+
+    def mutate(members):
+        document = json.loads(members["evidence/targets.json"])
+        record = document["sets"][0]
+        if tamper_kind == "ownership":
+            record["workspace_id"] = "foreign-workspace"
+        elif tamper_kind == "ordinal":
+            record["passages"][0]["passage_ordinal"] = 1
+        elif tamper_kind == "count":
+            record["cunit_count"] += 1
+        else:
+            record["evidence_set_id"] = (
+                "evs_0123456789abcdef0123456789abcdef"
+            )
+        members["evidence/targets.json"] = json.dumps(
+            document,
+            sort_keys=True,
+        ).encode("utf-8")
+
+    _rewrite_archive_members(
+        exported.archive_path,
+        forged_archive,
+        mutate,
+    )
+
+    with pytest.raises(ProjectArchiveError, match=message):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_rejects_self_consistent_noncanonical_cunit_targets(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    (
+        study_id,
+        _,
+        original,
+        _,
+        cunit_ids,
+        exported,
+    ) = _build_cunit_target_archive(source_root)
+    forged_archive = tmp_path / "producer-divergent-targets.nlpstudy.zip"
+
+    def mutate(members):
+        document = json.loads(members["evidence/targets.json"])
+        record = document["sets"][0]
+        passage_text = members[
+            f"evidence_text_blobs/{record['passages'][0]['text_sha256']}.utf8"
+        ].decode("utf-8")
+        passage_record = record["passages"][0]
+        passage_record["cunits"] = [
+            {
+                "cunit_id": cunit_ids[0],
+                "cunit_ordinal": 0,
+                "text_sha256": passage_record["text_sha256"],
+                "text_length": len(passage_text),
+            }
+        ]
+        record["cunit_count"] = 1
+        identity_manifest = {
+            key: value
+            for key, value in record.items()
+            if key not in {"evidence_set_id", "snapshot_sha256", "created_at"}
+        }
+        snapshot_sha256 = sha256(
+            json.dumps(
+                identity_manifest,
+                sort_keys=True,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        record["snapshot_sha256"] = snapshot_sha256
+        record["evidence_set_id"] = f"evs_{snapshot_sha256[:32]}"
+        document["sets"] = [record]
+        members["evidence/targets.json"] = json.dumps(
+            document,
+            sort_keys=True,
+        ).encode("utf-8")
+        required_digests = {
+            record["transcript_text_sha256"],
+            passage_record["text_sha256"],
+            passage_record["cunits"][0]["text_sha256"],
+        }
+        for name in list(members):
+            if (
+                name.startswith("evidence_text_blobs/")
+                and Path(name).stem not in required_digests
+            ):
+                members.pop(name)
+
+    _rewrite_archive_members(
+        exported.archive_path,
+        forged_archive,
+        mutate,
+    )
+
+    assert original.cunit_count == 2
+    with pytest.raises(ProjectArchiveError, match="current producer"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
 
 
 @pytest.mark.parametrize("object_kind", ["directory", "fifo"])
@@ -631,10 +1269,12 @@ def test_project_archive_rejects_incomplete_completed_batch_dependencies(
         remove_dependency,
     )
 
-    with pytest.raises(
-        ProjectArchiveError,
-        match="completed batch artifacts are invalid",
-    ):
+    expected_error = (
+        "unavailable import"
+        if missing_dependency == "evidence"
+        else "completed batch artifacts are invalid"
+    )
+    with pytest.raises(ProjectArchiveError, match=expected_error):
         ProjectArchiveStore(restore_root).restore_archive(forged_archive_path)
 
     assert not (restore_root / "studies" / study_id).exists()
@@ -875,6 +1515,202 @@ def test_project_archive_rejects_symlinked_study_root_before_journal_access(
     assert not (source_root / "backups").exists()
 
 
+@pytest.mark.parametrize("ancestor_kind", ["root", "studies"])
+def test_project_archive_rejects_symlinked_backup_source_ancestors(
+    tmp_path: Path,
+    ancestor_kind: str,
+) -> None:
+    external_root = tmp_path / "external"
+    study_id, _ = _build_study(external_root)
+    source_root = tmp_path / "source-link"
+    if ancestor_kind == "root":
+        source_root.symlink_to(external_root, target_is_directory=True)
+    else:
+        source_root.mkdir()
+        (source_root / "studies").symlink_to(
+            external_root / "studies",
+            target_is_directory=True,
+        )
+    before = _destination_tree(external_root)
+
+    with pytest.raises(ProjectArchiveError, match="non-symlink directory"):
+        ProjectArchiveStore(source_root).create_archive(study_id)
+
+    assert _destination_tree(external_root) == before
+    assert not (external_root / "backups").exists()
+
+
+def test_project_archive_rejects_symlinked_backup_directory_without_external_write(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    external_backup = tmp_path / "external-backup"
+    study_id, _ = _build_study(source_root)
+    external_backup.mkdir()
+    (source_root / "backups").symlink_to(
+        external_backup,
+        target_is_directory=True,
+    )
+
+    with pytest.raises(ProjectArchiveError, match="non-symlink directory"):
+        ProjectArchiveStore(source_root).create_archive(study_id)
+
+    assert _destination_tree(external_backup) == {
+        ".": ("directory", None),
+    }
+
+
+@pytest.mark.parametrize("audit_path_kind", ["directory", "events"])
+def test_project_archive_export_rejects_symlinked_audit_paths_without_external_write(
+    tmp_path: Path,
+    audit_path_kind: str,
+) -> None:
+    source_root = tmp_path / "source"
+    study_id, _ = _build_study(source_root)
+    audit = AuditLogStore(source_root)
+    if audit_path_kind == "directory":
+        audit.audit_dir.rename(source_root / "original-audit")
+        external_path = tmp_path / "external-audit"
+        external_path.mkdir()
+        (external_path / "sentinel").write_bytes(b"external audit sentinel")
+        audit.audit_dir.symlink_to(external_path, target_is_directory=True)
+    else:
+        audit.events_path.rename(audit.audit_dir / "original-events.jsonl")
+        external_path = tmp_path / "external-events.jsonl"
+        external_path.write_bytes(b"external audit sentinel")
+        audit.events_path.symlink_to(external_path)
+    before = _destination_tree(external_path)
+
+    with pytest.raises(ProjectArchiveError, match="non-symlink"):
+        ProjectArchiveStore(source_root).create_archive(study_id)
+
+    assert _destination_tree(external_path) == before
+    assert not (source_root / "backups").exists()
+
+
+@pytest.mark.parametrize("audit_path_kind", ["directory", "events"])
+def test_project_archive_restore_rejects_symlinked_audit_paths_without_external_write(
+    tmp_path: Path,
+    audit_path_kind: str,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _ = _build_study(source_root)
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    restore_root.mkdir()
+    audit = AuditLogStore(restore_root)
+    if audit_path_kind == "directory":
+        external_path = tmp_path / "external-audit"
+        external_path.mkdir()
+        (external_path / "sentinel").write_bytes(b"external audit sentinel")
+        audit.audit_dir.symlink_to(external_path, target_is_directory=True)
+    else:
+        audit.audit_dir.mkdir()
+        external_path = tmp_path / "external-events.jsonl"
+        external_path.write_bytes(b"external audit sentinel")
+        audit.events_path.symlink_to(external_path)
+    before_destination = _destination_tree(restore_root)
+    before_external = _destination_tree(external_path)
+
+    with pytest.raises(ProjectArchiveError, match="conflicts with destination"):
+        ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert _destination_tree(restore_root) == before_destination
+    assert _destination_tree(external_path) == before_external
+
+
+def test_project_archive_export_rejects_symlinked_workspace_lock_without_external_write(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    study_id, _ = _build_study(source_root)
+    lock_path = source_root / ".workspace-mutation.lock"
+    lock_path.rename(source_root / "original-workspace-lock")
+    external_lock = tmp_path / "external-workspace-lock"
+    external_lock.write_bytes(b"external lock sentinel")
+    lock_path.symlink_to(external_lock)
+
+    with pytest.raises(ProjectArchiveError, match="non-symlink regular file"):
+        ProjectArchiveStore(source_root).create_archive(study_id)
+
+    assert external_lock.read_bytes() == b"external lock sentinel"
+    assert not (source_root / "backups").exists()
+
+
+def test_project_archive_restore_rejects_symlinked_workspace_lock_without_external_write(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _ = _build_study(source_root)
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    restore_root.mkdir()
+    external_lock = tmp_path / "external-workspace-lock"
+    external_lock.write_bytes(b"external lock sentinel")
+    (restore_root / ".workspace-mutation.lock").symlink_to(external_lock)
+    before = _destination_tree(restore_root)
+
+    with pytest.raises(ProjectArchiveError, match="workspace lock is invalid"):
+        ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert _destination_tree(restore_root) == before
+    assert external_lock.read_bytes() == b"external lock sentinel"
+
+
+def test_project_archive_rejects_symlinked_restore_studies_ancestor(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    external_studies = tmp_path / "external-studies"
+    study_id, _ = _build_study(source_root)
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    restore_root.mkdir()
+    external_studies.mkdir()
+    (restore_root / "studies").symlink_to(
+        external_studies,
+        target_is_directory=True,
+    )
+    before = _destination_tree(restore_root)
+
+    with pytest.raises(ProjectArchiveError, match="non-symlink directory"):
+        ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert _destination_tree(restore_root) == before
+    assert _destination_tree(external_studies) == {
+        ".": ("directory", None),
+    }
+
+
+@pytest.mark.parametrize(
+    "blob_ancestor",
+    ["source_blobs", "evidence_text_blobs"],
+)
+def test_project_archive_rejects_symlinked_restore_blob_ancestors(
+    tmp_path: Path,
+    blob_ancestor: str,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    external_blobs = tmp_path / "external-blobs"
+    _, _, _, _, _, exported = _build_cunit_target_archive(source_root)
+    restore_root.mkdir()
+    external_blobs.mkdir()
+    (restore_root / blob_ancestor).symlink_to(
+        external_blobs,
+        target_is_directory=True,
+    )
+    before = _destination_tree(restore_root)
+
+    with pytest.raises(ProjectArchiveError, match="conflicts with destination"):
+        ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert _destination_tree(restore_root) == before
+    assert _destination_tree(external_blobs) == {
+        ".": ("directory", None),
+    }
+
+
 def test_project_archive_backup_names_do_not_collide(tmp_path: Path) -> None:
     study_id, _ = _build_study(tmp_path)
     store = ProjectArchiveStore(tmp_path)
@@ -908,32 +1744,128 @@ def test_project_archive_rejects_semantically_invalid_unreferenced_skill_pack(
     assert not list((tmp_path / "backups").glob("*.nlpstudy.zip"))
 
 
-def test_project_archive_restores_format_v1_legacy_batch_without_journal(
+def test_project_archive_restores_true_format_v1_without_target_state(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study = StudyWorkspaceStore(source_root).create_study(
+        {"name": "True Format V1"}
+    )
+    study_id = study.id
+    exported = ProjectArchiveStore(source_root).create_archive(study_id)
+    legacy_archive = tmp_path / "legacy-format-v1.nlpstudy.zip"
+
+    _rewrite_archive_as_v1(
+        exported.archive_path,
+        legacy_archive,
+    )
+
+    ProjectArchiveStore(restore_root).restore_archive(legacy_archive)
+
+    restored_study = StudyWorkspaceStore(restore_root).load_study(study_id)
+    assert restored_study == study
+    assert EvidenceTargetRegistry(restore_root).workspace_snapshot(study_id) == ()
+
+
+def test_project_archive_rejects_v2_target_members_declared_as_v1(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, _, exported = _build_cunit_target_archive(source_root)
+    forged_archive = tmp_path / "v2-members-declared-v1.nlpstudy.zip"
+    _rewrite_archive_manifest(
+        exported.archive_path,
+        forged_archive,
+        lambda manifest: {**manifest, "format_version": 1},
+    )
+
+    with pytest.raises(ProjectArchiveError, match="cannot contain evidence target"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_rejects_v1_nested_study_artifact_target_reference(
     tmp_path: Path,
 ) -> None:
     source_root = tmp_path / "source"
     restore_root = tmp_path / "restore"
     study_id, _ = _build_study(source_root)
     exported = ProjectArchiveStore(source_root).create_archive(study_id)
-    legacy_archive = tmp_path / "legacy-format-v1.nlpstudy.zip"
+    forged_archive = tmp_path / "v1-study-target-reference.nlpstudy.zip"
 
-    def remove_journal(members):
-        members.pop("study/batch_operations.sqlite3")
+    def add_target_reference(members):
+        members["study/legacy-metadata.json"] = json.dumps(
+            {
+                "nested": [
+                    {"evidence_set_id": "evs_0123456789abcdef0123456789abcdef"}
+                ]
+            }
+        ).encode("utf-8")
 
-    _rewrite_archive_members(
+    _rewrite_archive_as_v1(
         exported.archive_path,
-        legacy_archive,
-        remove_journal,
+        forged_archive,
+        add_target_reference,
     )
 
-    ProjectArchiveStore(restore_root).restore_archive(legacy_archive)
+    with pytest.raises(ProjectArchiveError, match="cannot reference evidence"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
 
-    restored_batches = StudyWorkspaceStore(restore_root).list_batches(study_id)
-    assert len(restored_batches) == 1
-    assert StudyWorkspaceStore(restore_root).list_batch_runs(
-        study_id,
-        restored_batches[0].batch_id,
+    assert _destination_tree(restore_root) == {}
+
+
+def test_project_archive_rejects_v1_qualitative_coding_reference_row(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, exported = _build_coding_reference_archive(source_root)
+    forged_archive = tmp_path / "v1-coding-row.nlpstudy.zip"
+    _rewrite_archive_as_v1(exported.archive_path, forged_archive)
+
+    with pytest.raises(ProjectArchiveError, match="cannot reference evidence"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_rejects_v1_qualitative_audit_metadata_reference(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, _, _, exported = _build_qualitative_archive(source_root)
+    tampered_v2 = tmp_path / "audit-metadata-v2.nlpstudy.zip"
+    forged_archive = tmp_path / "v1-audit-metadata.nlpstudy.zip"
+    _rewrite_qualitative_database(
+        exported.archive_path,
+        tampered_v2,
+        tmp_path / "audit-metadata.sqlite3",
+        """
+        insert into qualitative_audit_events (
+          event_id, project_id, actor_id, event_type,
+          subject_type, subject_id, metadata_json, created_at
+        )
+        select
+          'qae_v1_target_metadata', project_id, actor_id,
+          'legacy.targeted', 'qualitative_project', project_id,
+          '{"evidence_set_id":"evs_0123456789abcdef0123456789abcdef"}',
+          created_at
+        from qualitative_audit_events
+        limit 1
+        """,
     )
+    _rewrite_archive_as_v1(tampered_v2, forged_archive)
+
+    with pytest.raises(ProjectArchiveError, match="cannot reference evidence"):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
 
 
 def test_project_archive_round_trips_original_pre_audit_batch_generation(
@@ -1001,6 +1933,7 @@ def test_project_archive_preserves_import_v1_catalog_without_original_blob(
         "project_source_id",
         "parent_transcript_revision_id",
         "workspace_id",
+        "evidence_set_id",
     ):
         run_payload.pop(field_name)
     run_path.write_text(json.dumps(run_payload), encoding="utf-8")
@@ -1664,6 +2597,95 @@ def test_project_archive_preflights_destination_conflicts_without_partial_writes
     assert not (restore_root / "studies" / study_id).exists()
 
 
+def test_project_archive_preflights_evidence_text_conflict_without_writes(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, prepared, _, _, exported = _build_cunit_target_archive(
+        source_root
+    )
+    digest = _prepared_text_blob_sha256s(prepared)[0]
+    destination = EvidenceTextBlobStore(restore_root).blob_path(digest)
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"corrupt destination evidence text")
+    before = _destination_tree(restore_root)
+
+    with pytest.raises(ProjectArchiveError, match="conflicts with destination"):
+        ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert _destination_tree(restore_root) == before
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_rejects_newer_empty_destination_evidence_database(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study = StudyWorkspaceStore(source_root).create_study(
+        {"name": "Newer Destination Evidence"}
+    )
+    exported = ProjectArchiveStore(source_root).create_archive(study.id)
+    restore_root.mkdir()
+    destination_catalog = EvidenceCatalog(restore_root)
+    with sqlite3.connect(destination_catalog.db_path) as connection:
+        connection.execute("pragma user_version = 99")
+    before = _destination_tree(restore_root)
+
+    with pytest.raises(ProjectArchiveConflict, match="newer"):
+        ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert _destination_tree(restore_root) == before
+    assert not (restore_root / "studies" / study.id).exists()
+
+
+def test_project_archive_accepts_exact_preexisting_evidence_target_replay(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    (
+        study_id,
+        import_record,
+        prepared,
+        _,
+        _,
+        exported,
+    ) = _build_cunit_target_archive(source_root)
+    source_content = SourceBlobStore(source_root).read_verified(
+        import_record.source_blob_sha256
+    )
+    SourceBlobStore(restore_root).store(
+        source_content,
+        import_record.source_blob_sha256,
+    )
+    EvidenceCatalog(restore_root).record_import(import_record)
+    preexisting_snapshot = EvidenceTargetRegistry(
+        restore_root
+    ).register_complete_set(prepared)
+    before_texts = {
+        digest: EvidenceTextBlobStore(restore_root).read_verified(digest)
+        for digest in _prepared_text_blob_sha256s(prepared)
+    }
+
+    restored = ProjectArchiveStore(restore_root).restore_archive(
+        exported.archive_path
+    )
+
+    assert restored.study_id == study_id
+    assert EvidenceCatalog(restore_root).workspace_import_records(study_id) == [
+        import_record
+    ]
+    assert EvidenceTargetRegistry(restore_root).workspace_snapshot(study_id) == (
+        preexisting_snapshot,
+    )
+    assert {
+        digest: EvidenceTextBlobStore(restore_root).read_verified(digest)
+        for digest in _prepared_text_blob_sha256s(prepared)
+    } == before_texts
+
+
 def test_project_archive_rolls_back_destination_after_late_publish_failure(
     tmp_path: Path,
     monkeypatch,
@@ -1690,10 +2712,12 @@ def test_project_archive_rolls_back_destination_after_late_publish_failure(
         destination_version.version_id,
         [{"source_filename": "existing.txt", "content": "CG: One.\nP: Two."}],
     )
-    before = _destination_files(restore_root)
+    before = _destination_tree(restore_root)
     archive_store = ProjectArchiveStore(restore_root)
+    original_publish = archive_store._publish_study
 
     def fail_publish(stage_dir, study_dir):
+        original_publish(stage_dir, study_dir)
         raise OSError("injected late publish failure")
 
     monkeypatch.setattr(archive_store, "_publish_study", fail_publish)
@@ -1701,8 +2725,78 @@ def test_project_archive_rolls_back_destination_after_late_publish_failure(
     with pytest.raises(ProjectArchiveError, match="could not be committed"):
         archive_store.restore_archive(exported.archive_path)
 
-    assert _destination_files(restore_root) == before
+    assert _destination_tree(restore_root) == before
     assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_rolls_back_new_destination_ancestors_after_publish(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "absent-restore"
+    study_id, _, _, _, exported = _build_coding_reference_archive(source_root)
+    archive_store = ProjectArchiveStore(restore_root)
+    original_publish = archive_store._publish_study
+
+    def publish_then_fail(stage_dir, study_dir):
+        original_publish(stage_dir, study_dir)
+        raise OSError("injected post-publish failure")
+
+    monkeypatch.setattr(archive_store, "_publish_study", publish_then_fail)
+
+    assert _destination_tree(restore_root) == {}
+    with pytest.raises(ProjectArchiveError, match="could not be committed"):
+        archive_store.restore_archive(exported.archive_path)
+
+    assert _destination_tree(restore_root) == {}
+    assert not (restore_root / "studies" / study_id).exists()
+
+
+def test_project_archive_rolls_back_source_blob_when_store_raises_after_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    _, _, _, _, _, exported = _build_cunit_target_archive(source_root)
+    original_store = SourceBlobStore.store
+
+    def store_then_raise(store, content, expected_sha256):
+        stored = original_store(store, content, expected_sha256)
+        if store.root == restore_root:
+            raise OSError("injected source blob post-write failure")
+        return stored
+
+    monkeypatch.setattr(SourceBlobStore, "store", store_then_raise)
+
+    with pytest.raises(ProjectArchiveError, match="could not be committed"):
+        ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert _destination_tree(restore_root) == {}
+
+
+def test_project_archive_rolls_back_text_blob_when_store_raises_after_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    _, _, _, _, _, exported = _build_cunit_target_archive(source_root)
+    original_store = EvidenceTextBlobStore.store
+
+    def store_then_raise(store, text, expected_sha256):
+        stored = original_store(store, text, expected_sha256)
+        if store.root == restore_root:
+            raise OSError("injected evidence text post-write failure")
+        return stored
+
+    monkeypatch.setattr(EvidenceTextBlobStore, "store", store_then_raise)
+
+    with pytest.raises(ProjectArchiveError, match="could not be committed"):
+        ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    assert _destination_tree(restore_root) == {}
 
 
 def test_project_archive_translates_sqlite_import_errors(

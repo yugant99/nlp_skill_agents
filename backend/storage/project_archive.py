@@ -22,10 +22,34 @@ from backend.qualitative.cases import (
     CaseService,
     CaseValidationError,
 )
+from backend.qualitative.coding_references import (
+    CodingReferenceConflictError,
+    CodingReferenceNotFoundError,
+    CodingReferenceService,
+    CodingReferenceValidationError,
+)
 from backend.qualitative.database import QualitativeDatabaseConflict
+from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
+from backend.segmentation.models import RawTranscriptEvent
 from backend.storage.atomic import atomic_binary_writer, atomic_write_bytes
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.evidence_target_registry import (
+    EvidenceCUnitInput,
+    EvidencePassageInput,
+    EvidenceSetSnapshot,
+    EvidenceTargetBlobConflict,
+    EvidenceTargetConflictError,
+    EvidenceTargetNotFoundError,
+    EvidenceTargetRegistry,
+    EvidenceTargetValidationError,
+    PreparedEvidenceSet,
+    prepare_complete_evidence_set,
+)
+from backend.storage.evidence_text_blob_store import (
+    EvidenceTextBlobIntegrityError,
+    EvidenceTextBlobStore,
+)
 from backend.storage.source_blob_store import (
     SourceBlobIntegrityError,
     SourceBlobStore,
@@ -43,10 +67,14 @@ from backend.storage.study_store import (
     StudyWorkspace,
     StudyWorkspaceStore,
 )
-from backend.storage.workspace_lock import workspace_mutation_lock
+from backend.storage.workspace_lock import (
+    WorkspaceLockError,
+    workspace_mutation_lock,
+)
 
 
-ARCHIVE_FORMAT_VERSION = 1
+ARCHIVE_FORMAT_VERSION = 2
+SUPPORTED_ARCHIVE_FORMAT_VERSIONS = {1, 2}
 MAX_ARCHIVE_MEMBERS = 10_000
 MAX_ARCHIVE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_FILE_BYTES = 512 * 1024 * 1024
@@ -65,6 +93,44 @@ MAX_EVIDENCE_IDENTIFIER_LENGTH = 256
 MAX_EVIDENCE_FILENAME_LENGTH = 4096
 MAX_EVIDENCE_LABEL_LENGTH = 256
 MAX_TIMESTAMP_LENGTH = 64
+_TARGET_EXPORT_FORMAT = "nlp-skill-agents.evidence-target-export"
+_TARGET_EXPORT_FORMAT_VERSION = 1
+_TARGET_SET_FORMAT = "nlp-skill-agents.evidence-target-set"
+_TARGET_SET_FORMAT_VERSION = 1
+_TARGET_EXPORT_FIELDS = {"format", "format_version", "workspace_id", "sets"}
+_TARGET_SET_FIELDS = {
+    "format",
+    "format_version",
+    "evidence_set_id",
+    "snapshot_sha256",
+    "created_at",
+    "import_id",
+    "workspace_id",
+    "project_source_id",
+    "transcript_revision_id",
+    "transcript_text_sha256",
+    "producer_kind",
+    "producer_version",
+    "producer_status",
+    "review_status",
+    "passage_count",
+    "cunit_count",
+    "passages",
+}
+_TARGET_PASSAGE_FIELDS = {
+    "passage_id",
+    "passage_ordinal",
+    "role",
+    "text_sha256",
+    "text_length",
+    "cunits",
+}
+_TARGET_CUNIT_FIELDS = {
+    "cunit_id",
+    "cunit_ordinal",
+    "text_sha256",
+    "text_length",
+}
 _EVIDENCE_REQUIRED_FIELDS = {
     "import_id",
     "run_id",
@@ -109,6 +175,16 @@ class ProjectRestoreResult:
     audit_event_count: int
 
 
+@dataclass(frozen=True)
+class _ParsedArchivePayload:
+    imports: tuple[EvidenceImportRecord, ...]
+    audit_events: tuple[dict[str, object], ...]
+    unretained_blob_digests: frozenset[str]
+    source_blob_names: frozenset[str]
+    evidence_texts: tuple[tuple[str, str], ...]
+    evidence_sets: tuple[PreparedEvidenceSet, ...]
+
+
 class ProjectArchiveError(ValueError):
     pass
 
@@ -128,6 +204,9 @@ class ProjectArchiveStore:
 
     def create_archive(self, study_id: str) -> ProjectArchiveExport:
         _validate_study_id(study_id)
+        _validate_optional_destination_directory(self.root)
+        _validate_optional_destination_directory(self.studies_dir)
+        _validate_audit_paths(self.audit)
         study_dir = self.studies_dir / study_id
         if study_dir.is_symlink():
             raise ProjectArchiveError("Study archive root cannot be a symbolic link")
@@ -157,6 +236,14 @@ class ProjectArchiveStore:
                         legacy_import_ids=compatibility.legacy_import_ids,
                     )
         except (
+            CodingReferenceConflictError,
+            CodingReferenceNotFoundError,
+            CodingReferenceValidationError,
+            EvidenceTargetBlobConflict,
+            EvidenceTargetConflictError,
+            EvidenceTargetNotFoundError,
+            EvidenceTargetValidationError,
+            EvidenceTextBlobIntegrityError,
             FileNotFoundError,
             OSError,
             SchemaCompatibilityError,
@@ -176,7 +263,8 @@ class ProjectArchiveStore:
         *,
         legacy_import_ids: frozenset[str],
     ) -> ProjectArchiveExport:
-        if self.catalog.db_path.is_symlink() or self.audit.events_path.is_symlink():
+        _validate_audit_paths(self.audit)
+        if self.catalog.db_path.is_symlink():
             raise ProjectArchiveError(
                 "Study archive dependencies cannot contain symbolic links"
             )
@@ -244,8 +332,47 @@ class ProjectArchiveStore:
                 unretained_blobs,
                 indent=2,
             ).encode("utf-8")
+
+        evidence_registry = EvidenceTargetRegistry(self.root)
+        evidence_sets = evidence_registry.workspace_snapshot(study_id)
+        archived_import_ids = {record.import_id for record in imports}
+        if any(
+            snapshot.import_id not in archived_import_ids
+            for snapshot in evidence_sets
+        ):
+            raise ProjectArchiveError(
+                "Study evidence targets are not closed over archived imports"
+            )
+        members["evidence/targets.json"] = _evidence_target_document(
+            study_id,
+            evidence_sets,
+        )
+        evidence_text_digests = {
+            digest
+            for snapshot in evidence_sets
+            for digest in snapshot.text_blob_sha256s
+        }
+        for digest in sorted(evidence_text_digests):
+            text = evidence_registry.text_blobs.read_verified(digest)
+            members[f"evidence_text_blobs/{digest}.utf8"] = text.encode("utf-8")
+
+        parsed_payload = _parse_archive_payload(
+            members,
+            format_version=ARCHIVE_FORMAT_VERSION,
+            study_id=study_id,
+        )
+        with tempfile.TemporaryDirectory(
+            prefix=f".{study_id}.archive-validation."
+        ) as validation_directory:
+            _stage_and_validate_archive(
+                Path(validation_directory),
+                study_id,
+                members,
+                parsed_payload,
+                format_version=ARCHIVE_FORMAT_VERSION,
+            )
+
         _validate_member_names(["manifest.json", *members])
-        _enforce_archive_budget(members)
 
         manifest = {
             "format_version": ARCHIVE_FORMAT_VERSION,
@@ -260,7 +387,13 @@ class ProjectArchiveStore:
                 for name, content in sorted(members.items())
             ],
         }
-        self.backups_dir.mkdir(parents=True, exist_ok=True)
+        manifest_content = json.dumps(
+            manifest,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+        _enforce_archive_budget({"manifest.json": manifest_content, **members})
+        _prepare_non_symlink_directory(self.backups_dir)
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
         archive_path = (
             self.backups_dir
@@ -270,7 +403,7 @@ class ProjectArchiveStore:
             with ZipFile(archive_file, "w", compression=ZIP_DEFLATED) as archive:
                 archive.writestr(
                     "manifest.json",
-                    json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
+                    manifest_content,
                 )
                 for name, content in sorted(members.items()):
                     archive.writestr(name, content)
@@ -299,147 +432,91 @@ class ProjectArchiveStore:
         study_dir = self.studies_dir / study_id
         if study_dir.exists() or study_dir.is_symlink():
             raise FileExistsError(study_id)
+        format_version = int(manifest["format_version"])
+        parsed_payload = _parse_archive_payload(
+            members,
+            format_version=format_version,
+            study_id=study_id,
+        )
 
-        imports = _parse_evidence_imports(
-            members["evidence/imports.json"],
-            study_id,
+        root_existed = _validate_optional_destination_directory(self.root)
+        studies_existed = _validate_optional_destination_directory(
+            self.studies_dir,
+            parent_must_exist=root_existed,
         )
-        unretained_blob_digests = _parse_unretained_blob_digests(
-            members.get("evidence/unretained_blobs.json", b"[]")
-        )
-        audit_events = _parse_audit_events(
-            members["evidence/audit.json"],
-            study_id,
-        )
-        expected_blob_names = {
-            f"blobs/{record.source_blob_sha256}.blob"
-            for record in imports
-            if record.source_blob_sha256 not in unretained_blob_digests
-        }
-        referenced_blob_digests = {
-            record.source_blob_sha256 for record in imports
-        }
-        if not unretained_blob_digests.issubset(referenced_blob_digests):
-            raise ProjectArchiveError(
-                "Archive unretained blob set does not match evidence imports"
-            )
-        actual_blob_names = {name for name in members if name.startswith("blobs/")}
-        if actual_blob_names != expected_blob_names:
-            raise ProjectArchiveError("Archive blob set does not match evidence imports")
-
-        self.studies_dir.mkdir(parents=True, exist_ok=True)
-        stage_root = Path(
-            tempfile.mkdtemp(prefix=f".{study_id}.restore.", dir=self.studies_dir)
-        )
-        stage_dir = stage_root / "studies" / study_id
-        stage_dir.mkdir(parents=True)
+        lock_path = self.root.resolve(strict=False) / ".workspace-mutation.lock"
+        lock_existed = lock_path.exists() or lock_path.is_symlink()
+        stage_parent = self.root if root_existed else self.root.parent
         try:
-            for name, content in members.items():
-                if name.startswith("study/"):
-                    relative = PurePosixPath(name).relative_to("study")
-                    atomic_write_bytes(
-                        _safe_extraction_target(stage_dir, relative),
-                        content,
-                    )
-            try:
-                study_payload = json.loads(
-                    (stage_dir / "study.json").read_text("utf-8")
+            stage_root = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{study_id}.restore.",
+                    dir=stage_parent,
                 )
-            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                raise ProjectArchiveError("Archive study record is malformed") from exc
-            _validate_study_workspace_payload(study_payload, study_id)
-            try:
-                validate_study_batch_operation_database(
-                    stage_dir / "batch_operations.sqlite3",
-                    study_id,
-                )
-            except SchemaCompatibilityError as exc:
-                raise ProjectArchiveConflict(str(exc)) from exc
-            except (sqlite3.Error, ValueError) as exc:
-                raise ProjectArchiveError(
-                    "Archive batch operation journal is invalid"
-                ) from exc
-
-            validation_blobs = SourceBlobStore(stage_root)
-            try:
-                for blob_name in sorted(actual_blob_names):
-                    digest = PurePosixPath(blob_name).stem
-                    validation_blobs.store(members[blob_name], digest)
-                _restore_imports(EvidenceCatalog(stage_root), imports)
-                AuditLogStore(stage_root).import_events(audit_events)
-                validation_store = StudyWorkspaceStore(stage_root)
-                compatibility = (
-                    validation_store.validate_completed_batch_snapshots(
-                        study_id
-                    )
-                )
-                for digest in unretained_blob_digests:
-                    if any(
-                        record.import_id
-                        not in compatibility.legacy_import_ids
-                        for record in imports
-                        if record.source_blob_sha256 == digest
-                    ):
-                        raise StudyBatchSnapshotConflict(
-                            "Archive unretained blob is not eligible legacy evidence"
-                        )
-                validation_store.validate_skill_pack_versions(
-                    study_id,
-                    legacy_unaudited_versions=(
-                        compatibility.legacy_unaudited_versions
-                    ),
-                )
-            except (
-                FileNotFoundError,
-                SourceBlobIntegrityError,
-                StudyBatchOperationConflict,
-                StudyBatchSnapshotConflict,
-                StudySkillPackVersionConflict,
-                sqlite3.Error,
-                TypeError,
-                ValueError,
-            ) as exc:
-                raise ProjectArchiveError(
-                    "Archive completed batch artifacts are invalid"
-                ) from exc
-
-            _validate_staged_qualitative_project(stage_root, study_id)
+            )
+        except OSError as exc:
+            raise ProjectArchiveError(
+                "Archive restore staging directory is unavailable"
+            ) from exc
+        restored = False
+        try:
+            stage_dir = _stage_and_validate_archive(
+                stage_root,
+                study_id,
+                members,
+                parsed_payload,
+                format_version=format_version,
+            )
 
             with workspace_mutation_lock(self.root):
+                _prepare_non_symlink_directory(self.root)
+                _prepare_non_symlink_directory(self.studies_dir)
                 if study_dir.exists() or study_dir.is_symlink():
                     raise FileExistsError(study_id)
                 imported_audit_count = self._preflight_destination_state(
                     stage_root,
-                    imports,
-                    audit_events,
-                    actual_blob_names,
-                    unretained_blob_digests,
+                    parsed_payload,
                     members,
                 )
                 self._commit_restore(
                     stage_root,
                     stage_dir,
                     study_dir,
-                    actual_blob_names,
+                    parsed_payload,
                     members,
                 )
+                restored = True
+        except WorkspaceLockError as exc:
+            raise ProjectArchiveError(
+                "Archive destination workspace lock is invalid"
+            ) from exc
         finally:
             shutil.rmtree(stage_root, ignore_errors=True)
+            if not restored:
+                try:
+                    _cleanup_restore_ancestors(
+                        self.root,
+                        root_existed=root_existed,
+                        studies_existed=studies_existed,
+                        lock_path=lock_path,
+                        lock_existed=lock_existed,
+                    )
+                except OSError as exc:
+                    raise ProjectArchiveError(
+                        "Archive restore failed and destination rollback was incomplete"
+                    ) from exc
         return ProjectRestoreResult(
             study_id=study_id,
             study_dir=study_dir,
-            import_count=len(imports),
-            blob_count=len(actual_blob_names),
+            import_count=len(parsed_payload.imports),
+            blob_count=len(parsed_payload.source_blob_names),
             audit_event_count=imported_audit_count,
         )
 
     def _preflight_destination_state(
         self,
         stage_root: Path,
-        imports: list[EvidenceImportRecord],
-        audit_events: list[dict[str, object]],
-        blob_names: set[str],
-        unretained_blob_digests: set[str],
+        payload: _ParsedArchivePayload,
         members: dict[str, bytes],
     ) -> int:
         preflight_root = stage_root / "destination-preflight"
@@ -451,31 +528,53 @@ class ProjectArchiveStore:
                     self.catalog.db_path,
                     preflight_root / "evidence.sqlite3",
                 )
-            if self.audit.events_path.is_symlink():
-                raise ValueError("Destination audit log is a symbolic link")
+            _validate_audit_paths(self.audit)
             if self.audit.events_path.exists():
                 atomic_write_bytes(
                     preflight_root / "audit" / "events.jsonl",
                     self.audit.events_path.read_bytes(),
                 )
-            for blob_name in sorted(blob_names):
+            for blob_name in sorted(payload.source_blob_names):
                 digest = PurePosixPath(blob_name).stem
                 destination = self.blobs.blob_path(digest)
-                if destination.is_symlink():
-                    raise ValueError("Destination source blob is a symbolic link")
-                if destination.exists():
+                _validate_destination_blob_path(self.root, destination)
+                if destination.exists() or destination.is_symlink():
                     stored_content = self.blobs.read_verified(digest)
                     if stored_content != members[blob_name]:
                         raise ValueError("Destination source blob conflicts")
-            for digest in sorted(unretained_blob_digests):
+            for digest in sorted(payload.unretained_blob_digests):
                 destination = self.blobs.blob_path(digest)
-                if destination.is_symlink():
-                    raise ValueError("Destination source blob is a symbolic link")
-                if destination.exists():
+                _validate_destination_blob_path(self.root, destination)
+                if destination.exists() or destination.is_symlink():
                     self.blobs.read_verified(digest)
-            _restore_imports(EvidenceCatalog(preflight_root), imports)
-            return AuditLogStore(preflight_root).import_events(audit_events)
+
+            destination_text_store = EvidenceTextBlobStore(self.root)
+            for digest, text in payload.evidence_texts:
+                destination = destination_text_store.blob_path(digest)
+                _validate_destination_blob_path(self.root, destination)
+                if destination.exists() or destination.is_symlink():
+                    if destination_text_store.read_verified(digest) != text:
+                        raise ValueError("Destination evidence text blob conflicts")
+
+            preflight_catalog = EvidenceCatalog(preflight_root)
+            with preflight_catalog.read():
+                pass
+            _restore_imports(preflight_catalog, list(payload.imports))
+            preflight_text_store = EvidenceTextBlobStore(preflight_root)
+            for digest, text in payload.evidence_texts:
+                preflight_text_store.store(text, digest)
+            preflight_registry = EvidenceTargetRegistry(preflight_root)
+            for evidence_set in payload.evidence_sets:
+                preflight_registry.register_complete_set(evidence_set)
+            return AuditLogStore(preflight_root).import_events(
+                list(payload.audit_events)
+            )
         except (
+            EvidenceTargetBlobConflict,
+            EvidenceTargetConflictError,
+            EvidenceTargetNotFoundError,
+            EvidenceTargetValidationError,
+            EvidenceTextBlobIntegrityError,
             OSError,
             SourceBlobIntegrityError,
             sqlite3.Error,
@@ -485,37 +584,56 @@ class ProjectArchiveStore:
             raise ProjectArchiveError(
                 "Archive evidence conflicts with destination"
             ) from exc
+        except SchemaCompatibilityError as exc:
+            raise ProjectArchiveConflict(str(exc)) from exc
 
     def _commit_restore(
         self,
         stage_root: Path,
         stage_dir: Path,
         study_dir: Path,
-        blob_names: set[str],
+        payload: _ParsedArchivePayload,
         members: dict[str, bytes],
     ) -> None:
         preflight_root = stage_root / "destination-preflight"
         preflight_catalog = preflight_root / "evidence.sqlite3"
         preflight_audit = preflight_root / "audit" / "events.jsonl"
-        catalog_existed = self.catalog.db_path.exists()
-        audit_existed = self.audit.events_path.exists()
+        catalog_existed = self.catalog.db_path.exists() or self.catalog.db_path.is_symlink()
+        audit_existed = self.audit.events_path.exists() or self.audit.events_path.is_symlink()
         catalog_before = self.catalog.db_path.read_bytes() if catalog_existed else None
         audit_before = self.audit.events_path.read_bytes() if audit_existed else None
         created_blobs: list[Path] = []
+        created_directories: set[Path] = set()
         try:
-            for blob_name in sorted(blob_names):
+            for blob_name in sorted(payload.source_blob_names):
                 digest = PurePosixPath(blob_name).stem
                 blob_path = self.blobs.blob_path(digest)
-                existed = blob_path.exists()
-                self.blobs.store(members[blob_name], digest)
+                existed = blob_path.exists() or blob_path.is_symlink()
+                created_directories.update(
+                    _missing_parent_directories(blob_path, self.root)
+                )
                 if not existed:
                     created_blobs.append(blob_path)
+                self.blobs.store(members[blob_name], digest)
+
+            text_store = EvidenceTextBlobStore(self.root)
+            for digest, text in payload.evidence_texts:
+                blob_path = text_store.blob_path(digest)
+                existed = blob_path.exists() or blob_path.is_symlink()
+                created_directories.update(
+                    _missing_parent_directories(blob_path, self.root)
+                )
+                if not existed:
+                    created_blobs.append(blob_path)
+                text_store.store(text, digest)
             if preflight_catalog.exists():
                 atomic_write_bytes(
                     self.catalog.db_path,
                     preflight_catalog.read_bytes(),
                 )
             if preflight_audit.exists():
+                if not self.audit.audit_dir.exists():
+                    created_directories.add(self.audit.audit_dir)
                 atomic_write_bytes(
                     self.audit.events_path,
                     preflight_audit.read_bytes(),
@@ -523,10 +641,23 @@ class ProjectArchiveStore:
             self._publish_study(stage_dir, study_dir)
         except BaseException as exc:
             try:
+                if (
+                    not stage_dir.exists()
+                    and not stage_dir.is_symlink()
+                    and (study_dir.exists() or study_dir.is_symlink())
+                ):
+                    _remove_published_study(study_dir)
                 _restore_file_snapshot(self.catalog.db_path, catalog_before)
                 _restore_file_snapshot(self.audit.events_path, audit_before)
                 for blob_path in created_blobs:
                     blob_path.unlink(missing_ok=True)
+                for directory in sorted(
+                    created_directories,
+                    key=lambda path: len(path.parts),
+                    reverse=True,
+                ):
+                    if directory.exists() or directory.is_symlink():
+                        directory.rmdir()
             except BaseException as rollback_exc:
                 raise ProjectArchiveError(
                     "Archive restore failed and destination rollback was incomplete"
@@ -568,10 +699,10 @@ def _verified_archive_members(
         zlib.error,
     ) as exc:
         raise ProjectArchiveError("Archive member data is malformed") from exc
-    try:
-        manifest = json.loads(members["manifest.json"].decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ProjectArchiveError("Archive manifest is malformed") from exc
+    manifest = _strict_json_loads(
+        members["manifest.json"],
+        "Archive manifest is malformed",
+    )
     if not isinstance(manifest, dict):
         raise ProjectArchiveError("Archive manifest is malformed")
     if set(manifest) != {"format_version", "study_id", "created_at", "members"}:
@@ -579,7 +710,7 @@ def _verified_archive_members(
     if (
         isinstance(manifest["format_version"], bool)
         or not isinstance(manifest["format_version"], int)
-        or manifest["format_version"] != ARCHIVE_FORMAT_VERSION
+        or manifest["format_version"] not in SUPPORTED_ARCHIVE_FORMAT_VERSIONS
     ):
         raise ProjectArchiveError("Unsupported archive format version")
     if not isinstance(manifest.get("study_id"), str):
@@ -606,7 +737,7 @@ def _verified_archive_members(
             isinstance(size_bytes, bool)
             or not isinstance(size_bytes, int)
             or size_bytes < 0
-            or size_bytes > MAX_ARCHIVE_UNCOMPRESSED_BYTES
+            or size_bytes > MAX_ARCHIVE_FILE_BYTES
         ):
             raise ProjectArchiveError("Archive manifest member size is invalid")
         if not isinstance(digest, str) or not _SHA256_PATTERN.fullmatch(digest):
@@ -624,6 +755,19 @@ def _verified_archive_members(
     }
     if not required_members.issubset(actual_names):
         raise ProjectArchiveError("Archive required members are missing")
+    format_version = int(manifest["format_version"])
+    target_members = {
+        name
+        for name in actual_names
+        if name == "evidence/targets.json"
+        or name.startswith("evidence_text_blobs/")
+    }
+    if format_version == 1 and target_members:
+        raise ProjectArchiveError(
+            "Format version 1 cannot contain evidence target members"
+        )
+    if format_version == 2 and "evidence/targets.json" not in actual_names:
+        raise ProjectArchiveError("Archive required members are missing")
     for name, record in records.items():
         content = members[name]
         if record["size_bytes"] != len(content):
@@ -635,6 +779,8 @@ def _verified_archive_members(
 
 def _validate_member(info: ZipInfo) -> None:
     _validate_member_name(info.filename)
+    if info.file_size < 0 or info.file_size > MAX_ARCHIVE_FILE_BYTES:
+        raise ProjectArchiveError("Archive member exceeds file size limit")
     if info.is_dir():
         raise ProjectArchiveError("Archive contains an unsafe member path")
     if info.flag_bits & 0x1:
@@ -708,14 +854,543 @@ def _safe_extraction_target(stage_dir: Path, relative: PurePosixPath) -> Path:
     return target
 
 
+def _evidence_target_document(
+    study_id: str,
+    snapshots: tuple[EvidenceSetSnapshot, ...],
+) -> bytes:
+    records = []
+    for snapshot in sorted(snapshots, key=lambda item: item.evidence_set_id):
+        records.append(
+            {
+                **snapshot.to_manifest(),
+                "evidence_set_id": snapshot.evidence_set_id,
+                "snapshot_sha256": snapshot.snapshot_sha256,
+                "created_at": snapshot.created_at,
+            }
+        )
+    return json.dumps(
+        {
+            "format": _TARGET_EXPORT_FORMAT,
+            "format_version": _TARGET_EXPORT_FORMAT_VERSION,
+            "workspace_id": study_id,
+            "sets": records,
+        },
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _parse_archive_payload(
+    members: dict[str, bytes],
+    *,
+    format_version: int,
+    study_id: str,
+) -> _ParsedArchivePayload:
+    imports = _parse_evidence_imports(
+        members["evidence/imports.json"],
+        study_id,
+    )
+    unretained_blob_digests = _parse_unretained_blob_digests(
+        members.get("evidence/unretained_blobs.json", b"[]")
+    )
+    audit_events = _parse_audit_events(
+        members["evidence/audit.json"],
+        study_id,
+    )
+    expected_source_blob_names = {
+        f"blobs/{record.source_blob_sha256}.blob"
+        for record in imports
+        if record.source_blob_sha256 not in unretained_blob_digests
+    }
+    referenced_source_digests = {
+        record.source_blob_sha256 for record in imports
+    }
+    if not unretained_blob_digests.issubset(referenced_source_digests):
+        raise ProjectArchiveError(
+            "Archive unretained blob set does not match evidence imports"
+        )
+    actual_source_blob_names = {
+        name for name in members if name.startswith("blobs/")
+    }
+    if actual_source_blob_names != expected_source_blob_names:
+        raise ProjectArchiveError(
+            "Archive blob set does not match evidence imports"
+        )
+
+    evidence_texts: dict[str, str] = {}
+    evidence_sets: tuple[PreparedEvidenceSet, ...] = ()
+    if format_version == 2:
+        evidence_sets, evidence_texts = _parse_evidence_targets(
+            members["evidence/targets.json"],
+            members,
+            study_id=study_id,
+            imports=imports,
+        )
+    elif format_version != 1:
+        raise ProjectArchiveError("Unsupported archive format version")
+
+    return _ParsedArchivePayload(
+        imports=tuple(imports),
+        audit_events=tuple(audit_events),
+        unretained_blob_digests=frozenset(unretained_blob_digests),
+        source_blob_names=frozenset(actual_source_blob_names),
+        evidence_texts=tuple(sorted(evidence_texts.items())),
+        evidence_sets=evidence_sets,
+    )
+
+
+def _parse_evidence_targets(
+    content: bytes,
+    members: dict[str, bytes],
+    *,
+    study_id: str,
+    imports: list[EvidenceImportRecord],
+) -> tuple[tuple[PreparedEvidenceSet, ...], dict[str, str]]:
+    document = _strict_json_loads(
+        content,
+        "Archive evidence target records are malformed",
+    )
+    if not isinstance(document, dict) or set(document) != _TARGET_EXPORT_FIELDS:
+        raise ProjectArchiveError("Archive evidence target records are malformed")
+    if (
+        document["format"] != _TARGET_EXPORT_FORMAT
+        or type(document["format_version"]) is not int
+        or document["format_version"] != _TARGET_EXPORT_FORMAT_VERSION
+        or document["workspace_id"] != study_id
+        or not isinstance(document["sets"], list)
+    ):
+        raise ProjectArchiveError("Archive evidence target records are malformed")
+
+    records = document["sets"]
+    record_ids: list[str] = []
+    required_text_digests: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != _TARGET_SET_FIELDS:
+            raise ProjectArchiveError(
+                "Archive evidence target records are malformed"
+            )
+        record_id = record["evidence_set_id"]
+        if not isinstance(record_id, str):
+            raise ProjectArchiveError(
+                "Archive evidence target records are malformed"
+            )
+        record_ids.append(record_id)
+        required_text_digests.add(
+            _archive_digest(record["transcript_text_sha256"])
+        )
+        passages = record["passages"]
+        if not isinstance(passages, list):
+            raise ProjectArchiveError(
+                "Archive evidence target records are malformed"
+            )
+        for passage_index, passage in enumerate(passages):
+            if (
+                not isinstance(passage, dict)
+                or set(passage) != _TARGET_PASSAGE_FIELDS
+                or type(passage["passage_ordinal"]) is not int
+                or passage["passage_ordinal"] != passage_index
+                or type(passage["text_length"]) is not int
+                or passage["text_length"] < 0
+                or not isinstance(passage["cunits"], list)
+            ):
+                raise ProjectArchiveError(
+                    "Archive evidence target records are malformed"
+                )
+            required_text_digests.add(_archive_digest(passage["text_sha256"]))
+            for cunit_index, cunit in enumerate(passage["cunits"]):
+                if (
+                    not isinstance(cunit, dict)
+                    or set(cunit) != _TARGET_CUNIT_FIELDS
+                    or type(cunit["cunit_ordinal"]) is not int
+                    or cunit["cunit_ordinal"] != cunit_index
+                    or type(cunit["text_length"]) is not int
+                    or cunit["text_length"] < 0
+                ):
+                    raise ProjectArchiveError(
+                        "Archive evidence target records are malformed"
+                    )
+                required_text_digests.add(_archive_digest(cunit["text_sha256"]))
+    if len(record_ids) != len(set(record_ids)) or record_ids != sorted(record_ids):
+        raise ProjectArchiveError("Archive evidence target records are malformed")
+
+    expected_text_names = {
+        f"evidence_text_blobs/{digest}.utf8"
+        for digest in required_text_digests
+    }
+    actual_text_names = {
+        name for name in members if name.startswith("evidence_text_blobs/")
+    }
+    if actual_text_names != expected_text_names:
+        raise ProjectArchiveError(
+            "Archive evidence text blob closure is incomplete or excessive"
+        )
+    texts: dict[str, str] = {}
+    for digest in sorted(required_text_digests):
+        blob = members[f"evidence_text_blobs/{digest}.utf8"]
+        if sha256(blob).hexdigest() != digest:
+            raise ProjectArchiveError("Archive evidence text blob hash is invalid")
+        try:
+            text = blob.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProjectArchiveError(
+                "Archive evidence text blob is not valid UTF-8"
+            ) from exc
+        if text.encode("utf-8") != blob:
+            raise ProjectArchiveError(
+                "Archive evidence text blob is not canonical UTF-8"
+            )
+        texts[digest] = text
+
+    imports_by_id = {record.import_id: record for record in imports}
+    prepared_sets = tuple(
+        _prepared_evidence_set_from_archive(
+            record,
+            texts,
+            study_id=study_id,
+            imports_by_id=imports_by_id,
+        )
+        for record in records
+    )
+    return prepared_sets, texts
+
+
+def _prepared_evidence_set_from_archive(
+    record: dict[str, object],
+    texts: dict[str, str],
+    *,
+    study_id: str,
+    imports_by_id: dict[str, EvidenceImportRecord],
+) -> PreparedEvidenceSet:
+    import_id = record["import_id"]
+    if not isinstance(import_id, str) or import_id not in imports_by_id:
+        raise ProjectArchiveError(
+            "Archive evidence target references an unavailable import"
+        )
+    archived_import = imports_by_id[import_id]
+    created_at = record["created_at"]
+    _validate_timestamp(created_at, "evidence target timestamp")
+    if created_at != archived_import.imported_at:
+        raise ProjectArchiveError(
+            "Archive evidence target creation time conflicts with its import"
+        )
+    if record["workspace_id"] != study_id:
+        raise ProjectArchiveError(
+            "Archive evidence target belongs to another workspace"
+        )
+
+    passages: list[EvidencePassageInput] = []
+    for passage in record["passages"]:
+        passage_text = texts[_archive_digest(passage["text_sha256"])]
+        if len(passage_text) != passage["text_length"]:
+            raise ProjectArchiveError(
+                "Archive evidence passage length is invalid"
+            )
+        cunits: list[EvidenceCUnitInput] = []
+        for cunit in passage["cunits"]:
+            cunit_text = texts[_archive_digest(cunit["text_sha256"])]
+            if len(cunit_text) != cunit["text_length"]:
+                raise ProjectArchiveError(
+                    "Archive evidence C-unit length is invalid"
+                )
+            cunits.append(
+                EvidenceCUnitInput(
+                    cunit_id=cunit["cunit_id"],
+                    cunit_ordinal=cunit["cunit_ordinal"],
+                    text=cunit_text,
+                )
+            )
+        passages.append(
+            EvidencePassageInput(
+                passage_id=passage["passage_id"],
+                passage_ordinal=passage["passage_ordinal"],
+                role=passage["role"],
+                text=passage_text,
+                cunits=tuple(cunits),
+            )
+        )
+    try:
+        prepared = prepare_complete_evidence_set(
+            import_id=import_id,
+            workspace_id=record["workspace_id"],
+            project_source_id=record["project_source_id"],
+            transcript_revision_id=record["transcript_revision_id"],
+            transcript_text=texts[
+                _archive_digest(record["transcript_text_sha256"])
+            ],
+            producer_kind=record["producer_kind"],
+            producer_version=record["producer_version"],
+            producer_status=record["producer_status"],
+            review_status=record["review_status"],
+            passages=tuple(passages),
+        )
+    except EvidenceTargetValidationError as exc:
+        if "current producer" in str(exc):
+            raise ProjectArchiveError(
+                "Archive C-unit evidence does not match the current producer"
+            ) from exc
+        raise ProjectArchiveError(
+            "Archive evidence target records are invalid"
+        ) from exc
+    except (KeyError, TypeError) as exc:
+        raise ProjectArchiveError(
+            "Archive evidence target records are invalid"
+        ) from exc
+    if (
+        record["format"] != _TARGET_SET_FORMAT
+        or record["format_version"] != _TARGET_SET_FORMAT_VERSION
+        or type(record["format_version"]) is not int
+        or type(record["passage_count"]) is not int
+        or type(record["cunit_count"]) is not int
+        or record["passage_count"] != prepared.passage_count
+        or record["cunit_count"] != prepared.cunit_count
+        or record["snapshot_sha256"] != prepared.snapshot_sha256
+        or record["evidence_set_id"] != prepared.evidence_set_id
+        or prepared.to_manifest()
+        != {
+            key: value
+            for key, value in record.items()
+            if key not in {"evidence_set_id", "snapshot_sha256", "created_at"}
+        }
+    ):
+        raise ProjectArchiveError(
+            "Archive evidence target identity is invalid"
+        )
+    _validate_archived_producer_interpretation(prepared)
+    return prepared
+
+
+def _validate_archived_producer_interpretation(
+    prepared: PreparedEvidenceSet,
+) -> None:
+    if prepared.producer_kind != "cunit_segmentation":
+        return
+    events = [
+        RawTranscriptEvent(
+            timestamp_seconds=passage.passage_ordinal,
+            speaker=passage.role,
+            text=passage.text,
+            passage_id=passage.passage_id,
+        )
+        for passage in prepared.passages
+    ]
+    canonical = adjudicate_cunit_boundaries(events)
+    if len(canonical.decisions) != len(prepared.passages):
+        raise ProjectArchiveError(
+            "Archive C-unit evidence does not match the current producer"
+        )
+    for passage, decision in zip(
+        prepared.passages,
+        canonical.decisions,
+        strict=True,
+    ):
+        if (
+            tuple(decision.cunit_ids)
+            != tuple(cunit.cunit_id for cunit in passage.cunits)
+            or tuple(decision.cunit_texts)
+            != tuple(cunit.text for cunit in passage.cunits)
+        ):
+            raise ProjectArchiveError(
+                "Archive C-unit evidence does not match the current producer"
+            )
+
+
+def _stage_and_validate_archive(
+    stage_root: Path,
+    study_id: str,
+    members: dict[str, bytes],
+    payload: _ParsedArchivePayload,
+    *,
+    format_version: int,
+) -> Path:
+    stage_dir = stage_root / "studies" / study_id
+    stage_dir.mkdir(parents=True)
+    for name, member_content in members.items():
+        if name.startswith("study/"):
+            relative = PurePosixPath(name).relative_to("study")
+            atomic_write_bytes(
+                _safe_extraction_target(stage_dir, relative),
+                member_content,
+            )
+    study_payload = _strict_json_loads(
+        (stage_dir / "study.json").read_bytes(),
+        "Archive study record is malformed",
+    )
+    _validate_study_workspace_payload(study_payload, study_id)
+    try:
+        validate_study_batch_operation_database(
+            stage_dir / "batch_operations.sqlite3",
+            study_id,
+        )
+    except SchemaCompatibilityError as exc:
+        raise ProjectArchiveConflict(str(exc)) from exc
+    except (sqlite3.Error, ValueError) as exc:
+        raise ProjectArchiveError(
+            "Archive batch operation journal is invalid"
+        ) from exc
+
+    try:
+        validation_blobs = SourceBlobStore(stage_root)
+        for blob_name in sorted(payload.source_blob_names):
+            digest = PurePosixPath(blob_name).stem
+            validation_blobs.store(members[blob_name], digest)
+        _restore_imports(EvidenceCatalog(stage_root), list(payload.imports))
+        validation_texts = EvidenceTextBlobStore(stage_root)
+        for digest, text in payload.evidence_texts:
+            validation_texts.store(text, digest)
+        validation_registry = EvidenceTargetRegistry(stage_root)
+        for evidence_set in payload.evidence_sets:
+            validation_registry.register_complete_set(evidence_set)
+        stored_set_ids = tuple(
+            snapshot.evidence_set_id
+            for snapshot in validation_registry.workspace_snapshot(study_id)
+        )
+        expected_set_ids = tuple(
+            evidence_set.evidence_set_id for evidence_set in payload.evidence_sets
+        )
+        if stored_set_ids != expected_set_ids:
+            raise ProjectArchiveError(
+                "Archive evidence target closure is inconsistent"
+            )
+        AuditLogStore(stage_root).import_events(list(payload.audit_events))
+        if format_version == 1:
+            _reject_v1_target_references(
+                stage_dir,
+                payload.audit_events,
+            )
+        validation_store = StudyWorkspaceStore(stage_root)
+        compatibility = validation_store.validate_completed_batch_snapshots(
+            study_id
+        )
+        for digest in payload.unretained_blob_digests:
+            if any(
+                record.import_id not in compatibility.legacy_import_ids
+                for record in payload.imports
+                if record.source_blob_sha256 == digest
+            ):
+                raise StudyBatchSnapshotConflict(
+                    "Archive unretained blob is not eligible legacy evidence"
+                )
+        validation_store.validate_skill_pack_versions(
+            study_id,
+            legacy_unaudited_versions=compatibility.legacy_unaudited_versions,
+        )
+    except ProjectArchiveError:
+        raise
+    except (
+        EvidenceTargetBlobConflict,
+        EvidenceTargetConflictError,
+        EvidenceTargetNotFoundError,
+        EvidenceTargetValidationError,
+        EvidenceTextBlobIntegrityError,
+        FileNotFoundError,
+        SourceBlobIntegrityError,
+        StudyBatchOperationConflict,
+        StudyBatchSnapshotConflict,
+        StudySkillPackVersionConflict,
+        sqlite3.Error,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise ProjectArchiveError(
+            "Archive completed batch artifacts are invalid"
+        ) from exc
+
+    _validate_staged_qualitative_project(stage_root, study_id)
+    return stage_dir
+
+
+def _reject_v1_target_references(
+    stage_dir: Path,
+    audit_events: tuple[dict[str, object], ...],
+) -> None:
+    for artifact_path in sorted(stage_dir.rglob("*.json")):
+        payload = _strict_json_loads(
+            artifact_path.read_bytes(),
+            "Archive study JSON artifact is malformed",
+        )
+        if _contains_nonempty_evidence_set_id(payload):
+            raise ProjectArchiveError(
+                "Format version 1 cannot reference evidence targets"
+            )
+    if any(
+        _contains_nonempty_evidence_set_id(event)
+        for event in audit_events
+    ):
+        raise ProjectArchiveError(
+            "Format version 1 cannot reference evidence targets"
+        )
+
+    qualitative_path = stage_dir / "qualitative.sqlite3"
+    if not qualitative_path.exists() and not qualitative_path.is_symlink():
+        return
+    database_uri = f"{qualitative_path.resolve().as_uri()}?mode=ro"
+    with sqlite3.connect(database_uri, uri=True) as connection:
+        table_names = {
+            str(row[0])
+            for row in connection.execute(
+                "select name from sqlite_master where type = 'table'"
+            )
+        }
+        if "coding_references" in table_names:
+            coding_reference = connection.execute(
+                """
+                select 1 from coding_references
+                where evidence_set_id is not null and evidence_set_id != ''
+                limit 1
+                """
+            ).fetchone()
+            if coding_reference is not None:
+                raise ProjectArchiveError(
+                    "Format version 1 cannot reference evidence targets"
+                )
+        if "qualitative_audit_events" in table_names:
+            for (metadata_json,) in connection.execute(
+                "select metadata_json from qualitative_audit_events"
+            ):
+                metadata = _strict_json_loads(
+                    str(metadata_json).encode("utf-8"),
+                    "Archive qualitative audit metadata is malformed",
+                )
+                if _contains_nonempty_evidence_set_id(metadata):
+                    raise ProjectArchiveError(
+                        "Format version 1 cannot reference evidence targets"
+                    )
+
+
+def _contains_nonempty_evidence_set_id(value: object) -> bool:
+    if isinstance(value, dict):
+        if (
+            "evidence_set_id" in value
+            and value["evidence_set_id"] not in (None, "")
+        ):
+            return True
+        return any(
+            _contains_nonempty_evidence_set_id(item)
+            for item in value.values()
+        )
+    if isinstance(value, list):
+        return any(_contains_nonempty_evidence_set_id(item) for item in value)
+    return False
+
+
+def _archive_digest(value: object) -> str:
+    if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
+        raise ProjectArchiveError(
+            "Archive evidence target SHA-256 is invalid"
+        )
+    return value
+
+
 def _parse_evidence_imports(
     content: bytes,
     study_id: str,
 ) -> list[EvidenceImportRecord]:
-    try:
-        payloads = json.loads(content.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ProjectArchiveError("Archive evidence records are malformed") from exc
+    payloads = _strict_json_loads(
+        content,
+        "Archive evidence records are malformed",
+    )
     if not isinstance(payloads, list):
         raise ProjectArchiveError("Archive evidence records are malformed")
     imports: list[EvidenceImportRecord] = []
@@ -781,12 +1456,10 @@ def _parse_evidence_imports(
 
 
 def _parse_unretained_blob_digests(content: bytes) -> set[str]:
-    try:
-        payload = json.loads(content.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ProjectArchiveError(
-            "Archive unretained blob records are malformed"
-        ) from exc
+    payload = _strict_json_loads(
+        content,
+        "Archive unretained blob records are malformed",
+    )
     if (
         not isinstance(payload, list)
         or any(
@@ -822,10 +1495,10 @@ def _parse_audit_events(
     content: bytes,
     study_id: str,
 ) -> list[dict[str, object]]:
-    try:
-        events = json.loads(content.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ProjectArchiveError("Archive audit records are malformed") from exc
+    events = _strict_json_loads(
+        content,
+        "Archive audit records are malformed",
+    )
     if not isinstance(events, list):
         raise ProjectArchiveError("Archive audit records are malformed")
     event_ids: set[str] = set()
@@ -891,6 +1564,174 @@ def _validate_timestamp(value: object, label: str) -> None:
         raise ProjectArchiveError(f"Archive {label} is invalid")
 
 
+def _strict_json_loads(content: bytes, message: str) -> object:
+    def object_from_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> object:
+        raise ValueError(f"unsupported JSON constant: {value}")
+
+    try:
+        return json.loads(
+            content.decode("utf-8"),
+            object_pairs_hook=object_from_pairs,
+            parse_constant=reject_constant,
+        )
+    except (
+        json.JSONDecodeError,
+        RecursionError,
+        UnicodeDecodeError,
+        ValueError,
+    ) as exc:
+        raise ProjectArchiveError(message) from exc
+
+
+def _prepare_non_symlink_directory(path: Path) -> None:
+    if path.exists() or path.is_symlink():
+        try:
+            mode = path.lstat().st_mode
+        except OSError as exc:
+            raise ProjectArchiveError(
+                "Archive destination directory is unavailable"
+            ) from exc
+        if not stat.S_ISDIR(mode):
+            raise ProjectArchiveError(
+                "Archive destination directory must be a non-symlink directory"
+            )
+        return
+    try:
+        path.mkdir()
+    except OSError as exc:
+        raise ProjectArchiveError(
+            "Archive destination directory is unavailable"
+        ) from exc
+
+
+def _validate_optional_destination_directory(
+    path: Path,
+    *,
+    parent_must_exist: bool = True,
+) -> bool:
+    if not path.exists() and not path.is_symlink():
+        if parent_must_exist and not path.parent.exists():
+            raise ProjectArchiveError(
+                "Archive destination directory is unavailable"
+            )
+        return False
+    try:
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        raise ProjectArchiveError(
+            "Archive destination directory is unavailable"
+        ) from exc
+    if not stat.S_ISDIR(mode):
+        raise ProjectArchiveError(
+            "Archive destination directory must be a non-symlink directory"
+        )
+    return True
+
+
+def _validate_optional_regular_file(path: Path, label: str) -> bool:
+    if not path.exists() and not path.is_symlink():
+        return False
+    try:
+        mode = path.lstat().st_mode
+    except OSError as exc:
+        raise ProjectArchiveError(f"{label} is unavailable") from exc
+    if not stat.S_ISREG(mode):
+        raise ProjectArchiveError(
+            f"{label} must be a non-symlink regular file"
+        )
+    return True
+
+
+def _validate_audit_paths(audit: AuditLogStore) -> None:
+    _validate_optional_destination_directory(audit.audit_dir)
+    _validate_optional_regular_file(
+        audit.events_path,
+        "Archive audit event log",
+    )
+
+
+def _cleanup_restore_ancestors(
+    root: Path,
+    *,
+    root_existed: bool,
+    studies_existed: bool,
+    lock_path: Path,
+    lock_existed: bool,
+) -> None:
+    studies_dir = root / "studies"
+    if not studies_existed and (
+        studies_dir.exists() or studies_dir.is_symlink()
+    ):
+        studies_dir.rmdir()
+    if not lock_existed and (lock_path.exists() or lock_path.is_symlink()):
+        if not stat.S_ISREG(lock_path.lstat().st_mode):
+            raise OSError("Restore-created workspace lock is not a regular file")
+        lock_path.unlink()
+    if not root_existed and (root.exists() or root.is_symlink()):
+        root.rmdir()
+
+
+def _validate_destination_blob_path(root: Path, path: Path) -> None:
+    root_path = root.absolute()
+    target_path = path.absolute()
+    if not target_path.is_relative_to(root_path):
+        raise ProjectArchiveError("Destination blob path escapes archive root")
+    current = root_path
+    for component in target_path.parent.relative_to(root_path).parts:
+        current = current / component
+        if not current.exists() and not current.is_symlink():
+            continue
+        try:
+            mode = current.lstat().st_mode
+        except OSError as exc:
+            raise ProjectArchiveError(
+                "Destination blob directory is unavailable"
+            ) from exc
+        if not stat.S_ISDIR(mode):
+            raise ProjectArchiveError(
+                "Destination blob directory must be a non-symlink directory"
+            )
+    if target_path.exists() or target_path.is_symlink():
+        try:
+            mode = target_path.lstat().st_mode
+        except OSError as exc:
+            raise ProjectArchiveError("Destination blob is unavailable") from exc
+        if not stat.S_ISREG(mode):
+            raise ProjectArchiveError(
+                "Destination blob must be a non-symlink regular file"
+            )
+
+
+def _missing_parent_directories(path: Path, root: Path) -> set[Path]:
+    root_path = root.absolute()
+    current = path.absolute().parent
+    missing: set[Path] = set()
+    while current != root_path:
+        if not current.is_relative_to(root_path):
+            raise ProjectArchiveError("Destination blob path escapes archive root")
+        if not current.exists() and not current.is_symlink():
+            missing.add(current)
+        current = current.parent
+    return missing
+
+
+def _remove_published_study(study_dir: Path) -> None:
+    if not study_dir.exists() and not study_dir.is_symlink():
+        return
+    if study_dir.is_symlink() or study_dir.is_file():
+        study_dir.unlink()
+        return
+    shutil.rmtree(study_dir)
+
+
 def _copy_sqlite_database(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     source_uri = f"{source.resolve().as_uri()}?mode=ro"
@@ -936,12 +1777,16 @@ def _validate_staged_qualitative_project(
         return
     try:
         CaseService(stage_root, study_id).validate_project_state()
+        CodingReferenceService(stage_root, study_id).validate_project_state()
     except SchemaCompatibilityError as exc:
         raise ProjectArchiveConflict(str(exc)) from exc
     except (
         CaseConflictError,
         CaseNotFoundError,
         CaseValidationError,
+        CodingReferenceConflictError,
+        CodingReferenceNotFoundError,
+        CodingReferenceValidationError,
         QualitativeDatabaseConflict,
         StudyBatchOperationConflict,
         sqlite3.Error,
@@ -969,8 +1814,10 @@ def _schema_compatibility_cause(
 
 
 def _enforce_archive_budget(members: dict[str, bytes]) -> None:
-    if len(members) + 1 > MAX_ARCHIVE_MEMBERS:
+    if len(members) > MAX_ARCHIVE_MEMBERS:
         raise ProjectArchiveError("Archive contains too many members")
+    if any(len(content) > MAX_ARCHIVE_FILE_BYTES for content in members.values()):
+        raise ProjectArchiveError("Archive member exceeds file size limit")
     if sum(len(content) for content in members.values()) > MAX_ARCHIVE_UNCOMPRESSED_BYTES:
         raise ProjectArchiveError("Archive exceeds uncompressed size limit")
 

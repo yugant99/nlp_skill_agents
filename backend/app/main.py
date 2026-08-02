@@ -1923,6 +1923,7 @@ def _run_response(run, stored: StoredRun) -> dict:
         "source_id": run.source_id,
         "transcript_sha256": run.transcript_sha256,
         "transcript_revision_id": run.transcript_revision_id,
+        "evidence_set_id": stored.evidence_set_id,
         "source_filename": run.source_filename,
         "created_at": run.created_at,
         "turn_count": len(run.transcript.turns),

@@ -3,15 +3,19 @@ from __future__ import annotations
 import csv
 import json
 import sqlite3
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from backend.analysis.pipeline import AnalysisRun
+from backend.analysis.pipeline import (
+    AnalysisRun,
+    prepare_analysis_evidence_target_set,
+)
 from backend.storage.atomic import atomic_text_writer, atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.evidence_target_registry import EvidenceTargetRegistry
 from backend.storage.source_blob_store import SourceBlobStore
 from backend.storage.sqlite_migrations import (
     Migration,
@@ -27,6 +31,7 @@ class StoredRun:
     run_dir: Path
     export_dir: Path
     results_json: Path
+    evidence_set_id: str
 
 
 class LocalRunStore:
@@ -50,10 +55,26 @@ class LocalRunStore:
             workspace_id=run.workspace_id,
             transcript_revision_id=run.transcript_revision_id,
         )
+        prepared_evidence_set = prepare_analysis_evidence_target_set(
+            run,
+            registry=EvidenceTargetRegistry(self.root),
+        )
+        if (
+            run.evidence_set_id
+            and run.evidence_set_id != prepared_evidence_set.evidence_set_id
+        ):
+            raise ValueError(
+                "Analysis evidence_set_id does not match the current producer"
+            )
+        run = replace(
+            run,
+            evidence_set_id=prepared_evidence_set.evidence_set_id,
+        )
         run_dir = self.runs_dir / run.run_id
         export_dir = self.exports_dir / run.run_id
         results_json = run_dir / "results.json"
         run_payload_sha256 = _run_payload_sha256(run)
+        _validate_existing_results_snapshot(results_json, run)
         self._begin_operation(run, run_payload_sha256)
 
         completed_stage = "validated"
@@ -68,6 +89,13 @@ class LocalRunStore:
             self._advance_operation(run.run_id, completed_stage)
 
             evidence_catalog.record_import(_evidence_import_record(run))
+            stored_evidence_set = EvidenceTargetRegistry(
+                self.root
+            ).register_complete_set(prepared_evidence_set)
+            if stored_evidence_set.evidence_set_id != run.evidence_set_id:
+                raise RuntimeError(
+                    "Registered analysis evidence target set does not match the run"
+                )
             completed_stage = "evidence_cataloged"
             self._advance_operation(run.run_id, completed_stage)
 
@@ -100,6 +128,7 @@ class LocalRunStore:
             run_dir=run_dir,
             export_dir=export_dir,
             results_json=results_json,
+            evidence_set_id=run.evidence_set_id,
         )
 
     def export_path(self, run_id: str, filename: str) -> Path:
@@ -139,6 +168,18 @@ class LocalRunStore:
                 "source_filename": row["source_filename"],
                 "created_at": row["created_at"],
                 "metric_count": row["metric_count"],
+                "evidence_set_id": _results_evidence_set_id(
+                    self.root,
+                    self.runs_dir / row["run_id"] / "results.json",
+                    run_id=str(row["run_id"] or ""),
+                    import_id=str(row["import_id"] or ""),
+                    workspace_id=str(row["workspace_id"] or ""),
+                    project_source_id=str(row["project_source_id"] or ""),
+                    transcript_sha256=str(row["transcript_sha256"] or ""),
+                    transcript_revision_id=str(
+                        row["transcript_revision_id"] or ""
+                    ),
+                ),
                 "results_json": str(self.runs_dir / row["run_id"] / "results.json"),
                 "export_dir": str(self.exports_dir / row["run_id"]),
             }
@@ -325,6 +366,7 @@ def _run_to_payload(run: AnalysisRun) -> dict[str, Any]:
         "source_id": run.source_id,
         "transcript_sha256": run.transcript_sha256,
         "transcript_revision_id": run.transcript_revision_id,
+        "evidence_set_id": run.evidence_set_id,
         "source_filename": run.source_filename,
         "created_at": run.created_at,
         "participant_id": run.transcript.config.participant_id,
@@ -376,6 +418,87 @@ def _run_payload_sha256(run: AnalysisRun) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return sha256(canonical_payload).hexdigest()
+
+
+def _validate_existing_results_snapshot(path: Path, run: AnalysisRun) -> None:
+    if not path.exists() and not path.is_symlink():
+        return
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("results snapshot is not a regular file")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+        raise ValueError("Stored analysis results snapshot is invalid") from exc
+    if not isinstance(payload, dict) or payload != _run_to_payload(run):
+        raise ValueError(
+            "Stored analysis results snapshot identity conflicts with the run"
+        )
+
+
+def _results_evidence_set_id(
+    root: Path,
+    path: Path,
+    *,
+    run_id: str,
+    import_id: str,
+    workspace_id: str,
+    project_source_id: str,
+    transcript_sha256: str,
+    transcript_revision_id: str,
+) -> str:
+    if not path.exists() and not path.is_symlink():
+        return ""
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise OSError("results snapshot is not a regular file")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError("results snapshot must be an object")
+        if "evidence_set_id" not in payload:
+            return ""
+        evidence_set_id = payload["evidence_set_id"]
+        if type(evidence_set_id) is not str or not evidence_set_id:
+            raise ValueError("evidence_set_id is invalid")
+        expected_identity = {
+            "run_id": run_id,
+            "import_id": import_id,
+            "workspace_id": workspace_id,
+            "project_source_id": project_source_id,
+            "transcript_sha256": transcript_sha256,
+            "transcript_revision_id": transcript_revision_id,
+        }
+        if any(
+            type(payload.get(field_name)) is not str
+            or payload[field_name] != expected_value
+            for field_name, expected_value in expected_identity.items()
+        ):
+            raise ValueError(
+                "Stored analysis results evidence identity conflicts with the run"
+            )
+        snapshot = next(
+            (
+                candidate
+                for candidate in EvidenceTargetRegistry(root).workspace_snapshot(
+                    workspace_id
+                )
+                if candidate.evidence_set_id == evidence_set_id
+            ),
+            None,
+        )
+        if snapshot is None or (
+            snapshot.import_id != import_id
+            or snapshot.project_source_id != project_source_id
+            or snapshot.transcript_revision_id != transcript_revision_id
+            or snapshot.transcript_text_sha256 != transcript_sha256
+            or snapshot.producer_kind != "analysis_turns"
+            or snapshot.producer_version != 1
+            or snapshot.producer_status != "verified"
+            or snapshot.review_status != "not_applicable"
+        ):
+            raise ValueError("evidence target ownership conflicts with results")
+        return evidence_set_id
+    except (json.JSONDecodeError, OSError, TypeError, UnicodeDecodeError) as exc:
+        raise ValueError("Stored analysis results snapshot is invalid") from exc
 
 
 def _utc_now() -> str:

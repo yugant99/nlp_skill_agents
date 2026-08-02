@@ -11,6 +11,7 @@ import pytest
 import backend.storage.study_store as study_store_module
 from backend.qualitative.database import QualitativeProjectDatabase
 from backend.storage.evidence_catalog import EvidenceCatalog
+from backend.storage.evidence_target_registry import EvidenceTargetRegistry
 from backend.storage.project_archive import (
     ProjectArchiveConflict,
     ProjectArchiveError,
@@ -633,6 +634,11 @@ def test_study_workspace_lists_and_loads_batch_run_drilldown(tmp_path: Path) -> 
         run_summaries[0]["transcript_revision_id"]
         == loaded_run["transcript_revision_id"]
     )
+    assert run_summaries[0]["evidence_set_id"].startswith("evs_")
+    assert (
+        run_summaries[0]["evidence_set_id"]
+        == loaded_run["evidence_set_id"]
+    )
     assert loaded_run["source_filename"] == "P1_home_week1.txt"
     assert [
         {key: value for key, value in turn.items() if key != "passage_id"}
@@ -656,6 +662,16 @@ def test_study_workspace_lists_and_loads_batch_run_drilldown(tmp_path: Path) -> 
     assert all(turn["passage_id"].startswith("psg_") for turn in loaded_run["turns"])
     assert len({turn["passage_id"] for turn in loaded_run["turns"]}) == 2
     assert loaded_run["results"][0]["metric_id"] == "base_metrics"
+    resolved = EvidenceTargetRegistry(tmp_path).resolve(
+        study.id,
+        loaded_run["project_source_id"],
+        loaded_run["transcript_revision_id"],
+        loaded_run["evidence_set_id"],
+        loaded_run["turns"][0]["passage_id"],
+    )
+    assert resolved.import_id == loaded_run["import_id"]
+    assert resolved.producer_kind == "analysis_turns"
+    assert resolved.text == "Hello?"
 
 
 def test_study_workspace_lists_legacy_batch_runs_without_identity_fields(
@@ -694,6 +710,7 @@ def test_study_workspace_lists_legacy_batch_runs_without_identity_fields(
         "source_id",
         "transcript_sha256",
         "transcript_revision_id",
+        "evidence_set_id",
     ):
         payload.pop(field)
     run_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -710,6 +727,7 @@ def test_study_workspace_lists_legacy_batch_runs_without_identity_fields(
     assert summary["workspace_id"] == ""
     assert summary["transcript_sha256"] == ""
     assert summary["transcript_revision_id"] == ""
+    assert summary["evidence_set_id"] == ""
 
 
 @pytest.mark.parametrize(
@@ -745,6 +763,7 @@ def test_study_workspace_reads_historical_pre_journal_generations(
     run_path = next((batch.aggregate_dir / "runs").glob("*.json"))
     run_payload = json.loads(run_path.read_text(encoding="utf-8"))
     transcript_sha256 = run_payload["transcript_sha256"]
+    run_payload.pop("evidence_set_id")
     if generation == "lineage-no-blob":
         source_blob_path = SourceBlobStore(tmp_path).blob_path(
             run_payload["source_blob_sha256"]
@@ -1261,6 +1280,112 @@ def test_study_batch_exact_retry_reuses_side_effect_identities(
         reserved_before_retry["import_id"]
     ]
     assert len(batch_events) == 1
+
+
+def test_study_batch_retry_after_durable_evidence_registration_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260802010101_e1d3a5e7"
+    original_register = EvidenceTargetRegistry.register_complete_set
+    prepared_set_ids: list[str] = []
+    prepared_import_ids: list[str] = []
+
+    def fail_after_first_registration(self, prepared):
+        prepared_set_ids.append(prepared.evidence_set_id)
+        prepared_import_ids.append(prepared.import_id)
+        snapshot = original_register(self, prepared)
+        if len(prepared_set_ids) == 1:
+            raise OSError("injected post-target-registration failure")
+        return snapshot
+
+    monkeypatch.setattr(
+        EvidenceTargetRegistry,
+        "register_complete_set",
+        fail_after_first_registration,
+    )
+
+    with pytest.raises(OSError, match="post-target-registration"):
+        store.run_text_batch(
+            study_id,
+            version_id,
+            transcripts,
+            batch_id=batch_id,
+        )
+
+    journal = StudyBatchOperationStore(tmp_path, study_id)
+    item_before_retry = journal.list_items(batch_id)[0]
+    snapshots = EvidenceTargetRegistry(tmp_path).workspace_snapshot(study_id)
+    assert item_before_retry["stage"] == "source_blob_stored"
+    assert prepared_import_ids == [item_before_retry["import_id"]]
+    assert [snapshot.evidence_set_id for snapshot in snapshots] == prepared_set_ids
+
+    batch = store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+
+    item_after_retry = journal.list_items(batch_id)[0]
+    run_payload = store.load_batch_run(
+        study_id,
+        batch.batch_id,
+        item_after_retry["run_id"],
+    )
+    snapshots = EvidenceTargetRegistry(tmp_path).workspace_snapshot(study_id)
+    assert prepared_set_ids == [run_payload["evidence_set_id"]] * 2
+    assert prepared_import_ids == [item_after_retry["import_id"]] * 2
+    assert item_after_retry["run_payload_sha256"] == item_before_retry[
+        "run_payload_sha256"
+    ]
+    assert item_after_retry["stage"] == "completed"
+    assert [snapshot.evidence_set_id for snapshot in snapshots] == [
+        run_payload["evidence_set_id"]
+    ]
+
+
+def test_study_batch_reload_rejects_mismatched_present_evidence_set_id(
+    tmp_path: Path,
+) -> None:
+    store, study_id, version_id, transcripts = _journal_batch_fixture(tmp_path)
+    batch_id = "batch_20260802020202_f2e4a6c8"
+    batch = store.run_text_batch(
+        study_id,
+        version_id,
+        transcripts,
+        batch_id=batch_id,
+    )
+    run_path = next((batch.aggregate_dir / "runs").glob("*.json"))
+    run_payload = json.loads(run_path.read_text(encoding="utf-8"))
+    run_payload["evidence_set_id"] = "evs_00000000000000000000000000000000"
+    run_path.write_text(json.dumps(run_payload), encoding="utf-8")
+    run_payload_sha256 = sha256(
+        json.dumps(
+            run_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    with sqlite3.connect(
+        tmp_path / "studies" / study_id / "batch_operations.sqlite3"
+    ) as connection:
+        connection.execute(
+            """
+            update study_batch_operation_items
+            set run_payload_sha256 = ?
+            where batch_id = ? and item_index = 0
+            """,
+            (run_payload_sha256, batch_id),
+        )
+
+    with pytest.raises(
+        StudyBatchSnapshotConflict,
+        match="evidence target is invalid",
+    ):
+        store.load_batch(study_id, batch_id)
 
 
 def test_study_batch_retry_deduplicates_audit_written_before_failure(

@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from backend.analysis.pipeline import execute_analysis
+from backend.analysis.pipeline import (
+    execute_analysis,
+    prepare_analysis_evidence_target_set,
+)
 from backend.analysis.skill_packs import parse_skill_pack
 from backend.analysis.transcripts import StudyConfig
 from backend.evidence.identifiers import (
@@ -24,6 +27,15 @@ from backend.evidence.identifiers import (
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.atomic import atomic_write_bytes, atomic_write_text
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.evidence_target_registry import (
+    EvidenceSetSnapshot,
+    EvidenceTargetBlobConflict,
+    EvidenceTargetConflictError,
+    EvidenceTargetNotFoundError,
+    EvidenceTargetRegistry,
+    EvidenceTargetValidationError,
+)
+from backend.storage.evidence_text_blob_store import evidence_text_sha256
 from backend.storage.source_blob_store import SourceBlobIntegrityError, SourceBlobStore
 from backend.storage.study_batch_operation_store import (
     StudyBatchOperationConflict,
@@ -69,11 +81,13 @@ _CURRENT_EVIDENCE_FIELDS = {
     "transcript_sha256",
     "transcript_revision_id",
 }
+_TARGET_V1_EVIDENCE_FIELDS = _CURRENT_EVIDENCE_FIELDS | {"evidence_set_id"}
 _ALL_LEGACY_EVIDENCE_FIELDS = (
     _EARLY_EVIDENCE_FIELDS
     | _IMPORT_V1_EVIDENCE_FIELDS
-    | _CURRENT_EVIDENCE_FIELDS
+    | _TARGET_V1_EVIDENCE_FIELDS
 )
+_EVIDENCE_SET_ID = re.compile(r"^evs_[0-9a-f]{32}$")
 _WINDOWS_DEVICE_NAME = re.compile(
     r"^(con|prn|aux|nul|com[1-9]|lpt[1-9])$",
     re.IGNORECASE,
@@ -614,6 +628,7 @@ class StudyWorkspaceStore:
             successes: list[dict[str, Any]] = []
             failures: list[dict[str, str]] = []
             evidence_catalog = EvidenceCatalog(self.root)
+            evidence_target_registry = EvidenceTargetRegistry(self.root)
             source_blob_store = SourceBlobStore(self.root)
             for item_index, item in enumerate(transcripts):
                 source_filename = _required_string(item, "source_filename")
@@ -710,6 +725,15 @@ class StudyWorkspaceStore:
                         reserved["transcript_revision_id"]
                     ),
                     created_at=str(reserved["created_at"]),
+                    evidence_set_id="",
+                )
+                prepared_evidence_set = prepare_analysis_evidence_target_set(
+                    run,
+                    registry=evidence_target_registry,
+                )
+                run = replace(
+                    run,
+                    evidence_set_id=prepared_evidence_set.evidence_set_id,
                 )
                 run_payload = _study_batch_run_payload(run, metadata)
                 journal.record_analysis_completed(
@@ -754,6 +778,15 @@ class StudyWorkspaceStore:
                     "source_blob_stored",
                 )
                 evidence_catalog.record_import(evidence_record)
+                stored_evidence_set = (
+                    evidence_target_registry.register_complete_set(
+                        prepared_evidence_set
+                    )
+                )
+                if stored_evidence_set.evidence_set_id != run.evidence_set_id:
+                    raise RuntimeError(
+                        "Registered study evidence target set does not match the run"
+                    )
                 journal.advance_item(
                     resolved_batch_id,
                     item_index,
@@ -911,6 +944,7 @@ class StudyWorkspaceStore:
         completed_items = [item for item in items if item["stage"] == "completed"]
         rejected_items = [item for item in items if item["stage"] == "rejected"]
         import_records: dict[str, EvidenceImportRecord] = {}
+        evidence_sets: dict[str, EvidenceSetSnapshot] | None = None
         if completed_items:
             try:
                 evidence_catalog = EvidenceCatalog(self.root)
@@ -1003,7 +1037,8 @@ class StudyWorkspaceStore:
                 ) from exc
             import_record = import_records.get(str(item["import_id"]))
             try:
-                if _legacy_evidence_generation(run_payload) != "current":
+                evidence_generation = _legacy_evidence_generation(run_payload)
+                if evidence_generation not in {"current", "target-v1"}:
                     raise ValueError(
                         "Current run evidence identity is incomplete"
                     )
@@ -1034,6 +1069,31 @@ class StudyWorkspaceStore:
                 raise StudyBatchSnapshotConflict(
                     "Completed study batch evidence conflicts with its journal"
                 )
+            if evidence_generation == "target-v1":
+                try:
+                    if evidence_sets is None:
+                        evidence_sets = {
+                            snapshot.evidence_set_id: snapshot
+                            for snapshot in EvidenceTargetRegistry(
+                                self.root
+                            ).workspace_snapshot(study_id)
+                        }
+                    _validate_analysis_evidence_set_payload(
+                        run_payload,
+                        evidence_sets,
+                    )
+                except (
+                    EvidenceTargetBlobConflict,
+                    EvidenceTargetConflictError,
+                    EvidenceTargetNotFoundError,
+                    EvidenceTargetValidationError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    raise StudyBatchSnapshotConflict(
+                        "Completed study batch evidence target is invalid"
+                    ) from exc
             successes.append(run_payload)
 
         actual_run_paths = set((batch.aggregate_dir / "runs").glob("*.json"))
@@ -1271,7 +1331,9 @@ class StudyWorkspaceStore:
             raise StudyBatchSnapshotConflict(
                 "Legacy completed study batch run evidence is invalid"
             ) from exc
-        catalog_required = "current" in evidence_generations
+        catalog_required = bool(
+            {"current", "target-v1"}.intersection(evidence_generations)
+        )
         catalog_optional = "import-v1" in evidence_generations
         evidence_catalog = EvidenceCatalog(self.root)
         if catalog_required or (
@@ -1482,12 +1544,12 @@ class StudyWorkspaceStore:
 
         identity_fields = (
             _CURRENT_EVIDENCE_FIELDS
-            if generation == "current"
+            if generation in {"current", "target-v1"}
             else _IMPORT_V1_EVIDENCE_FIELDS
         )
         optional_empty_fields = (
             {"parent_transcript_revision_id"}
-            if generation == "current"
+            if generation in {"current", "target-v1"}
             else set()
         )
         for field_name in identity_fields - optional_empty_fields:
@@ -1495,7 +1557,7 @@ class StudyWorkspaceStore:
                 field_name
             ]:
                 raise ValueError("legacy run evidence identity is invalid")
-        if generation == "current" and not isinstance(
+        if generation in {"current", "target-v1"} and not isinstance(
             run_payload["parent_transcript_revision_id"], str
         ):
             raise ValueError("legacy run evidence identity is invalid")
@@ -1505,7 +1567,10 @@ class StudyWorkspaceStore:
             run_payload,
             run_payload["transcript_sha256"],
         )
-        if generation == "current" and run_payload["workspace_id"] != study_id:
+        if (
+            generation in {"current", "target-v1"}
+            and run_payload["workspace_id"] != study_id
+        ):
             raise ValueError("legacy run evidence belongs to another study")
         expected_import = {
             "import_id": run_payload["import_id"],
@@ -1519,7 +1584,7 @@ class StudyWorkspaceStore:
             "transcript_sha256": run_payload["transcript_sha256"],
             "imported_at": run_payload["created_at"],
         }
-        if generation == "current":
+        if generation in {"current", "target-v1"}:
             expected_import.update(
                 {
                     "project_source_id": run_payload["project_source_id"],
@@ -1530,20 +1595,36 @@ class StudyWorkspaceStore:
                 }
             )
         import_record = import_records.get(run_payload["import_id"])
-        if generation == "current" and import_record is None:
+        if generation in {"current", "target-v1"} and import_record is None:
             raise ValueError("legacy run evidence is missing from catalog")
         if import_record is not None and any(
             getattr(import_record, field_name) != value
             for field_name, value in expected_import.items()
         ):
             raise ValueError("legacy run evidence conflicts with catalog")
-        if generation == "current":
+        if generation in {"current", "target-v1"}:
             try:
                 SourceBlobStore(self.root).read_verified(
                     run_payload["source_blob_sha256"]
                 )
             except FileNotFoundError:
                 pass
+        if generation == "target-v1":
+            try:
+                snapshots = {
+                    snapshot.evidence_set_id: snapshot
+                    for snapshot in EvidenceTargetRegistry(
+                        self.root
+                    ).workspace_snapshot(study_id)
+                }
+                _validate_analysis_evidence_set_payload(run_payload, snapshots)
+            except (
+                EvidenceTargetBlobConflict,
+                EvidenceTargetConflictError,
+                EvidenceTargetNotFoundError,
+                EvidenceTargetValidationError,
+            ) as exc:
+                raise ValueError("legacy evidence target is invalid") from exc
 
     def validate_skill_pack_versions(
         self,
@@ -1938,6 +2019,7 @@ def _study_batch_run_payload(
         "source_id": run.source_id,
         "transcript_sha256": run.transcript_sha256,
         "transcript_revision_id": run.transcript_revision_id,
+        "evidence_set_id": run.evidence_set_id,
         "source_filename": run.source_filename,
         "metadata": metadata,
         "created_at": run.created_at,
@@ -1945,6 +2027,62 @@ def _study_batch_run_payload(
         "turns": [asdict(turn) for turn in run.transcript.turns],
         "results": [asdict(result) for result in run.results],
     }
+
+
+def _validate_analysis_evidence_set_payload(
+    run_payload: dict[str, Any],
+    evidence_sets: dict[str, EvidenceSetSnapshot],
+) -> None:
+    evidence_set_id = run_payload.get("evidence_set_id")
+    if (
+        type(evidence_set_id) is not str
+        or not _EVIDENCE_SET_ID.fullmatch(evidence_set_id)
+    ):
+        raise ValueError("Study analysis evidence_set_id is invalid")
+    snapshot = evidence_sets.get(evidence_set_id)
+    if snapshot is None:
+        raise ValueError("Study analysis evidence set is missing")
+    turns = run_payload.get("turns")
+    if not isinstance(turns, list):
+        raise TypeError("Study analysis turns must be a list")
+    if (
+        snapshot.import_id != run_payload.get("import_id")
+        or snapshot.workspace_id != run_payload.get("workspace_id")
+        or snapshot.project_source_id != run_payload.get("project_source_id")
+        or snapshot.transcript_revision_id
+        != run_payload.get("transcript_revision_id")
+        or snapshot.transcript_text_sha256
+        != run_payload.get("transcript_sha256")
+        or snapshot.producer_kind != "analysis_turns"
+        or snapshot.producer_version != 1
+        or snapshot.producer_status != "verified"
+        or snapshot.review_status != "not_applicable"
+        or snapshot.passage_count != len(turns)
+        or snapshot.cunit_count != 0
+        or len(snapshot.passages) != len(turns)
+    ):
+        raise ValueError("Study analysis evidence set conflicts with the run")
+    for turn_index, (turn, passage) in enumerate(
+        zip(turns, snapshot.passages, strict=True)
+    ):
+        if not isinstance(turn, dict):
+            raise TypeError("Study analysis turn must be an object")
+        turn_text = turn.get("text")
+        if (
+            type(turn.get("turn_index")) is not int
+            or turn["turn_index"] != turn_index
+            or type(turn.get("passage_id")) is not str
+            or turn["passage_id"] != passage.passage_id
+            or type(turn.get("role")) is not str
+            or turn["role"] != passage.role
+            or type(turn_text) is not str
+            or not turn_text
+            or passage.passage_ordinal != turn_index
+            or passage.text_sha256 != evidence_text_sha256(turn_text)
+            or passage.text_length != len(turn_text)
+            or passage.cunits
+        ):
+            raise ValueError("Study analysis turn conflicts with evidence targets")
 
 
 def _batch_run_from_payload(
@@ -2002,6 +2140,7 @@ def _batch_run_summary(payload: dict[str, Any]) -> dict[str, Any]:
             payload.get("transcript_sha256") or payload.get("source_sha256") or ""
         ),
         "transcript_revision_id": str(payload.get("transcript_revision_id") or ""),
+        "evidence_set_id": str(payload.get("evidence_set_id") or ""),
         "source_filename": payload["source_filename"],
         "metadata": payload.get("metadata", {}),
         "created_at": payload["created_at"],
@@ -2212,6 +2351,8 @@ def _legacy_evidence_generation(run_payload: dict[str, Any]) -> str:
         return "import-v1"
     if present_fields == _CURRENT_EVIDENCE_FIELDS:
         return "current"
+    if present_fields == _TARGET_V1_EVIDENCE_FIELDS:
+        return "target-v1"
     raise ValueError("legacy run evidence identity is incomplete")
 
 

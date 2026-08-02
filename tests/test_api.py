@@ -1485,6 +1485,7 @@ def test_create_run_from_txt_upload(tmp_path, monkeypatch) -> None:
     assert payload["source_id"].startswith("src_")
     assert len(payload["transcript_sha256"]) == 64
     assert payload["transcript_revision_id"].startswith("trv_")
+    assert payload["evidence_set_id"].startswith("evs_")
     assert [result["metric_id"] for result in payload["results"]] == [
         "base_metrics",
         "disfluency_metrics",
@@ -2640,6 +2641,7 @@ def test_pre_journal_study_batch_api_lists_loads_and_drills_down(
         "source_id",
         "transcript_sha256",
         "transcript_revision_id",
+        "evidence_set_id",
     ):
         run_payload.pop(field_name)
     run_path.write_text(json.dumps(run_payload), encoding="utf-8")
@@ -2675,6 +2677,7 @@ def test_pre_journal_study_batch_api_lists_loads_and_drills_down(
             "source_id": "",
             "transcript_sha256": "",
             "transcript_revision_id": "",
+            "evidence_set_id": "",
             "source_filename": "legacy.txt",
             "metadata": {"participant_id": "P1"},
             "created_at": created_at,

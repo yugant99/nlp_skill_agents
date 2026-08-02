@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -28,6 +28,11 @@ from backend.analysis.metric_plugins import (
 )
 from backend.analysis.metrics import MetricResult
 from backend.analysis.transcripts import StudyConfig, Transcript, parse_transcript
+from backend.storage.evidence_target_registry import (
+    EvidencePassageInput,
+    EvidenceTargetRegistry,
+    PreparedEvidenceSet,
+)
 
 
 DEFAULT_SELECTED_METRICS = [
@@ -183,6 +188,7 @@ class AnalysisRun:
     source_content: str
     transcript: Transcript
     results: list[MetricResult]
+    evidence_set_id: str = ""
 
 
 def execute_analysis(
@@ -222,7 +228,7 @@ def execute_analysis(
     results = []
     for metric_id in selected_metrics:
         results.append(get_metric_plugin(metric_id).calculate(transcript))
-    return AnalysisRun(
+    run = AnalysisRun(
         run_id=uuid4().hex,
         import_id=import_identity.import_id,
         project_source_id=import_identity.project_source_id,
@@ -238,4 +244,43 @@ def execute_analysis(
         source_content=content,
         transcript=transcript,
         results=results,
+    )
+    prepared = prepare_analysis_evidence_target_set(run)
+    return replace(run, evidence_set_id=prepared.evidence_set_id)
+
+
+def prepare_analysis_evidence_target_set(
+    run: AnalysisRun,
+    *,
+    registry: EvidenceTargetRegistry | None = None,
+) -> PreparedEvidenceSet:
+    canonical_transcript = parse_transcript(
+        run.source_content,
+        run.transcript.config,
+        run.source_filename,
+    )
+    if canonical_transcript != run.transcript:
+        raise ValueError(
+            "Analysis transcript identity conflicts with the current parser"
+        )
+    target_registry = registry or EvidenceTargetRegistry()
+    return target_registry.prepare_complete_set(
+        import_id=run.import_id,
+        workspace_id=run.workspace_id,
+        project_source_id=run.project_source_id,
+        transcript_revision_id=run.transcript_revision_id,
+        transcript_text=run.source_content,
+        producer_kind="analysis_turns",
+        producer_version=1,
+        producer_status="verified",
+        review_status="not_applicable",
+        passages=tuple(
+            EvidencePassageInput(
+                passage_id=turn.passage_id,
+                passage_ordinal=turn.turn_index,
+                role=turn.role,
+                text=turn.text,
+            )
+            for turn in run.transcript.turns
+        ),
     )

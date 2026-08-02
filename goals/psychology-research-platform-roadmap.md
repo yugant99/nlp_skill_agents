@@ -146,6 +146,9 @@ prototype. It already has:
   and remove operations against exact frozen codes and persisted evidence targets;
 - a study-scoped memo/annotation backend/API for attributable revision history,
   canonical study/source/case/code/excerpt targets, and one-way removal;
+- a study-scoped research-review backend/API for attributable researcher
+  registration, exact synthetic/imported agent coding suggestions, append-only
+  reviewer decisions, and strict human-owned coding-reference results;
 - basic audit events, approved-library artifacts, and bundle hashes;
 - agent-job prompts, statuses, runbooks, and evidence contracts.
 
@@ -153,11 +156,12 @@ It is not yet a qualitative research platform because it lacks the central manua
 coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 
 The qualitative schema is an accepted Phase 1 foundation. Its versioned codebook,
-case/typed-attribute, coding-reference, and memo/annotation services are implemented
-with explicit researcher bootstrap, active-actor checks, atomic audit events,
-deterministic reads, strict cross-store validation, staged archive-restore
-preflight, and stable source ownership. Researcher-facing editors, manual coding
-interaction, and later qualitative domain entities remain incomplete.
+case/typed-attribute, coding-reference, memo/annotation, and agent-suggestion/
+reviewer-decision services are implemented with explicit researcher bootstrap,
+active-actor checks, atomic audit events, deterministic reads, strict cross-store
+validation, staged archive-restore preflight, and stable source ownership.
+Researcher-facing editors, manual coding interaction, saved-query/export entities,
+and later qualitative domain entities remain incomplete.
 
 The segmentation journal is a root-level persistence-attempt ledger, not a resume
 worker. It does not retain run payloads, take over hard-stopped operations, roll

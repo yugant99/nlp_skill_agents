@@ -160,11 +160,20 @@ canonical evidence targets, bounded UTF-8 content, pagination cursors, and audit
 pairing; format-2 backup and staged restore preserve every revision and reject
 tampered or incomplete note state before publication.
 
+The research-review API registers attributable local researchers, imports exact
+agent coding suggestions from synthetic fixtures or external agent-output
+artifacts, and appends human reviewer decisions without mutating accepted coding
+references. Suggestions and decisions use strict origin identities, frozen-code
+and evidence-span validation, conditional result-reference rules, bounded cursors,
+and atomic privacy-minimized audits. This Phase 1 boundary makes no model or
+provider calls and stores no prompt, rationale, confidence, or model response.
+
 These are backend/API Phase 1 services, not yet a researcher-facing codebook, case,
-manual-coding, or note-authoring workbench. Source selection, coding stripes,
-retrieval, undo, memo/annotation editing UI, search, and identity/role
-administration remain later slices. The existing JSON `StudySchema` and casebook
-CSV helpers continue unchanged until a separately reviewed migration is defined.
+manual-coding, review, or note-authoring workbench. Source selection, coding
+stripes, retrieval, undo, suggestion review, memo/annotation editing UI, search,
+and identity/role administration remain later slices. The existing JSON
+`StudySchema` and casebook CSV helpers continue unchanged until a separately
+reviewed migration is defined.
 
 Segmentation outputs are rule-checked candidates, not validated gold transcripts.
 Rule and fixture counts show deterministic implementation coverage only; they are

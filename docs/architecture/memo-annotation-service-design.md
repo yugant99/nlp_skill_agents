@@ -274,9 +274,11 @@ target, revision first reads and strictly validates the complete local snapshot,
 then releases the study guard. It next validates that stored external source or
 excerpt target under the workspace lock and releases that lock. Finally it opens
 `BEGIN IMMEDIATE`, re-reads and strictly validates the complete local state and
-target identity, requires an active actor and valid local dependencies, and
-performs the compare-and-append decision. A concurrent local revision is thus
-observed in the final transaction rather than overwritten.
+target identity, and performs the compare-and-append decision. A new mutation
+requires an active actor and valid local dependencies. An exact accepted retry is
+non-mutating and returns the persisted row even if its historical actor has since
+been deactivated. A concurrent local revision is thus observed in the final
+transaction rather than overwritten.
 
 - If the current number equals the expectation and content differs, append
   revision `N + 1` and one matching audit event atomically.
@@ -292,11 +294,12 @@ after removal.
 
 ### Removal
 
-Removal requires an active actor but deliberately does not resolve external
+A new removal requires an active actor but deliberately does not resolve external
 evidence. This preserves attributable cleanup after external target damage. The
 first removal writes the complete tombstone and exactly one audit event in one
-transaction. An exact retry by the stored remover returns the tombstone without
-another event. A different remover, resurrection, second transition, target
+transaction. An exact retry by the stored remover is non-mutating and returns the
+tombstone without another event even if that historical remover has since been
+deactivated. A different remover, resurrection, second transition, target
 mutation, or physical deletion conflicts.
 
 ## Lock Order And Cross-Store Validation

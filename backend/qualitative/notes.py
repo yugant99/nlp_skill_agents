@@ -573,6 +573,7 @@ class NoteService:
             )
 
     def validate_project_state(self) -> None:
+        external_targets: dict[NoteTarget, None] = {}
         with self._read() as connection:
             self._require_project(connection)
             self._validate_project_content_budget(connection)
@@ -582,13 +583,14 @@ class NoteService:
                 where project_id = ? order by created_at, note_id
                 """,
                 (self.project_id,),
-            ).fetchall()
-            snapshots = tuple(
-                self._snapshot_from_note_row(connection, row) for row in rows
             )
-            self._reject_unmatched_note_audits(connection, snapshots)
+            for row in rows:
+                snapshot = self._snapshot_from_note_row(connection, row)
+                if snapshot.note.target.kind in {"source", "excerpt"}:
+                    external_targets.setdefault(snapshot.note.target, None)
+            self._reject_unmatched_note_audits(connection)
         self._validate_external_targets(
-            tuple(snapshot.note.target for snapshot in snapshots),
+            tuple(external_targets),
             missing_is_not_found=False,
         )
 
@@ -1044,11 +1046,7 @@ class NoteService:
     def _reject_unmatched_note_audits(
         self,
         connection: sqlite3.Connection,
-        snapshots: Sequence[NoteSnapshot],
     ) -> None:
-        known = {snapshot.note.note_id for snapshot in snapshots}
-        if len(known) != len(snapshots):
-            raise NoteConflictError("Stored notes contain duplicate identities")
         rows = connection.execute(
             """
             select subject_id, subject_type, event_type
@@ -1056,7 +1054,7 @@ class NoteService:
             where project_id = ? order by event_id
             """,
             (self.project_id,),
-        ).fetchall()
+        )
         for row in rows:
             subject_value = row["subject_id"]
             subject_type = row["subject_type"]
@@ -1069,7 +1067,14 @@ class NoteService:
             if not is_candidate:
                 continue
             subject_id = _stored_text(subject_value, "audit subject_id")
-            if subject_id not in known:
+            note_row = connection.execute(
+                """
+                select 1 from qualitative_notes
+                where project_id = ? and note_id = ?
+                """,
+                (self.project_id, subject_id),
+            ).fetchone()
+            if note_row is None:
                 raise NoteConflictError("Stored note audit history is unmatched")
 
     def _append_audit(

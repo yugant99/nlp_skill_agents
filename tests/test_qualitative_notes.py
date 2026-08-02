@@ -551,7 +551,7 @@ def test_note_and_revision_pagination_are_bounded_and_deterministic(
         )
 
 
-def test_pagination_materialization_queries_are_bounded_while_validation_streams(
+def test_page_and_project_validation_materialization_is_bounded_and_streamed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -624,6 +624,7 @@ def test_pagination_materialization_queries_are_bounded_while_validation_streams
         current.note.note_id,
         limit=1,
     )
+    fixture.service.validate_project_state()
 
     assert len(notes) == 1
     assert len(revisions) == 1

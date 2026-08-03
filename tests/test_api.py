@@ -243,7 +243,7 @@ def test_qualitative_schema_status_reports_per_study_contract(
     assert response.json() == {
         "compatible": True,
         "project_id": study_id,
-        "current_version": 4,
+        "current_version": 5,
         "migrations": [
             {
                 "version": 1,
@@ -264,6 +264,11 @@ def test_qualitative_schema_status_reports_per_study_contract(
                 "version": 4,
                 "name": "add-coder-suggestion-review-contract",
                 "applied_at": response.json()["migrations"][3]["applied_at"],
+            },
+            {
+                "version": 5,
+                "name": "add-saved-query-contract",
+                "applied_at": response.json()["migrations"][4]["applied_at"],
             },
         ],
     }
@@ -306,7 +311,7 @@ def test_qualitative_schema_status_rejects_missing_or_newer_project(
 
     assert missing.status_code == 404
     assert newer.status_code == 409
-    assert "newer than supported version 4" in newer.json()["detail"]
+    assert "newer than supported version 5" in newer.json()["detail"]
     assert tampered.status_code == 409
     assert tampered.json()["detail"] == "Qualitative database is invalid"
 

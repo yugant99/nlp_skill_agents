@@ -21,8 +21,10 @@ from backend.qualitative.research_reviews import (
     ReviewNotFoundError,
     ReviewValidationError,
 )
+from backend.qualitative.saved_queries import SavedQueryConflictError
 from backend.segmentation.pipeline import SegmentationRunStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
+from backend.storage.project_archive import ProjectArchiveConflict, ProjectArchiveError
 from backend.storage.segmentation_operation_store import SegmentationOperationStore
 from backend.storage.source_blob_store import (
     SourceBlobIntegrityError,
@@ -1084,6 +1086,260 @@ def test_coding_reference_api_maps_domain_errors_without_private_details(
         "detail": "Coding reference state conflicts with stored data"
     }
     assert private_detail not in private_conflict.text
+
+
+def test_saved_query_api_lifecycle_pagination_and_exact_envelopes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    fixture = _bootstrap_coding_reference_api(
+        client,
+        name="Saved Query Lifecycle API",
+    )
+    study_id = fixture["study_id"]
+    researcher_id = fixture["researcher_id"]
+    run = fixture["run"]
+    assert isinstance(study_id, str)
+    assert isinstance(researcher_id, str)
+    assert isinstance(run, dict)
+    base = f"/api/studies/{study_id}/qualitative/saved-queries"
+    definition = {
+        "kind": "coding_reference_filter",
+        "version": 1,
+        "filters": {
+            "project_source_id": run["project_source_id"],
+            "codebook_version_id": fixture["codebook_version_id"],
+            "code_id": fixture["code_id"],
+            "created_by": researcher_id,
+            "include_removed": False,
+        },
+    }
+    first_request = {
+        "saved_query_id": "qry_" + "1" * 32,
+        "researcher_id": researcher_id,
+        "title": "Active coding by owner",
+        "definition": definition,
+    }
+    second_request = {
+        **first_request,
+        "saved_query_id": "qry_" + "2" * 32,
+        "title": "Second saved query",
+    }
+
+    created = client.post(base, json=first_request)
+    repeated = client.post(base, json=first_request)
+    second = client.post(base, json=second_request)
+
+    assert created.status_code == 200
+    assert repeated.status_code == 200
+    assert second.status_code == 200
+    assert repeated.json() == created.json()
+    saved_query = created.json()["saved_query"]
+    assert set(saved_query) == {
+        "saved_query_id",
+        "project_id",
+        "title",
+        "definition",
+        "created_by",
+        "created_at",
+    }
+    assert set(saved_query["definition"]) == {"kind", "version", "filters"}
+    assert set(saved_query["definition"]["filters"]) == {
+        "project_source_id",
+        "codebook_version_id",
+        "code_id",
+        "created_by",
+        "include_removed",
+    }
+    assert saved_query["project_id"] == study_id
+    assert saved_query["definition"] == definition
+    assert "request_sha256" not in created.text
+    assert "filters_json" not in created.text
+
+    fetched = client.get(f"{base}/{first_request['saved_query_id']}")
+    first_page = client.get(base, params={"limit": "1"})
+    assert fetched.status_code == 200
+    assert fetched.json() == created.json()
+    assert first_page.status_code == 200
+    assert first_page.json()["saved_queries"] == [saved_query]
+    cursor = first_page.json()["next_cursor"]
+    assert isinstance(cursor, str)
+    second_page = client.get(base, params={"limit": "1", "cursor": cursor})
+    assert second_page.status_code == 200
+    assert second_page.json() == {
+        "saved_queries": [second.json()["saved_query"]],
+        "next_cursor": None,
+    }
+    filtered = client.get(base, params={"created_by": researcher_id})
+    assert [
+        item["saved_query_id"] for item in filtered.json()["saved_queries"]
+    ] == [first_request["saved_query_id"], second_request["saved_query_id"]]
+    unmatched = client.get(base, params={"created_by": "res_unmatched"})
+    assert unmatched.status_code == 200
+    assert unmatched.json() == {"saved_queries": [], "next_cursor": None}
+
+
+def test_saved_query_api_strict_validation_and_content_safe_errors(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    fixture = _bootstrap_coding_reference_api(
+        client,
+        name="Saved Query Strict API",
+    )
+    study_id = fixture["study_id"]
+    researcher_id = fixture["researcher_id"]
+    assert isinstance(study_id, str)
+    assert isinstance(researcher_id, str)
+    base = f"/api/studies/{study_id}/qualitative/saved-queries"
+    filters = {
+        "project_source_id": None,
+        "codebook_version_id": None,
+        "code_id": None,
+        "created_by": None,
+        "include_removed": False,
+    }
+    request = {
+        "saved_query_id": "qry_" + "3" * 32,
+        "researcher_id": researcher_id,
+        "title": "Strict saved query",
+        "definition": {
+            "kind": "coding_reference_filter",
+            "version": 1,
+            "filters": filters,
+        },
+    }
+    assert client.post(base, json=request).status_code == 200
+
+    structural_requests = [
+        {key: value for key, value in request.items() if key != "title"},
+        {**request, "extra": "PRIVATE-OUTER"},
+        {
+            **request,
+            "definition": {**request["definition"], "extra": "PRIVATE-DEFINITION"},
+        },
+        {
+            **request,
+            "definition": {
+                **request["definition"],
+                "version": "1",
+            },
+        },
+        {
+            **request,
+            "definition": {
+                **request["definition"],
+                "filters": {**filters, "include_removed": 0},
+            },
+        },
+        {
+            **request,
+            "definition": {
+                **request["definition"],
+                "filters": {
+                    key: value
+                    for key, value in filters.items()
+                    if key != "project_source_id"
+                },
+            },
+        },
+        {
+            **request,
+            "definition": {
+                **request["definition"],
+                "filters": {**filters, "extra": "PRIVATE-FILTER"},
+            },
+        },
+    ]
+    for structural_request in structural_requests:
+        response = client.post(base, json=structural_request)
+        assert response.status_code == 422
+        assert response.json() == {"detail": "Request validation failed"}
+        assert "PRIVATE-" not in response.text
+
+    malformed_sentinel = "PRIVATE-JSON /private/saved-query.json"
+    malformed = client.post(
+        base,
+        content="{not-json " + malformed_sentinel,
+        headers={"content-type": "application/json"},
+    )
+    assert malformed.status_code == 422
+    assert malformed.json() == {"detail": "Request validation failed"}
+    assert malformed_sentinel not in malformed.text
+
+    for query_string in (
+        "limit=1&limit=2",
+        "created_by=res_a&created_by=res_b",
+        "cursor=one&cursor=two",
+        "unknown=PRIVATE-QUERY",
+    ):
+        response = client.get(f"{base}?{query_string}")
+        assert response.status_code == 422
+        assert response.json() == {"detail": "Request validation failed"}
+        assert "PRIVATE-QUERY" not in response.text
+
+    for limit in ("0", "01", "+1", "1.0", "51", "١", "9" * 5000):
+        response = client.get(base, params={"limit": limit})
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Saved query request is invalid"}
+
+    invalid = client.post(base, json={**request, "saved_query_id": "bad"})
+    missing_dependency = client.post(
+        base,
+        json={
+            **request,
+            "saved_query_id": "qry_" + "4" * 32,
+            "definition": {
+                **request["definition"],
+                "filters": {**filters, "project_source_id": "psrc_missing"},
+            },
+        },
+    )
+    missing_record = client.get(f"{base}/{'qry_' + 'f' * 32}")
+    invalid_cursor = client.get(base, params={"cursor": "="})
+    private_title = "PRIVATE-CONTENT /private/query.db " + "a" * 64
+    divergent = client.post(base, json={**request, "title": private_title})
+    assert invalid.status_code == 400
+    assert invalid.json() == {"detail": "Saved query request is invalid"}
+    assert invalid_cursor.status_code == 400
+    assert invalid_cursor.json() == {"detail": "Saved query request is invalid"}
+    assert missing_dependency.status_code == 404
+    assert missing_record.status_code == 404
+    for response in (missing_dependency, missing_record):
+        assert response.json() == {
+            "detail": "Saved query dependency was not found"
+        }
+    assert divergent.status_code == 409
+    assert divergent.json() == {
+        "detail": "Saved query state conflicts with stored data"
+    }
+    assert private_title not in divergent.text
+
+    private_detail = "PRIVATE-STORED /private/saved-query.sqlite3 sha256-deadbeef"
+
+    def reject_list(self, **kwargs):
+        raise SavedQueryConflictError(private_detail)
+
+    monkeypatch.setattr(
+        "backend.app.main.SavedQueryService.list_saved_queries",
+        reject_list,
+    )
+    private_conflict = client.get(base)
+    assert private_conflict.status_code == 409
+    assert private_conflict.json() == {
+        "detail": "Saved query state conflicts with stored data"
+    }
+    assert private_detail not in private_conflict.text
+
+    missing_study = client.get(
+        "/api/studies/not-real/qualitative/saved-queries"
+    )
+    assert missing_study.status_code == 404
+    assert missing_study.json() == {"detail": "Study not found"}
 
 
 def test_research_review_api_exact_routes_envelopes_and_queries(
@@ -3782,6 +4038,87 @@ def test_study_backup_and_restore_api_round_trips_project(tmp_path, monkeypatch)
         files={"file": ("backup.nlpstudy.zip", archive_bytes, "application/zip")},
     )
     assert conflict_response.status_code == 409
+    assert conflict_response.json() == {
+        "detail": "Project restore conflicts with stored data"
+    }
+
+
+@pytest.mark.parametrize(
+    ("operation", "error_type", "expected_status", "expected_detail"),
+    [
+        (
+            "backup",
+            ProjectArchiveConflict,
+            409,
+            "Project archive state conflicts with stored data",
+        ),
+        (
+            "backup",
+            ProjectArchiveError,
+            400,
+            "Project archive request is invalid",
+        ),
+        (
+            "restore",
+            ProjectArchiveConflict,
+            409,
+            "Project restore conflicts with stored data",
+        ),
+        (
+            "restore",
+            ProjectArchiveError,
+            400,
+            "Project restore request is invalid",
+        ),
+    ],
+)
+def test_study_archive_api_scrubs_private_domain_errors(
+    tmp_path,
+    monkeypatch,
+    operation,
+    error_type,
+    expected_status,
+    expected_detail,
+) -> None:
+    monkeypatch.setenv("NLP_SKILL_AGENTS_DATA_DIR", str(tmp_path))
+    client = TestClient(app)
+    private_detail = (
+        "PRIVATE-SAVED-QUERY title=secret filters=secret "
+        "/private/qualitative.sqlite3 sha256-deadbeef"
+    )
+
+    def reject(self, *args, **kwargs):
+        raise error_type(private_detail)
+
+    if operation == "backup":
+        study_id = client.post(
+            "/api/studies",
+            json={"name": "Private Archive Error"},
+        ).json()["study"]["id"]
+        monkeypatch.setattr(
+            "backend.app.main.ProjectArchiveStore.create_archive",
+            reject,
+        )
+        response = client.post(f"/api/studies/{study_id}/backup")
+    else:
+        monkeypatch.setattr(
+            "backend.app.main.ProjectArchiveStore.restore_archive",
+            reject,
+        )
+        response = client.post(
+            "/api/studies/restore",
+            files={
+                "file": (
+                    "private.nlpstudy.zip",
+                    BytesIO(b"not-read-by-stub"),
+                    "application/zip",
+                )
+            },
+        )
+
+    assert response.status_code == expected_status
+    assert response.json() == {"detail": expected_detail}
+    assert private_detail not in response.text
 
 
 def test_study_backup_api_reports_running_batch_conflict(
@@ -3804,7 +4141,9 @@ def test_study_backup_api_reports_running_batch_conflict(
     response = client.post(f"/api/studies/{study.id}/backup")
 
     assert response.status_code == 409
-    assert "running batch" in response.json()["detail"]
+    assert response.json() == {
+        "detail": "Project archive state conflicts with stored data"
+    }
     assert not list((tmp_path / "backups").glob("*.nlpstudy.zip"))
 
 
@@ -3841,7 +4180,9 @@ def test_study_backup_api_reports_evidence_blob_integrity_conflict(
     response = TestClient(app).post(f"/api/studies/{study.id}/backup")
 
     assert response.status_code == 409
-    assert "source blob" in response.json()["detail"]
+    assert response.json() == {
+        "detail": "Project archive state conflicts with stored data"
+    }
     assert not list((tmp_path / "backups").glob("*.nlpstudy.zip"))
 
 

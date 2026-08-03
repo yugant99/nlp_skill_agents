@@ -78,6 +78,12 @@ from backend.qualitative.research_reviews import (
     ReviewNotFoundError,
     ReviewValidationError,
 )
+from backend.qualitative.saved_queries import (
+    SavedQueryConflictError,
+    SavedQueryNotFoundError,
+    SavedQueryService,
+    SavedQueryValidationError,
+)
 from backend.segmentation.evaluator import evaluate_segmented_draft
 from backend.segmentation.models import SyntheticSegmentationCase
 from backend.segmentation.pipeline import (
@@ -139,6 +145,7 @@ async def _content_safe_validation_error(
     path = request.url.path
     if path.startswith("/api/studies/") and (
         "/qualitative/coding-references" in path
+        or "/qualitative/saved-queries" in path
         or "/qualitative/researchers" in path
         or "/qualitative/agent-suggestions" in path
         or "/qualitative/memos" in path
@@ -444,6 +451,37 @@ class CodingReferenceListQuery(BaseModel):
         if value == "false":
             return False
         raise ValueError("include_removed must be true or false")
+
+
+class _StrictSavedQueryAPIModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class SavedQueryFiltersRequest(_StrictSavedQueryAPIModel):
+    project_source_id: str | None
+    codebook_version_id: str | None
+    code_id: str | None
+    created_by: str | None
+    include_removed: bool
+
+
+class SavedQueryDefinitionRequest(_StrictSavedQueryAPIModel):
+    kind: str
+    version: int
+    filters: SavedQueryFiltersRequest
+
+
+class SavedQueryCreateRequest(_StrictSavedQueryAPIModel):
+    saved_query_id: str
+    researcher_id: str
+    title: str
+    definition: SavedQueryDefinitionRequest
+
+
+class SavedQueryListQuery(_StrictSavedQueryAPIModel):
+    created_by: str | None = None
+    limit: str = "20"
+    cursor: str | None = None
 
 
 class _StrictReviewAPIModel(BaseModel):
@@ -1463,6 +1501,81 @@ def remove_qualitative_coding_reference(
     ) as exc:
         _raise_coding_reference_http_error(exc)
     return {"coding_reference": _coding_reference_payload(coding_reference)}
+
+
+@app.post("/api/studies/{study_id}/qualitative/saved-queries")
+def create_qualitative_saved_query(
+    study_id: str,
+    request: SavedQueryCreateRequest,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        saved_query = SavedQueryService(root, study_id).create_saved_query(
+            **request.model_dump()
+        )
+    except (
+        SavedQueryValidationError,
+        SavedQueryNotFoundError,
+        SavedQueryConflictError,
+    ) as exc:
+        _raise_saved_query_http_error(exc)
+    return {"saved_query": _saved_query_payload(saved_query)}
+
+
+@app.get("/api/studies/{study_id}/qualitative/saved-queries")
+def list_qualitative_saved_queries(
+    study_id: str,
+    raw_request: Request,
+    query: Annotated[SavedQueryListQuery, Query()],
+) -> dict:
+    _reject_repeated_review_query_parameters(
+        raw_request,
+        {"created_by", "limit", "cursor"},
+    )
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        page = SavedQueryService(root, study_id).list_saved_queries(
+            created_by=query.created_by,
+            limit=_saved_query_page_limit(query.limit),
+            cursor=query.cursor,
+        )
+    except (
+        SavedQueryValidationError,
+        SavedQueryNotFoundError,
+        SavedQueryConflictError,
+    ) as exc:
+        _raise_saved_query_http_error(exc)
+    return {
+        "saved_queries": [
+            _saved_query_payload(saved_query)
+            for saved_query in page.saved_queries
+        ],
+        "next_cursor": page.next_cursor,
+    }
+
+
+@app.get(
+    "/api/studies/{study_id}/qualitative/saved-queries/{saved_query_id}"
+)
+def get_qualitative_saved_query(
+    study_id: str,
+    saved_query_id: str,
+) -> dict:
+    root = _local_data_root()
+    _require_api_study(root, study_id)
+    try:
+        saved_query = SavedQueryService(root, study_id).read_saved_query(
+            saved_query_id
+        )
+    except (
+        SavedQueryValidationError,
+        SavedQueryNotFoundError,
+        SavedQueryConflictError,
+    ) as exc:
+        _raise_saved_query_http_error(exc)
+    return {"saved_query": _saved_query_payload(saved_query)}
 
 
 @app.put(
@@ -2540,9 +2653,15 @@ def backup_study(study_id: str) -> dict:
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Study not found") from exc
     except ProjectArchiveConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail="Project archive state conflicts with stored data",
+        ) from exc
     except ProjectArchiveError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail="Project archive request is invalid",
+        ) from exc
     return {
         "backup": {
             "study_id": backup.study_id,
@@ -2567,11 +2686,20 @@ async def restore_study(file: Annotated[UploadFile, File()]) -> dict:
             archive_path
         )
     except FileExistsError as exc:
-        raise HTTPException(status_code=409, detail="Study already exists") from exc
+        raise HTTPException(
+            status_code=409,
+            detail="Project restore conflicts with stored data",
+        ) from exc
     except ProjectArchiveConflict as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409,
+            detail="Project restore conflicts with stored data",
+        ) from exc
     except ProjectArchiveError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=400,
+            detail="Project restore request is invalid",
+        ) from exc
     finally:
         archive_path.unlink(missing_ok=True)
     return {
@@ -2991,6 +3119,23 @@ def _raise_coding_reference_http_error(exc: Exception) -> NoReturn:
     ) from exc
 
 
+def _raise_saved_query_http_error(exc: Exception) -> NoReturn:
+    if isinstance(exc, SavedQueryValidationError):
+        raise HTTPException(
+            status_code=400,
+            detail="Saved query request is invalid",
+        ) from exc
+    if isinstance(exc, SavedQueryNotFoundError):
+        raise HTTPException(
+            status_code=404,
+            detail="Saved query dependency was not found",
+        ) from exc
+    raise HTTPException(
+        status_code=409,
+        detail="Saved query state conflicts with stored data",
+    ) from exc
+
+
 def _raise_note_http_error(exc: Exception) -> NoReturn:
     if isinstance(exc, NoteValidationError):
         raise HTTPException(
@@ -3046,6 +3191,23 @@ def _review_page_limit(value: str) -> int:
     parsed = int(value)
     if not 1 <= parsed <= 50:
         raise ReviewValidationError("limit must be between 1 and 50")
+    return parsed
+
+
+def _saved_query_page_limit(value: str) -> int:
+    if (
+        not value
+        or len(value) > 2
+        or not value.isascii()
+        or not value.isdecimal()
+        or value.startswith("0")
+    ):
+        raise SavedQueryValidationError(
+            "limit must be a canonical ASCII decimal"
+        )
+    parsed = int(value)
+    if not 1 <= parsed <= 50:
+        raise SavedQueryValidationError("limit must be between 1 and 50")
     return parsed
 
 
@@ -3112,6 +3274,28 @@ def _coding_reference_payload(coding_reference) -> dict:
         "created_at": coding_reference.created_at,
         "removed_by": coding_reference.removed_by,
         "removed_at": coding_reference.removed_at,
+    }
+
+
+def _saved_query_payload(saved_query) -> dict:
+    filters = saved_query.definition.filters
+    return {
+        "saved_query_id": saved_query.saved_query_id,
+        "project_id": saved_query.project_id,
+        "title": saved_query.title,
+        "definition": {
+            "kind": saved_query.definition.kind,
+            "version": saved_query.definition.version,
+            "filters": {
+                "project_source_id": filters.project_source_id,
+                "codebook_version_id": filters.codebook_version_id,
+                "code_id": filters.code_id,
+                "created_by": filters.created_by,
+                "include_removed": filters.include_removed,
+            },
+        },
+        "created_by": saved_query.created_by,
+        "created_at": saved_query.created_at,
     }
 
 

@@ -41,6 +41,12 @@ from backend.qualitative.research_reviews import (
     ReviewNotFoundError,
     ReviewValidationError,
 )
+from backend.qualitative.saved_queries import (
+    SavedQueryConflictError,
+    SavedQueryNotFoundError,
+    SavedQueryService,
+    SavedQueryValidationError,
+)
 from backend.segmentation.adjudicator import adjudicate_cunit_boundaries
 from backend.segmentation.models import RawTranscriptEvent
 from backend.storage.atomic import atomic_binary_writer, atomic_write_bytes
@@ -263,6 +269,9 @@ class ProjectArchiveStore:
             ReviewConflictError,
             ReviewNotFoundError,
             ReviewValidationError,
+            SavedQueryConflictError,
+            SavedQueryNotFoundError,
+            SavedQueryValidationError,
             OSError,
             SchemaCompatibilityError,
             SourceBlobIntegrityError,
@@ -1383,6 +1392,14 @@ def _reject_v1_target_references(
                 raise ProjectArchiveError(
                     "Format version 1 cannot reference evidence targets"
                 )
+        if "saved_queries" in table_names:
+            saved_query = connection.execute(
+                "select 1 from saved_queries limit 1"
+            ).fetchone()
+            if saved_query is not None:
+                raise ProjectArchiveError(
+                    "Format version 1 cannot contain saved queries"
+                )
         if "qualitative_audit_events" in table_names:
             for (metadata_json,) in connection.execute(
                 "select metadata_json from qualitative_audit_events"
@@ -1818,6 +1835,7 @@ def _validate_staged_qualitative_project(
         CodingReferenceService(stage_root, study_id).validate_project_state()
         NoteService(stage_root, study_id).validate_project_state()
         ResearchReviewService(stage_root, study_id).validate_project_state()
+        SavedQueryService(stage_root, study_id).validate_project_state()
     except SchemaCompatibilityError as exc:
         raise ProjectArchiveConflict(str(exc)) from exc
     except (
@@ -1833,6 +1851,9 @@ def _validate_staged_qualitative_project(
         ReviewConflictError,
         ReviewNotFoundError,
         ReviewValidationError,
+        SavedQueryConflictError,
+        SavedQueryNotFoundError,
+        SavedQueryValidationError,
         QualitativeDatabaseConflict,
         StudyBatchOperationConflict,
         sqlite3.Error,

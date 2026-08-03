@@ -303,9 +303,10 @@ def test_qualitative_database_initializes_once_with_attributable_identity(
         "add-coding-reference-contract",
         "add-memo-annotation-contract",
         "add-coder-suggestion-review-contract",
+        "add-saved-query-contract",
     ]
     with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone()[0] == 4
+        assert connection.execute("pragma user_version").fetchone()[0] == 5
         assert connection.execute("pragma foreign_key_check").fetchall() == []
         assert connection.execute(
             "select project_id from qualitative_projects"
@@ -373,9 +374,9 @@ def test_qualitative_version_two_upgrades_to_note_contract_without_changing_rows
             (study.id, RESEARCHER_ID, now),
         )
 
-    assert [row["version"] for row in database.migration_status()] == [1, 2, 3, 4]
+    assert [row["version"] for row in database.migration_status()] == [1, 2, 3, 4, 5]
     with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone() == (4,)
+        assert connection.execute("pragma user_version").fetchone() == (5,)
         assert connection.execute(
             "select case_id, label from cases"
         ).fetchall() == [("cas_before_note_upgrade", "P1")]
@@ -453,9 +454,9 @@ def test_qualitative_version_three_upgrades_to_review_contract_without_data_loss
             created_at=created_at,
         )
 
-    assert [row["version"] for row in database.migration_status()] == [1, 2, 3, 4]
+    assert [row["version"] for row in database.migration_status()] == [1, 2, 3, 4, 5]
     with sqlite3.connect(database.db_path) as connection:
-        assert connection.execute("pragma user_version").fetchone() == (4,)
+        assert connection.execute("pragma user_version").fetchone() == (5,)
         assert connection.execute(
             "select coding_reference_id from coding_references"
         ).fetchall() == [(f"cdr_{'1' * 32}",)]
@@ -545,6 +546,211 @@ def test_review_migration_has_exact_columns_indexes_and_triggers(
         ]
 
 
+def test_qualitative_version_four_upgrades_to_saved_query_contract_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Saved Query Upgrade Study"}
+    )
+    database = QualitativeProjectDatabase(tmp_path, study.id)
+    created_at = "2026-08-02T12:00:00+00:00"
+    suggestion_id = f"ags_{'1' * 32}"
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        assert apply_migrations(
+            connection,
+            database_name="version four saved query upgrade",
+            migrations=qualitative_database.QUALITATIVE_MIGRATIONS[:4],
+        ) == 4
+        connection.execute(
+            "insert into qualitative_projects values (?, ?)",
+            (study.id, created_at),
+        )
+        connection.execute(
+            """
+            insert into researchers (
+              researcher_id, project_id, display_name, role,
+              active, created_at, updated_at
+            ) values (?, ?, 'Upgrade Owner', 'researcher', 1, ?, ?)
+            """,
+            (RESEARCHER_ID, study.id, created_at, created_at),
+        )
+        _insert_review_code_fixture(
+            connection,
+            project_id=study.id,
+            created_at=created_at,
+        )
+        _insert_agent_suggestion(
+            connection,
+            project_id=study.id,
+            suggestion_id=suggestion_id,
+            origin_key="upgrade",
+            created_at=created_at,
+        )
+
+    assert [row["version"] for row in database.migration_status()] == [
+        1,
+        2,
+        3,
+        4,
+        5,
+    ]
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone() == (5,)
+        assert connection.execute(
+            "select agent_suggestion_id from agent_coding_suggestions"
+        ).fetchall() == [(suggestion_id,)]
+        assert connection.execute("select count(*) from saved_queries").fetchone() == (
+            0,
+        )
+        assert connection.execute("pragma foreign_key_check").fetchall() == []
+
+
+def test_saved_query_migration_has_exact_columns_indexes_and_triggers(
+    tmp_path: Path,
+) -> None:
+    _, database = _create_project(tmp_path)
+
+    with sqlite3.connect(database.db_path) as connection:
+        columns = connection.execute("pragma table_info(saved_queries)").fetchall()
+        assert [(row[1], row[2].upper(), row[3], row[5]) for row in columns] == [
+            ("saved_query_id", "TEXT", 1, 1),
+            ("project_id", "TEXT", 1, 0),
+            ("title", "TEXT", 1, 0),
+            ("query_kind", "TEXT", 1, 0),
+            ("definition_version", "INTEGER", 1, 0),
+            ("filters_json", "TEXT", 1, 0),
+            ("request_sha256", "TEXT", 1, 0),
+            ("created_by", "TEXT", 1, 0),
+            ("created_at", "TEXT", 1, 0),
+        ]
+        objects = connection.execute(
+            """
+            select type, name from sqlite_master
+            where tbl_name = 'saved_queries'
+              and name not like 'sqlite_autoindex_%'
+              and type in ('index', 'trigger')
+            order by type, name
+            """
+        ).fetchall()
+        assert objects == [
+            ("index", "saved_queries_by_created"),
+            ("index", "saved_queries_by_creator_created"),
+            ("trigger", "prevent_saved_query_delete"),
+            ("trigger", "prevent_saved_query_update"),
+        ]
+        assert [
+            row[2]
+            for row in connection.execute(
+                "pragma index_info(saved_queries_by_created)"
+            )
+        ] == ["project_id", "created_at", "saved_query_id"]
+        assert [
+            row[2]
+            for row in connection.execute(
+                "pragma index_info(saved_queries_by_creator_created)"
+            )
+        ] == ["project_id", "created_by", "created_at", "saved_query_id"]
+        foreign_keys: dict[int, list[tuple[object, ...]]] = {}
+        for row in connection.execute("pragma foreign_key_list(saved_queries)"):
+            foreign_keys.setdefault(int(row[0]), []).append(
+                (row[1], row[2], row[3], row[4], row[5], row[6], row[7])
+            )
+        assert sorted(tuple(rows) for rows in foreign_keys.values()) == sorted(
+            [
+                (
+                    (
+                        0,
+                        "qualitative_projects",
+                        "project_id",
+                        "project_id",
+                        "NO ACTION",
+                        "RESTRICT",
+                        "NONE",
+                    ),
+                ),
+                (
+                    (
+                        0,
+                        "researchers",
+                        "project_id",
+                        "project_id",
+                        "NO ACTION",
+                        "RESTRICT",
+                        "NONE",
+                    ),
+                    (
+                        1,
+                        "researchers",
+                        "created_by",
+                        "researcher_id",
+                        "NO ACTION",
+                        "RESTRICT",
+                        "NONE",
+                    ),
+                ),
+            ]
+        )
+
+
+def test_saved_query_migration_enforces_identity_bounds_and_immutability(
+    tmp_path: Path,
+) -> None:
+    project_id, database = _create_project(tmp_path)
+    saved_query_id = f"qry_{'1' * 32}"
+    values = (
+        saved_query_id,
+        project_id,
+        "All active coding",
+        "coding_reference_filter",
+        1,
+        '{"code_id":null,"codebook_version_id":null,"created_by":null,'
+        '"include_removed":false,"project_source_id":null}',
+        "2" * 64,
+        RESEARCHER_ID,
+        "2026-08-02T12:00:00+00:00",
+    )
+    insert_sql = """
+        insert into saved_queries (
+          saved_query_id, project_id, title, query_kind,
+          definition_version, filters_json, request_sha256,
+          created_by, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+
+    with sqlite3.connect(database.db_path) as connection:
+        connection.execute("pragma foreign_keys = on")
+        connection.execute(insert_sql, values)
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "update saved_queries set title = title where saved_query_id = ?",
+                (saved_query_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+            connection.execute(
+                "delete from saved_queries where saved_query_id = ?",
+                (saved_query_id,),
+            )
+
+    invalid_replacements = {
+        0: "qry_not_hex_________________________",
+        2: " padded ",
+        3: "sql",
+        4: 1.5,
+        5: b"{}",
+        6: "A" * 64,
+        8: "not-a-timestamp",
+    }
+    for index, replacement in invalid_replacements.items():
+        candidate = list(values)
+        candidate[0] = f"qry_{index + 2:032x}"
+        candidate[index] = replacement
+        with sqlite3.connect(database.db_path) as connection:
+            connection.execute("pragma foreign_keys = on")
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(insert_sql, tuple(candidate))
+
+
 def test_qualitative_initialization_retry_uses_persisted_bootstrap_identity(
     tmp_path: Path,
 ) -> None:
@@ -614,6 +820,9 @@ def test_qualitative_read_is_guarded_query_only_and_returns_rows(
         "drop table reviewer_decisions",
         "drop trigger prevent_agent_coding_suggestion_update",
         "drop index agent_coding_suggestions_by_created",
+        "drop table saved_queries",
+        "drop trigger prevent_saved_query_update",
+        "drop index saved_queries_by_created",
         "create table unexpected_qualitative_state (value text)",
     ],
 )
@@ -927,6 +1136,65 @@ def test_review_schema_failure_rolls_back_partial_migration_four(
             """
             select count(*) from sqlite_master
             where type = 'table' and name = 'agent_coding_suggestions'
+            """
+        ).fetchone()[0] == 0
+
+
+def test_saved_query_schema_failure_rolls_back_partial_migration_five(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    study = StudyWorkspaceStore(tmp_path).create_study(
+        {"name": "Saved Query Migration Rollback"}
+    )
+    database = QualitativeProjectDatabase(tmp_path, study.id)
+    with sqlite3.connect(database.db_path) as connection:
+        assert apply_migrations(
+            connection,
+            database_name="version four saved query rollback",
+            migrations=qualitative_database.QUALITATIVE_MIGRATIONS[:4],
+        ) == 4
+
+    def fail_after_saved_query_schema_change(connection: sqlite3.Connection) -> None:
+        qualitative_database._add_saved_query_contract(connection)
+        connection.execute("insert into missing_table values (1)")
+
+    monkeypatch.setattr(
+        qualitative_database,
+        "QUALITATIVE_MIGRATIONS",
+        (
+            *qualitative_database.QUALITATIVE_MIGRATIONS[:4],
+            Migration(
+                5,
+                "fail-saved-query-schema-change",
+                fail_after_saved_query_schema_change,
+            ),
+        ),
+    )
+
+    with pytest.raises(SchemaCompatibilityError, match="migration 5"):
+        database.migration_status()
+
+    with sqlite3.connect(database.db_path) as connection:
+        assert connection.execute("pragma user_version").fetchone()[0] == 4
+        assert connection.execute(
+            "select version from schema_migrations order by version"
+        ).fetchall() == [(1,), (2,), (3,), (4,)]
+        assert connection.execute(
+            """
+            select count(*) from sqlite_master
+            where type = 'table' and name = 'saved_queries'
+            """
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            """
+            select count(*) from sqlite_master
+            where name in (
+              'saved_queries_by_created',
+              'saved_queries_by_creator_created',
+              'prevent_saved_query_delete',
+              'prevent_saved_query_update'
+            )
             """
         ).fetchone()[0] == 0
 
@@ -1950,7 +2218,7 @@ def test_qualitative_database_is_preserved_by_project_backup_restore(
     ProjectArchiveStore(restore_root).restore_archive(archive.archive_path)
     restored = QualitativeProjectDatabase(restore_root, project_id)
 
-    assert restored.migration_status()[-1]["version"] == 4
+    assert restored.migration_status()[-1]["version"] == 5
     with sqlite3.connect(restored.db_path) as connection:
         assert connection.execute(
             "select case_id, label from cases"
@@ -1966,6 +2234,7 @@ def test_qualitative_ids_use_known_entity_prefixes() -> None:
     assert new_qualitative_id("memo").startswith("mem_")
     assert new_qualitative_id("annotation").startswith("ann_")
     assert new_qualitative_id("note_revision").startswith("nrv_")
+    assert new_qualitative_id("saved_query").startswith("qry_")
     assert new_qualitative_id("audit_event").startswith("qae_")
     with pytest.raises(ValueError, match="Unknown qualitative entity type"):
         new_qualitative_id("unknown")

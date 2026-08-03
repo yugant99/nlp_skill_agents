@@ -85,6 +85,7 @@ Each checkpoint should record:
 - [2026-08-01 Phase 1 memo and annotation service](2026-08-01-phase1-memo-annotation-service.md)
 - [2026-08-01 Phase 1 coder suggestion and reviewer-decision service](2026-08-01-phase1-coder-suggestion-review-service.md)
 - [2026-08-02 Phase 1 coder-review pause handoff](2026-08-02-phase1-coder-review-pause.md)
+- [2026-08-02 Phase 1 saved-query service](2026-08-02-phase1-saved-query-service.md)
 
 ## Completion Bar
 

@@ -21,6 +21,7 @@ from backend.qualitative.coding_references import CodingReferenceService
 from backend.qualitative.database import QualitativeProjectDatabase
 from backend.qualitative.notes import NoteService
 from backend.qualitative.research_reviews import ResearchReviewService
+from backend.qualitative.saved_queries import SavedQueryService
 from backend.storage.audit_log import AuditLogStore
 from backend.storage.evidence_catalog import EvidenceCatalog, EvidenceImportRecord
 from backend.storage.evidence_target_registry import (
@@ -214,6 +215,37 @@ def _build_coding_reference_archive(root: Path):
     )
     exported = ProjectArchiveStore(root).create_archive(study_id)
     return study_id, import_record, prepared, reference, exported
+
+
+def _build_saved_query_archive(root: Path):
+    study_id, _ = _build_study(root)
+    researcher_id = "res_archive_query_author"
+    QualitativeProjectDatabase(root, study_id).initialize(
+        researcher_id=researcher_id,
+        researcher_name="Archive Query Author",
+    )
+    project_source_id = EvidenceCatalog(root).workspace_import_records(study_id)[
+        0
+    ].project_source_id
+    service = SavedQueryService(root, study_id)
+    saved_query = service.create_saved_query(
+        saved_query_id="qry_" + "a" * 32,
+        researcher_id=researcher_id,
+        title="Archived source query",
+        definition={
+            "kind": "coding_reference_filter",
+            "version": 1,
+            "filters": {
+                "project_source_id": project_source_id,
+                "codebook_version_id": None,
+                "code_id": None,
+                "created_by": researcher_id,
+                "include_removed": False,
+            },
+        },
+    )
+    exported = ProjectArchiveStore(root).create_archive(study_id)
+    return study_id, saved_query, exported
 
 
 def _build_note_archive(root: Path):
@@ -738,6 +770,28 @@ def test_project_archive_round_trips_qualitative_case_state(tmp_path: Path) -> N
     assert restored_snapshot.project_source_ids == (project_source_id,)
 
 
+def test_project_archive_v2_round_trips_saved_query_state(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, saved_query, exported = _build_saved_query_archive(source_root)
+
+    with ZipFile(exported.archive_path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        member_names = archive.namelist()
+    assert manifest["format_version"] == 2
+    assert "study/qualitative.sqlite3" in member_names
+    assert not any(
+        "saved_queries" in name or "saved-queries" in name
+        for name in member_names
+    )
+
+    ProjectArchiveStore(restore_root).restore_archive(exported.archive_path)
+
+    restored = SavedQueryService(restore_root, study_id)
+    restored.validate_project_state()
+    assert restored.read_saved_query(saved_query.saved_query_id) == saved_query
+
+
 def test_project_archive_v2_round_trips_coding_reference_target_closure(
     tmp_path: Path,
 ) -> None:
@@ -943,6 +997,89 @@ def test_project_archive_concurrent_coding_write_is_attributably_atomic(
         ).fetchone()[0]
 
     assert (coding_count, audit_count) in {(0, 0), (1, 1)}
+
+
+def test_project_archive_concurrent_saved_query_write_is_attributably_atomic(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    study_id, _ = _build_study(source_root)
+    researcher_id = "res_concurrent_query_author"
+    QualitativeProjectDatabase(source_root, study_id).initialize(
+        researcher_id=researcher_id,
+        researcher_name="Concurrent Query Author",
+    )
+    project_source_id = EvidenceCatalog(source_root).workspace_import_records(
+        study_id
+    )[0].project_source_id
+    saved_query_id = "qry_" + "b" * 32
+    barrier = threading.Barrier(3)
+    results: dict[str, object] = {}
+    errors: list[BaseException] = []
+
+    def create_archive() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results["archive"] = ProjectArchiveStore(source_root).create_archive(
+                study_id
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    def create_saved_query() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results["saved_query"] = SavedQueryService(
+                source_root,
+                study_id,
+            ).create_saved_query(
+                saved_query_id=saved_query_id,
+                researcher_id=researcher_id,
+                title="Concurrent saved query",
+                definition={
+                    "kind": "coding_reference_filter",
+                    "version": 1,
+                    "filters": {
+                        "project_source_id": project_source_id,
+                        "codebook_version_id": None,
+                        "code_id": None,
+                        "created_by": researcher_id,
+                        "include_removed": False,
+                    },
+                },
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    archive_thread = threading.Thread(target=create_archive)
+    query_thread = threading.Thread(target=create_saved_query)
+    archive_thread.start()
+    query_thread.start()
+    barrier.wait(timeout=5)
+    archive_thread.join(timeout=15)
+    query_thread.join(timeout=15)
+
+    assert not archive_thread.is_alive()
+    assert not query_thread.is_alive()
+    assert errors == []
+    exported = results["archive"]
+    database_copy = tmp_path / "concurrent-saved-query-archive.sqlite3"
+    with ZipFile(exported.archive_path) as archive:
+        database_copy.write_bytes(archive.read("study/qualitative.sqlite3"))
+    with sqlite3.connect(database_copy) as connection:
+        query_count = connection.execute(
+            "select count(*) from saved_queries where saved_query_id = ?",
+            (saved_query_id,),
+        ).fetchone()[0]
+        audit_count = connection.execute(
+            """
+            select count(*) from qualitative_audit_events
+            where event_type = 'saved_query.created' and subject_id = ?
+            """,
+            (saved_query_id,),
+        ).fetchone()[0]
+
+    assert (query_count, audit_count) in {(0, 0), (1, 1)}
 
 
 def test_project_archive_concurrent_suggestion_write_is_attributably_atomic(
@@ -1234,12 +1371,14 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
     qualitative_validation_roots: list[Path] = []
     note_validation_roots: list[Path] = []
     review_validation_roots: list[Path] = []
+    saved_query_validation_roots: list[Path] = []
     original_workspace_lock = project_archive_module.workspace_mutation_lock
     original_archive_guard = StudyBatchOperationStore.archive_snapshot_guard
     original_case_validation = CaseService.validate_project_state
     original_coding_validation = CodingReferenceService.validate_project_state
     original_note_validation = NoteService.validate_project_state
     original_review_validation = ResearchReviewService.validate_project_state
+    original_saved_query_validation = SavedQueryService.validate_project_state
 
     @contextmanager
     def tracked_workspace_lock(root):
@@ -1285,6 +1424,12 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
             assert service.root != source_root
         return original_review_validation(service)
 
+    def tracked_saved_query_validation(service):
+        saved_query_validation_roots.append(service.root)
+        if destination_lock_depth:
+            assert service.root != source_root
+        return original_saved_query_validation(service)
+
     monkeypatch.setattr(
         project_archive_module,
         "workspace_mutation_lock",
@@ -1315,6 +1460,11 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
         "validate_project_state",
         tracked_review_validation,
     )
+    monkeypatch.setattr(
+        SavedQueryService,
+        "validate_project_state",
+        tracked_saved_query_validation,
+    )
 
     ProjectArchiveStore(source_root).create_archive(study_id)
 
@@ -1325,6 +1475,8 @@ def test_project_archive_enters_live_guards_before_destination_workspace_lock(
     assert all(root != source_root for root in note_validation_roots)
     assert review_validation_roots
     assert all(root != source_root for root in review_validation_roots)
+    assert saved_query_validation_roots
+    assert all(root != source_root for root in saved_query_validation_roots)
     assert destination_lock_depth == 0
 
 
@@ -1649,6 +1801,43 @@ def test_project_archive_rejects_invalid_qualitative_rows_before_publish(
     assert "private-value" not in str(error.value)
     assert not (restore_root / "studies" / study_id).exists()
     assert _destination_files(restore_root) == {}
+
+
+def test_project_archive_rejects_rehashed_invalid_saved_query_before_publish(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, exported = _build_saved_query_archive(source_root)
+    forged_archive = tmp_path / "invalid-saved-query.nlpstudy.zip"
+    private_title = "PRIVATE-SAVED-QUERY /private/qualitative.sqlite3"
+    _rewrite_qualitative_database(
+        exported.archive_path,
+        forged_archive,
+        tmp_path / "invalid-saved-query.sqlite3",
+        f"""
+        drop trigger prevent_saved_query_update;
+        update saved_queries set title = '{private_title}';
+        create trigger prevent_saved_query_update
+        before update on saved_queries
+        begin
+          select raise(abort, 'saved queries are immutable');
+        end;
+        """,
+    )
+    restore_root.mkdir()
+    (restore_root / "sentinel.txt").write_text("unchanged", encoding="utf-8")
+    before = _destination_tree(restore_root)
+
+    with pytest.raises(
+        ProjectArchiveError,
+        match="Archive qualitative project is invalid",
+    ) as error:
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert private_title not in str(error.value)
+    assert _destination_tree(restore_root) == before
+    assert not (restore_root / "studies" / study_id).exists()
 
 
 def test_project_archive_rejects_rehashed_unmatched_note_audit_before_publish(
@@ -2571,6 +2760,25 @@ def test_project_archive_rejects_v1_qualitative_coding_reference_row(
     assert not (restore_root / "studies" / study_id).exists()
 
 
+def test_project_archive_rejects_v1_populated_saved_query_table(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "source"
+    restore_root = tmp_path / "restore"
+    study_id, _, exported = _build_saved_query_archive(source_root)
+    forged_archive = tmp_path / "v1-saved-query-row.nlpstudy.zip"
+    _rewrite_archive_as_v1(exported.archive_path, forged_archive)
+
+    with pytest.raises(
+        ProjectArchiveError,
+        match="Format version 1 cannot contain saved queries",
+    ):
+        ProjectArchiveStore(restore_root).restore_archive(forged_archive)
+
+    assert _destination_tree(restore_root) == {}
+    assert not (restore_root / "studies" / study_id).exists()
+
+
 def test_project_archive_rejects_v1_agent_suggestion_row(
     tmp_path: Path,
 ) -> None:
@@ -2616,6 +2824,9 @@ def test_project_archive_v1_accepts_non_excerpt_note_and_ignores_body_literal(
         "memo",
         snapshot.note.note_id,
     ) == snapshot
+    restored_queries = SavedQueryService(restore_root, study_id)
+    restored_queries.validate_project_state()
+    assert restored_queries.list_saved_queries().saved_queries == ()
 
 
 def test_project_archive_v1_rejects_excerpt_note_row(

@@ -149,6 +149,9 @@ prototype. It already has:
 - a study-scoped research-review backend/API for attributable researcher
   registration, exact synthetic/imported agent coding suggestions, append-only
   reviewer decisions, and strict human-owned coding-reference results;
+- a study-scoped saved-query backend/API for attributable immutable
+  coding-reference filter definitions, strict exact retries, bounded cursors,
+  atomic audits, and staged archive/restore validation;
 - basic audit events, approved-library artifacts, and bundle hashes;
 - agent-job prompts, statuses, runbooks, and evidence contracts.
 
@@ -157,11 +160,12 @@ coding, memoing, retrieval, coder-comparison, and adjudication workflow.
 
 The qualitative schema is an accepted Phase 1 foundation. Its versioned codebook,
 case/typed-attribute, coding-reference, memo/annotation, and agent-suggestion/
-reviewer-decision services are implemented with explicit researcher bootstrap,
-active-actor checks, atomic audit events, deterministic reads, strict cross-store
-validation, staged archive-restore preflight, and stable source ownership.
-Researcher-facing editors, manual coding interaction, saved-query/export entities,
-and later qualitative domain entities remain incomplete.
+reviewer-decision, and saved-query services are implemented with explicit
+researcher bootstrap, active-actor checks, atomic audit events, deterministic
+reads, strict cross-store validation, staged archive-restore preflight, and stable
+source ownership. Researcher-facing editors, manual coding and query execution,
+the recoverable qualitative-export entity, and later qualitative domain entities
+remain incomplete.
 
 The segmentation journal is a root-level persistence-attempt ledger, not a resume
 worker. It does not retain run payloads, take over hard-stopped operations, roll
@@ -204,7 +208,9 @@ startup-reconciliation workflow yet.
 - [x] Typed participant/case/session/dyad/condition/timepoint attributes.
 - [x] Study-, source-, case-, code-, and excerpt-linked memos and annotations.
 - [ ] Researcher identity on every coding and decision.
-- [ ] Evidence search, filters, and saved coding queries.
+- [x] Durable attributable saved coding-query definitions and API.
+- [ ] Evidence search, transparent filter execution, and researcher-facing
+      saved-query management.
 - [ ] Evidence-linked case-by-theme, condition-by-theme, and time-by-theme matrices.
 - [ ] Framework-cell summaries linked to supporting excerpts.
 - [ ] Blind dual-coder assignment, percentage agreement, Cohen's kappa, and
@@ -314,7 +320,7 @@ Deliver:
 - coding stripes and source retrieval;
 - memos and annotations;
 - participant/case editor;
-- search and transparent filters.
+- search, transparent filters, and saved-query execution and management.
 
 Exit gate: a psychology researcher can complete a small thematic-analysis workflow
 without any agent.
@@ -323,7 +329,7 @@ without any agent.
 
 Deliver:
 
-- evidence-linked matrices and saved queries;
+- evidence-linked matrices built from transparent saved-query definitions;
 - selectable and clearly defined denominators;
 - two-coder calibration assignments;
 - agreement/kappa results and disagreement adjudication;

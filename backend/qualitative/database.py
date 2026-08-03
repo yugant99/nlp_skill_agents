@@ -34,6 +34,7 @@ _ID_PREFIXES = {
     "memo": "mem",
     "annotation": "ann",
     "note_revision": "nrv",
+    "saved_query": "qry",
     "audit_event": "qae",
 }
 
@@ -1290,6 +1291,82 @@ def _add_coder_suggestion_review_contract(
     )
 
 
+def _add_saved_query_contract(connection: sqlite3.Connection) -> None:
+    _execute_schema_script(
+        connection,
+        """
+        create table saved_queries (
+          saved_query_id text not null primary key,
+          project_id text not null,
+          title text not null,
+          query_kind text not null check (
+            query_kind = 'coding_reference_filter'
+          ),
+          definition_version integer not null check (
+            typeof(definition_version) = 'integer'
+            and definition_version = 1
+          ),
+          filters_json text not null,
+          request_sha256 text not null,
+          created_by text not null,
+          created_at text not null,
+          unique (project_id, saved_query_id),
+          check (
+            typeof(saved_query_id) = 'text'
+            and length(saved_query_id) = 36
+            and substr(saved_query_id, 1, 4) = 'qry_'
+            and substr(saved_query_id, 5) not glob '*[^0-9a-f]*'
+          ),
+          check (
+            typeof(title) = 'text'
+            and title != ''
+            and title = trim(title)
+            and instr(cast(title as blob), x'00') = 0
+            and length(title) <= 256
+            and length(cast(title as blob)) <= 1024
+          ),
+          check (
+            typeof(filters_json) = 'text'
+            and filters_json != ''
+            and instr(cast(filters_json as blob), x'00') = 0
+            and length(cast(filters_json as blob)) <= 2048
+          ),
+          check (
+            typeof(request_sha256) = 'text'
+            and length(request_sha256) = 64
+            and request_sha256 not glob '*[^0-9a-f]*'
+          ),
+          check (
+            typeof(created_at) = 'text'
+            and length(created_at) <= 64
+            and julianday(created_at) is not null
+          ),
+          foreign key (project_id) references qualitative_projects(project_id)
+            on delete restrict,
+          foreign key (project_id, created_by)
+            references researchers(project_id, researcher_id) on delete restrict
+        );
+
+        create index saved_queries_by_created
+          on saved_queries(project_id, created_at, saved_query_id);
+        create index saved_queries_by_creator_created
+          on saved_queries(project_id, created_by, created_at, saved_query_id);
+
+        create trigger prevent_saved_query_update
+        before update on saved_queries
+        begin
+          select raise(abort, 'saved queries are immutable');
+        end;
+
+        create trigger prevent_saved_query_delete
+        before delete on saved_queries
+        begin
+          select raise(abort, 'saved queries are immutable');
+        end;
+        """,
+    )
+
+
 def _execute_schema_script(
     connection: sqlite3.Connection,
     script: str,
@@ -1383,6 +1460,7 @@ QUALITATIVE_MIGRATIONS = (
         "add-coder-suggestion-review-contract",
         _add_coder_suggestion_review_contract,
     ),
+    Migration(5, "add-saved-query-contract", _add_saved_query_contract),
 )
 
 

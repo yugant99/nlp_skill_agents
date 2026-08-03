@@ -602,7 +602,7 @@ def test_storage_boundary_failures_use_the_coding_conflict_taxonomy(
             fixture.service.read_reference(created.coding_reference_id)
 
     with sqlite3.connect(fixture.database.db_path) as connection:
-        connection.execute("pragma user_version = 5")
+        connection.execute("pragma user_version = 6")
     with pytest.raises(
         CodingReferenceConflictError,
         match="storage is unavailable or corrupt",

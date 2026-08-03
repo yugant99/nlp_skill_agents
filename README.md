@@ -168,6 +168,14 @@ and evidence-span validation, conditional result-reference rules, bounded cursor
 and atomic privacy-minimized audits. This Phase 1 boundary makes no model or
 provider calls and stores no prompt, rationale, confidence, or model response.
 
+The saved-query API now persists attributable, immutable coding-reference filter
+definitions with caller-stable identities, exact-retry semantics, bounded
+project/filter-bound cursors, atomic privacy-minimized audits, and complete
+archive/restore preflight. It stores definitions only: it does not execute a
+search, materialize query results, or add a researcher-facing saved-query UI.
+Those interactions remain part of the Phase 2 manual workbench, while matrices
+and publication/reproducibility exports remain Phase 3 work.
+
 These are backend/API Phase 1 services, not yet a researcher-facing codebook, case,
 manual-coding, review, or note-authoring workbench. Source selection, coding
 stripes, retrieval, undo, suggestion review, memo/annotation editing UI, search,

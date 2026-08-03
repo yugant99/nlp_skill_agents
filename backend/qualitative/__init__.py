@@ -26,6 +26,16 @@ from backend.qualitative.database import (
     QualitativeProjectDatabase,
     new_qualitative_id,
 )
+from backend.qualitative.saved_queries import (
+    SavedQueryConflictError,
+    SavedQueryDefinition,
+    SavedQueryFilters,
+    SavedQueryNotFoundError,
+    SavedQueryPage,
+    SavedQueryRecord,
+    SavedQueryService,
+    SavedQueryValidationError,
+)
 
 __all__ = [
     "AttributeDefinitionRecord",
@@ -46,6 +56,14 @@ __all__ = [
     "CodebookVersionSnapshot",
     "CodeRecord",
     "QualitativeProjectDatabase",
+    "SavedQueryConflictError",
+    "SavedQueryDefinition",
+    "SavedQueryFilters",
+    "SavedQueryNotFoundError",
+    "SavedQueryPage",
+    "SavedQueryRecord",
+    "SavedQueryService",
+    "SavedQueryValidationError",
     "SourceCaseLinkRecord",
     "new_qualitative_id",
 ]

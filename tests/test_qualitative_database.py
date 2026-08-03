@@ -639,6 +639,58 @@ def test_saved_query_migration_has_exact_columns_indexes_and_triggers(
             ("trigger", "prevent_saved_query_delete"),
             ("trigger", "prevent_saved_query_update"),
         ]
+        assert [
+            row[2]
+            for row in connection.execute(
+                "pragma index_info(saved_queries_by_created)"
+            )
+        ] == ["project_id", "created_at", "saved_query_id"]
+        assert [
+            row[2]
+            for row in connection.execute(
+                "pragma index_info(saved_queries_by_creator_created)"
+            )
+        ] == ["project_id", "created_by", "created_at", "saved_query_id"]
+        foreign_keys: dict[int, list[tuple[object, ...]]] = {}
+        for row in connection.execute("pragma foreign_key_list(saved_queries)"):
+            foreign_keys.setdefault(int(row[0]), []).append(
+                (row[1], row[2], row[3], row[4], row[5], row[6], row[7])
+            )
+        assert sorted(tuple(rows) for rows in foreign_keys.values()) == sorted(
+            [
+                (
+                    (
+                        0,
+                        "qualitative_projects",
+                        "project_id",
+                        "project_id",
+                        "NO ACTION",
+                        "RESTRICT",
+                        "NONE",
+                    ),
+                ),
+                (
+                    (
+                        0,
+                        "researchers",
+                        "project_id",
+                        "project_id",
+                        "NO ACTION",
+                        "RESTRICT",
+                        "NONE",
+                    ),
+                    (
+                        1,
+                        "researchers",
+                        "created_by",
+                        "researcher_id",
+                        "NO ACTION",
+                        "RESTRICT",
+                        "NONE",
+                    ),
+                ),
+            ]
+        )
 
 
 def test_saved_query_migration_enforces_identity_bounds_and_immutability(
@@ -1104,7 +1156,7 @@ def test_saved_query_schema_failure_rolls_back_partial_migration_five(
         ) == 4
 
     def fail_after_saved_query_schema_change(connection: sqlite3.Connection) -> None:
-        connection.execute("create table partial_saved_query_records (id text)")
+        qualitative_database._add_saved_query_contract(connection)
         connection.execute("insert into missing_table values (1)")
 
     monkeypatch.setattr(
@@ -1131,13 +1183,18 @@ def test_saved_query_schema_failure_rolls_back_partial_migration_five(
         assert connection.execute(
             """
             select count(*) from sqlite_master
-            where type = 'table' and name = 'partial_saved_query_records'
+            where type = 'table' and name = 'saved_queries'
             """
         ).fetchone()[0] == 0
         assert connection.execute(
             """
             select count(*) from sqlite_master
-            where type = 'table' and name = 'saved_queries'
+            where name in (
+              'saved_queries_by_created',
+              'saved_queries_by_creator_created',
+              'prevent_saved_query_delete',
+              'prevent_saved_query_update'
+            )
             """
         ).fetchone()[0] == 0
 

@@ -164,6 +164,7 @@ frontend passed its production build and every documented helper suite.
 - `6ff0f2b Harden research review validation`
 - `5aa2fa6 Expose and archive research review workflow`
 - `22e5c36 Record coder review service checkpoint`
+- `5cc8cc0 Harden coder review cursor preflight`
 
 ## 2026-08-02 Resume Verification
 
@@ -179,5 +180,5 @@ frontend passed its production build and every documented helper suite.
   frontend production build, all eight frontend helper suites (30/30), Ruff on
   the changed files, Python compilation, and `git diff --check` pass.
 - The pause handoff is resolved by the final checkpoint commit containing this
-  update. No pull request existed before that commit; normal review and landing
+  update. Pull request #26 was opened against `master`; normal review and landing
   remain required before the subsystem is complete on `master`.

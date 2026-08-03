@@ -325,9 +325,11 @@ traversal. A snapshot response still contains the suggestion, its newest
 decision or null, and derived review status.
 
 Read/list strictly validates the bounded local rows and decision chains before
-returning. It resolves only the page's deduplicated external targets after
-releasing the qualitative read guard. Missing or changed external state for a
-stored suggestion is a conflict, not a filtered or partial result.
+returning. It resolves the returned page's deduplicated external targets plus,
+for keyset continuation, the supplied cursor anchor's complete external target
+closure after releasing the qualitative read guard. Missing or changed external
+state for a returned or anchor suggestion is a conflict, not a filtered or
+partial result.
 
 ## Reviewer Decision Service Contract
 

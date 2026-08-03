@@ -16,6 +16,10 @@ from backend.qualitative.research_reviews import (
     ReviewValidationError,
 )
 from backend.storage.study_store import StudyWorkspaceStore
+from backend.storage.evidence_target_registry import (
+    EvidenceTargetNotFoundError,
+    EvidenceTargetRegistry,
+)
 from tests.test_qualitative_coding_references import (
     OWNER_ID,
     SECOND_ID,
@@ -630,6 +634,112 @@ def test_cursor_rejects_noncanonical_parseable_utc_timestamp(
     malformed = _rewrite_cursor(first.next_cursor, rewrite)
     with pytest.raises(ReviewValidationError):
         service.list_researchers(limit=1, cursor=malformed)
+
+
+def test_suggestion_cursor_revalidates_anchor_external_target(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _create_fixture(tmp_path)
+    service = ResearchReviewService(tmp_path, fixture.project_id)
+    anchor = service.create_agent_suggestion(
+        **_suggestion_arguments(fixture, "a")
+    ).suggestion
+    following = service.create_agent_suggestion(
+        **_suggestion_arguments(
+            fixture,
+            "b",
+            target_kind="cunit",
+            cunit_id=fixture.cunit_id,
+            start_offset=0,
+            end_offset=len("I came 😊"),
+        )
+    ).suggestion
+    first_page = service.list_agent_suggestions(limit=1)
+    assert first_page.agent_suggestions[0].suggestion == anchor
+    assert first_page.next_cursor is not None
+
+    original_resolve = EvidenceTargetRegistry.resolve
+
+    def anchor_target_unavailable(registry, *args, **kwargs):
+        if kwargs.get("cunit_id") == "":
+            raise EvidenceTargetNotFoundError("injected missing anchor")
+        return original_resolve(registry, *args, **kwargs)
+
+    monkeypatch.setattr(
+        EvidenceTargetRegistry,
+        "resolve",
+        anchor_target_unavailable,
+    )
+    with pytest.raises(ReviewConflictError):
+        service.list_agent_suggestions(
+            limit=1,
+            cursor=first_page.next_cursor,
+        )
+
+    monkeypatch.setattr(EvidenceTargetRegistry, "resolve", original_resolve)
+    second_page = service.list_agent_suggestions(
+        limit=1,
+        cursor=first_page.next_cursor,
+    )
+    assert second_page.agent_suggestions[0].suggestion == following
+
+
+def test_suggestion_cursor_revalidates_anchor_decision_result_target(
+    tmp_path,
+    monkeypatch,
+):
+    fixture = _create_fixture(tmp_path)
+    service = ResearchReviewService(tmp_path, fixture.project_id)
+    anchor = service.create_agent_suggestion(
+        **_suggestion_arguments(fixture, "a")
+    ).suggestion
+    edited_reference = _create_reference(
+        fixture,
+        target_kind="cunit",
+        cunit_id=fixture.cunit_id,
+        start_offset=0,
+        end_offset=len("I came 😊"),
+    )
+    service.append_reviewer_decision(
+        reviewer_decision_id=f"rvd_{'c' * 32}",
+        agent_suggestion_id=anchor.agent_suggestion_id,
+        researcher_id=OWNER_ID,
+        expected_decision_number=0,
+        decision="edited",
+        coding_reference_id=edited_reference.coding_reference_id,
+    )
+    following = service.create_agent_suggestion(
+        **_suggestion_arguments(fixture, "b")
+    ).suggestion
+    first_page = service.list_agent_suggestions(limit=1)
+    assert first_page.agent_suggestions[0].suggestion == anchor
+    assert first_page.next_cursor is not None
+
+    original_resolve = EvidenceTargetRegistry.resolve
+
+    def result_target_unavailable(registry, *args, **kwargs):
+        if kwargs.get("cunit_id") == fixture.cunit_id:
+            raise EvidenceTargetNotFoundError("injected missing decision result")
+        return original_resolve(registry, *args, **kwargs)
+
+    monkeypatch.setattr(
+        EvidenceTargetRegistry,
+        "resolve",
+        result_target_unavailable,
+    )
+    with pytest.raises(ReviewConflictError):
+        service.list_agent_suggestions(
+            limit=1,
+            cursor=first_page.next_cursor,
+        )
+
+    monkeypatch.setattr(EvidenceTargetRegistry, "resolve", original_resolve)
+    second_page = service.list_agent_suggestions(
+        limit=1,
+        cursor=first_page.next_cursor,
+    )
+    assert second_page.agent_suggestions[0].suggestion == following
 
 
 def test_stored_actor_absence_is_conflict_for_all_review_entities(

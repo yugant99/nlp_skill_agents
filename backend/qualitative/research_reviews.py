@@ -530,11 +530,12 @@ class ResearchReviewService:
                 filters.append(f"{column} = ?")
                 parameters.append(value)
 
+        anchor_state: _LocalSuggestionState | None = None
         with self._read() as connection:
             self._require_project(connection)
             if after is not None:
                 anchor = self._require_suggestion(connection, after[1])
-                self._load_suggestion_state(connection, anchor)
+                anchor_state = self._load_suggestion_state(connection, anchor)
                 if anchor.created_at != after[0] or not _suggestion_matches_filters(
                     anchor,
                     project_source_id=normalized_source,
@@ -565,6 +566,8 @@ class ResearchReviewService:
 
         page_states = states[:normalized_limit]
         targets: list[_ExternalTarget] = []
+        if anchor_state is not None:
+            targets.extend(_external_targets_for_state(anchor_state))
         for state in page_states:
             targets.extend(_external_targets_for_state(state))
         self._validate_external_targets(targets, missing_is_not_found=False)

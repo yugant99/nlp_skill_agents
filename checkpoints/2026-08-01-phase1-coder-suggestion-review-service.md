@@ -21,6 +21,7 @@ without starting the Phase 2 review workbench or the Phase 4 provider runtime.
 - `docs/architecture/coder-suggestion-review-service-design.md`
 - `README.md`
 - `goals/psychology-research-platform-roadmap.md`
+- `checkpoints/2026-08-02-phase1-coder-review-pause.md`
 - `checkpoints/README.md`
 
 ## Implemented
@@ -87,14 +88,19 @@ stored values.
 
 ## CLI Verification
 
-- Research-review service suite passed: 18/18.
-- Full qualitative migration, research-review, archive, and API group passed:
-  299/299 across the individually rerun green suites.
+- Research-review service suite passed: 20/20 after both cursor-anchor external
+  preflight regressions were added.
+- Before the final cursor-anchor regressions, the qualitative migration,
+  research-review, archive, and API group passed 299/299 across the individually
+  rerun suites. The exact final state is covered by the complete backend result
+  below.
 - Full API suite passed: 96/96.
 - Full archive suite passed: 149/149.
-- Complete backend suite passed: 690/690.
-- Frontend production build passed with 1,710 modules transformed.
-- All eight frontend helper suites passed: 30/30.
+- Complete backend suite passed: 692/692 on the final cursor-anchor
+  external-preflight fix.
+- Frontend production build passed on the final state with 1,710 modules
+  transformed.
+- All eight frontend helper suites passed on the final state: 30/30.
 - Ruff passed for every Python file changed by this branch. Python compilation
   and `git diff --check` passed. Repository-wide Ruff still reports three
   pre-existing findings in files unchanged by this branch.
@@ -117,13 +123,21 @@ frontend passed its production build and every documented helper suite.
   candidate materialization, project-wide bootstrap ambiguity, decision-ID
   collision precedence, noncanonical cursor timestamps, and stored-dependency
   error misclassification.
+- Final branch-wide SQL/concurrency review found that page-two suggestion reads
+  revalidated returned rows but omitted the cursor anchor from external evidence
+  preflight. The final fix retains the fully loaded anchor state and validates its
+  complete suggestion/decision/coding-reference target closure; both targeted
+  regressions, the full 20-test service suite, and complete 692-test backend suite
+  pass. The accepted design contract now names that anchor closure explicitly.
 - Archive review required exact review-audit equality, decision-linked result
   tombstone preservation, isolated-root validator instrumentation, direct format-1
   rejection, rehashed semantic-tamper rollback, and archive/write atomicity before
   approval.
-- The repository's optional gstack `/review` workflow could not run because its
-  required AskUserQuestion tool is unavailable in this Codex runtime. Independent
-  branch-wide SQL/concurrency and API/security reviews were used instead.
+- An earlier optional gstack `/review` invocation could not run because its
+  required AskUserQuestion tool was unavailable in that Codex runtime. Final
+  independent branch-wide SQL/concurrency and API/security reviews completed on
+  the exact landing diff; their design-contract and decision-result regression
+  findings are resolved in this checkpoint state.
 
 ## Known Limitations And Rollback
 
@@ -149,3 +163,21 @@ frontend passed its production build and every documented helper suite.
 - `1b441c4 Implement strict research review service`
 - `6ff0f2b Harden research review validation`
 - `5aa2fa6 Expose and archive research review workflow`
+- `22e5c36 Record coder review service checkpoint`
+
+## 2026-08-02 Resume Verification
+
+- Branch: `codex/phase1-coder-review-subsystem`.
+- Pre-resume pushed branch tip:
+  `22e5c368b2d43490f54057e2ca4541799e9ccf0e`.
+- Final cursor-anchor implementation files:
+  `backend/qualitative/research_reviews.py` and
+  `tests/test_research_reviews.py`.
+- Unrelated user-owned untracked file: `uv.lock`; do not stage or modify it.
+- The final cursor-anchor fix is independently approved. Both targeted regressions,
+  all 20 research-review service tests, the complete 692-test backend suite,
+  frontend production build, all eight frontend helper suites (30/30), Ruff on
+  the changed files, Python compilation, and `git diff --check` pass.
+- The pause handoff is resolved by the final checkpoint commit containing this
+  update. No pull request existed before that commit; normal review and landing
+  remain required before the subsystem is complete on `master`.

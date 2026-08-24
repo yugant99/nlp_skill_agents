@@ -45,6 +45,7 @@ from backend.extensions.plugin_requests import (
     plugin_request_to_payload,
 )
 from backend.llm.openrouter import OpenRouterError
+from backend.professor_demo.api import router as professor_demo_router
 from backend.qualitative import QualitativeProjectDatabase
 from backend.qualitative.cases import (
     CaseConflictError,
@@ -128,6 +129,7 @@ from backend.storage.study_store import (
 
 
 app = FastAPI(title="NLP Skill Agents", version="0.1.0")
+app.include_router(professor_demo_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -143,6 +145,11 @@ async def _content_safe_validation_error(
     exc: RequestValidationError,
 ):
     path = request.url.path
+    if path.startswith("/api/professor-demo/"):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Request validation failed"},
+        )
     if path.startswith("/api/studies/") and (
         "/qualitative/coding-references" in path
         or "/qualitative/saved-queries" in path

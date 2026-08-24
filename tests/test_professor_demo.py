@@ -36,8 +36,19 @@ TRANSCRIPT = """[00:00] Q: What happened?
 LINES = TRANSCRIPT.splitlines()
 
 
-def test_payload_hard_pins_the_four_call_contract() -> None:
+def _bounded_client() -> LunaDemoClient:
     client = LunaDemoClient()
+    client._provider_max_price = {
+        "prompt": 0.22,
+        "completion": 1.32,
+        "request": 0.0,
+    }
+    client._price_caps_verified = True
+    return client
+
+
+def test_payload_hard_pins_the_four_call_contract() -> None:
+    client = _bounded_client()
 
     for spec in SPECIALIST_SPECS:
         payload = client.build_payload(spec, LINES)
@@ -57,6 +68,11 @@ def test_payload_hard_pins_the_four_call_contract() -> None:
             "require_parameters": True,
             "data_collection": "deny",
             "zdr": True,
+            "max_price": {
+                "prompt": 0.22,
+                "completion": 1.32,
+                "request": 0.0,
+            },
         }
         response_format = payload["response_format"]
         assert response_format["type"] == "json_schema"
@@ -69,7 +85,7 @@ def test_payload_hard_pins_the_four_call_contract() -> None:
 def test_provider_accepts_only_plain_strict_json_and_does_not_retry(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
-    client = LunaDemoClient()
+    client = _bounded_client()
     calls: list[dict] = []
     content = '{"specialist_id":"speaker_turn","lines":[' \
         '{"line_index":0,"speaker":"Interviewer"},' \
@@ -102,7 +118,7 @@ def test_provider_accepts_only_plain_strict_json_and_does_not_retry(monkeypatch)
 def test_provider_rejects_cache_replay_without_router_metadata(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
-    client = LunaDemoClient()
+    client = _bounded_client()
     content = (
         '{"specialist_id":"speaker_turn","lines":['
         '{"line_index":0,"speaker":"Interviewer"},'
@@ -124,7 +140,7 @@ def test_provider_rejects_cache_replay_without_router_metadata(monkeypatch) -> N
 def test_provider_rejects_explicit_cache_hit_even_with_router_metadata(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
-    client = LunaDemoClient()
+    client = _bounded_client()
     content = (
         '{"specialist_id":"speaker_turn","lines":['
         '{"line_index":0,"speaker":"Interviewer"},'
@@ -144,7 +160,7 @@ def test_provider_rejects_explicit_cache_hit_even_with_router_metadata(monkeypat
 def test_provider_rejects_any_router_pipeline_stage(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
-    client = LunaDemoClient()
+    client = _bounded_client()
     content = (
         '{"specialist_id":"speaker_turn","lines":['
         '{"line_index":0,"speaker":"Interviewer"},'
@@ -168,7 +184,7 @@ def test_provider_rejects_any_router_pipeline_stage(monkeypatch) -> None:
 def test_provider_rejects_attempt_metadata_that_disagrees_with_selection(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
-    client = LunaDemoClient()
+    client = _bounded_client()
     content = (
         '{"specialist_id":"speaker_turn","lines":['
         '{"line_index":0,"speaker":"Interviewer"},'
@@ -190,7 +206,7 @@ def test_provider_rejects_attempt_metadata_that_disagrees_with_selection(monkeyp
 def test_provider_rejects_unpinned_model_suffix_and_reasoning_usage(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
-    client = LunaDemoClient()
+    client = _bounded_client()
     content = (
         '{"specialist_id":"speaker_turn","lines":['
         '{"line_index":0,"speaker":"Interviewer"},'
@@ -205,6 +221,16 @@ def test_provider_rejects_unpinned_model_suffix_and_reasoning_usage(monkeypatch)
         "openai/gpt-5.6-luna-pro"
     )
     monkeypatch.setattr(client, "_post_json", lambda *args, **kwargs: wrong_model)
+    with pytest.raises(LunaProviderError):
+        client.call_specialist(SPECIALIST_SPECS[0], LINES)
+
+    mismatched_canonical = _provider_response(content)
+    mismatched_canonical["model"] = "openai/gpt-5.6-luna-20260801"
+    monkeypatch.setattr(
+        client,
+        "_post_json",
+        lambda *args, **kwargs: mismatched_canonical,
+    )
     with pytest.raises(LunaProviderError):
         client.call_specialist(SPECIALIST_SPECS[0], LINES)
 
@@ -265,6 +291,66 @@ def test_cost_preflight_aborts_before_any_completion_call(monkeypatch) -> None:
     ]
 
 
+def test_preflight_price_is_enforced_in_each_provider_request(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
+    client = LunaDemoClient()
+
+    def fake_get(url, *, headers=None):
+        if url.endswith("/key"):
+            return {"data": {"label": "demo"}}
+        if url.endswith("/endpoints/zdr"):
+            return {"data": [{"model_id": MODEL_ID, "tag": ENDPOINT_TAG}]}
+        return {
+            "data": {
+                "endpoints": [
+                    {
+                        "tag": ENDPOINT_TAG,
+                        "provider_name": "Azure",
+                        "supported_parameters": [
+                            "max_completion_tokens",
+                            "reasoning",
+                            "include_reasoning",
+                            "response_format",
+                            "structured_outputs",
+                        ],
+                        "pricing": {
+                            "prompt": "0.00000022",
+                            "completion": "0.00000132",
+                            "request": "0",
+                        },
+                    }
+                ]
+            }
+        }
+
+    monkeypatch.setattr(client, "_get_json", fake_get)
+    client.preflight(LINES)
+
+    assert client.build_payload(SPECIALIST_SPECS[0], LINES)["provider"]["max_price"] == {
+        "prompt": 0.22,
+        "completion": 1.32,
+        "request": 0.0,
+    }
+
+
+def test_provider_call_requires_current_price_preflight(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
+    client = LunaDemoClient()
+    completion_calls = []
+    monkeypatch.setattr(
+        client,
+        "_post_json",
+        lambda *args, **kwargs: completion_calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(LunaProviderError, match="price preflight"):
+        client.call_specialist(SPECIALIST_SPECS[0], LINES)
+
+    assert completion_calls == []
+
+
 def test_service_makes_exactly_four_calls_then_accepts_and_reverts(tmp_path) -> None:
     client = FakeLunaClient()
     service = ProfessorDemoService(tmp_path, client=client)
@@ -312,6 +398,22 @@ def test_one_invalid_specialist_still_attempts_four_and_blocks_acceptance(tmp_pa
     assert run.revision_state.candidate is None
     with pytest.raises(ProfessorDemoError, match="completed four-specialist"):
         service.store.accept(run.run_id)
+
+
+def test_reused_generation_id_blocks_standalone_demo_completion(tmp_path) -> None:
+    class DuplicateGenerationClient(FakeLunaClient):
+        def call_specialist(self, spec, transcript_lines):
+            result, receipt = super().call_specialist(spec, transcript_lines)
+            return result, receipt.model_copy(update={"generation_id": "gen_reused"})
+
+    service = ProfessorDemoService(tmp_path, client=DuplicateGenerationClient())
+
+    run = service.run(TRANSCRIPT)
+
+    assert run.status == "failed"
+    assert run.receipt.attempted_call_count == 4
+    assert run.receipt.accounting_complete is False
+    assert run.receipt.total_cost_usd is None
 
 
 def test_local_merge_is_canonical_when_result_mapping_order_changes() -> None:

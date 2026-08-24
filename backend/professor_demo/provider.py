@@ -246,8 +246,15 @@ class LunaProviderError(RuntimeError):
 class LunaDemoClient:
     def __init__(self, *, timeout_seconds: float = 75.0) -> None:
         self.timeout_seconds = timeout_seconds
+        self._provider_max_price: dict[str, float] = {
+            "prompt": 0.0,
+            "completion": 0.0,
+            "request": 0.0,
+        }
+        self._price_caps_verified = False
 
     def preflight(self, transcript_lines: list[str]) -> PreflightReceipt:
+        self._price_caps_verified = False
         api_key = _api_key_from_env()
         auth_headers = {"Authorization": f"Bearer {api_key}"}
         self._get_json(KEY_STATUS_URL, headers=auth_headers)
@@ -328,6 +335,11 @@ class LunaDemoClient:
                 "preflight_pricing_unsupported",
                 "The pinned endpoint has an unsupported per-request charge",
             )
+        self._provider_max_price = {
+            "prompt": float(prompt_price * Decimal("1000000")),
+            "completion": float(completion_price * Decimal("1000000")),
+            "request": float(request_price),
+        }
 
         for spec in SPECIALIST_SPECS:
             payload = self.build_payload(spec, transcript_lines)
@@ -355,6 +367,8 @@ class LunaDemoClient:
                 "The estimated demo cost exceeds the configured ceiling",
             )
 
+        self._price_caps_verified = True
+
         return PreflightReceipt(
             model=MODEL_ID,
             endpoint=ENDPOINT_TAG,
@@ -378,6 +392,11 @@ class LunaDemoClient:
         spec: SpecialistSpec,
         transcript_lines: list[str],
     ) -> tuple[SpecialistResult, ProviderCallReceipt]:
+        if not self._price_caps_verified:
+            raise LunaProviderError(
+                "preflight_required",
+                "A current price preflight is required before Luna inference",
+            )
         api_key = _api_key_from_env()
         payload = self.build_payload(spec, transcript_lines)
         started = time.monotonic()
@@ -472,6 +491,7 @@ class LunaDemoClient:
                 "require_parameters": True,
                 "data_collection": "deny",
                 "zdr": True,
+                "max_price": dict(self._provider_max_price),
             },
         }
 
@@ -630,6 +650,7 @@ def _receipt_from_response(
         and is_canonical_luna_model(selected_model)
         and isinstance(response_model, str)
         and is_canonical_luna_model(response_model)
+        and response_model == selected_model
         else None
     )
     cached_value = payload.get("cached")
@@ -692,6 +713,8 @@ def _validate_response_envelope(
 ) -> None:
     if receipt.finish_reason != "stop":
         raise ValueError("completion did not finish cleanly")
+    if not receipt.generation_id:
+        raise ValueError("provider generation identity is missing")
     if receipt.model_returned is None or not is_canonical_luna_model(
         receipt.model_returned
     ):

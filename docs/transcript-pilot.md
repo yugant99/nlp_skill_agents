@@ -81,6 +81,8 @@ All four specialists receive the same source chunk remotely through OpenRouter.
 The redaction specialist runs after egress; its output cannot make the input safe
 to send. The remote path is pinned to `openai/gpt-5.6-luna` on `azure/eu`, requires
 ZDR and denied data collection, disables provider fallback, and disables cache.
+It also disables the web, response-healing, and context-compression plugins and
+rejects any reported router pipeline stage.
 If the pinned route, ZDR declaration, schema parameters, key status, or price
 preflight cannot be verified, the run stops visibly before inference.
 
@@ -103,6 +105,10 @@ The pilot:
 6. records four pending specialist calls for each chunk before the first call; and
 7. performs calls in chunk order and fixed specialist order.
 
+Source intake first reserves stable source/import identities in a local journal.
+If publication across the blob, text, catalog, and pilot stores is interrupted, an
+identical retry replays those identities instead of creating duplicate lineage.
+
 Version 1 chunks contain at most six lines and at most 2,400 UTF-8 bytes. There is
 no context overlap. Local line indexes in a specialist response are translated
 through the stored chunk start index; the final proposal set must cover every
@@ -116,12 +122,30 @@ for audit but never become a reviewable or accepted transcript revision.
 ## Cost And Usage Contract
 
 Preflight determines the chunk count, planned call count, endpoint capabilities,
-current token prices, maximum completion tokens, and conservative worst-case job
-cost before inference. Inference begins only when:
+current request/prompt/completion prices, maximum prompt and completion bounds, and
+conservative worst-case job cost before inference. A nonzero per-request price is
+currently unsupported and fails closed. For each planned call, the authorization
+bound is:
+
+```text
+B = request_price + (8,000 * prompt_price) + (800 * completion_price)
+```
+
+The 8,000 bound is a conservative ceiling paired with a serialized-request byte
+check; it is not a claim about model context capacity. Inference begins only when:
 
 ```text
 estimated_max_cost_usd < researcher_authorized_cost_usd <= 5.00
 ```
+
+The same preflight prices are sent as the router's per-request `max_price`, so a
+price increase after preflight is rejected before provider execution. Before every
+call, the store atomically requires `known_cost + remaining_calls * B` to remain
+below the authorization. Every returned receipt is checked against its own
+append-only preflight attempt: completion is at most 800 tokens, reasoning is zero,
+total tokens equal prompt plus completion, native cost is at most `B`, and
+cumulative known cost remains within authorization. Distinct valid calls must also
+have distinct provider generation IDs.
 
 The receipt reports planned, attempted, completed, and valid calls separately.
 Known provider charges remain visible even when accounting is incomplete. A total
@@ -149,11 +173,15 @@ versioned; stale updates conflict rather than overwrite a newer choice. Research
 edits are stored separately from immutable specialist results.
 
 Commit is allowed only when every changed line has a decision and the source's
-active revision still equals the revision on which the job was based. Commit
-creates a new `researcher-reviewed` child revision and moves the active pointer to
-it. It never overwrites the original blob or original revision. Restore moves the
-active pointer back to the original and records an attributable audit event; it
-does not delete the generated revision, proposals, decisions, or receipts.
+active revision still equals the revision on which the job was based. It compares
+the exact versioned review-snapshot digest used to assemble the candidate and
+requires at least one net line change. Only one publication can be in flight for a
+source at a time. Commit creates a new `researcher-reviewed` child revision and
+moves the active pointer to it. It never overwrites the original blob or original
+revision. Restore moves the active pointer back to the original and records an
+attributable audit event; it does not delete the generated revision, proposals,
+decisions, or receipts. Restore is blocked while that source has an in-flight
+publication.
 
 ## Idempotency, Cancellation, And Recovery
 
@@ -169,7 +197,8 @@ On local restart:
 
 - interrupted `preflight` or `running` work with no in-flight call can return to
   the durable queue and continue only its still-pending plan, but its old preflight
-  is expired and all three provider metadata checks must pass again first;
+  is retained as history, expired for new calls, and all three provider metadata
+  checks must pass again first;
 - a call stored as `calling` has an unknowable provider outcome and becomes
   `ambiguous`;
 - any job containing an ambiguous call becomes `needs_attention` and is never
@@ -185,12 +214,18 @@ not a hidden retry. Read timeouts, transport loss, HTTP 408, and provider-gatewa
 5xx responses are treated as ambiguous; definite router 4xx rejections are stored
 as failed attempts instead.
 
+Recovery also compares the job's stored provider, prompt, schema, merge, protocol,
+and Git-commit contract to the current clean executable identity. A mismatch
+becomes `needs_attention`; completed calls are never silently combined with a new
+contract.
+
 ## Provenance And Stored Evidence
 
 Each source, job, call, proposal, decision, and committed revision is linked by
 stable identifiers and hashes. The job provenance record includes:
 
-- the full Git commit and whether the checkout was dirty at launch;
+- the full Git commit from a clean checkout (dirty or unknown code identity is
+  rejected before a job can queue transcript egress);
 - product, transcript-protocol, prompt, schema, and merge versions;
 - a protocol fingerprint and strict-schema digest;
 - source blob, input transcript revision, request, and chunk digests;
@@ -198,7 +233,8 @@ stable identifiers and hashes. The job provenance record includes:
 - exact-revision egress confirmation, authorization actor and time, revision ID,
   transcript SHA-256, and authorization digest;
 - requested and returned model, provider, endpoint, ZDR preflight, generation ID,
-  finish reason, latency, tokens, cost, and accounting status when returned;
+  single-attempt routing metadata, empty router pipeline, finish reason, latency,
+  tokens, cost, and accounting status when returned;
 - call, chunk, cancellation, failure, and recovery states;
 - original and proposed text lineage for each global line;
 - researcher decision history and hashes of researcher edits; and
@@ -229,6 +265,7 @@ The launcher:
 - uses an isolated ignored data directory by default;
 - exports `TRANSCRIPT_PILOT_CODE_COMMIT` and
   `TRANSCRIPT_PILOT_CODE_DIRTY` for job provenance;
+- refuses to start from a dirty checkout or without a Git commit identity;
 - waits for backend and frontend readiness;
 - prints the local UI and log locations without printing a key; and
 - terminates both child processes on exit, interrupt, or termination.
@@ -243,7 +280,7 @@ Use only an owner-approved synthetic evaluation case or another clearly invented
 transcript.
 
 1. **Start locally.** Run `./scripts/run-transcript-pilot.sh` and open the printed
-   `/transcript-pilot` URL. Point out the loopback addresses, commit/dirty state,
+   `/transcript-pilot` URL. Point out the loopback addresses, clean commit identity,
    and isolated data path.
 2. **State the boundary.** Explain that the UI and durable workflow are local but
    the transcript chunks are sent remotely to the pinned Luna endpoint. ZDR is a

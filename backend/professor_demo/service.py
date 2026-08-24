@@ -476,9 +476,12 @@ def _build_usage_receipt(
     preflight: PreflightReceipt,
 ) -> DemoUsageReceipt:
     call_receipts = [specialist.receipt for specialist in specialists]
+    generation_ids = [receipt.generation_id for receipt in call_receipts]
     accounting_complete = (
         len(call_receipts) == len(SPECIALIST_SPECS)
         and all(receipt.accounting_complete for receipt in call_receipts)
+        and all(generation_ids)
+        and len(generation_ids) == len(set(generation_ids))
     )
     costs = [
         Decimal(receipt.cost_usd)

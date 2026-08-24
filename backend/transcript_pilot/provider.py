@@ -132,6 +132,7 @@ class LunaTranscriptClient(LunaDemoClient):
                 "require_parameters": True,
                 "data_collection": "deny",
                 "zdr": True,
+                "max_price": dict(self._provider_max_price),
             },
         }
 
@@ -156,6 +157,7 @@ class LunaTranscriptClient(LunaDemoClient):
         max_cost_per_call = Decimal(base.max_cost_per_call_usd)
         estimated = per_chunk * Decimal(len(chunks))
         if estimated >= authorized:
+            self._price_caps_verified = False
             raise LunaProviderError(
                 "preflight_cost_too_high",
                 "The worst-case job cost meets or exceeds the researcher-authorized limit",
@@ -293,6 +295,12 @@ def provider_contract() -> dict[str, Any]:
         "reasoning": "none-excluded",
         "disabled_plugins": list(DISABLED_PLUGIN_IDS),
         "allowed_router_pipeline_stages": [],
+        "provider_max_price_required": True,
+        "provider_max_price_units": {
+            "prompt": "usd_per_million_tokens",
+            "completion": "usd_per_million_tokens",
+            "request": "usd_per_request",
+        },
         "fallbacks": False,
         "zdr": True,
         "data_collection": "deny",

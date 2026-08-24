@@ -27,6 +27,7 @@ from backend.transcript_pilot.provider import PilotPreflightReceipt
 from backend.transcript_pilot.provider import (
     LunaTranscriptClient,
     PilotProviderAmbiguousError,
+    request_sha256,
 )
 from backend.transcript_pilot.service import (
     SAMPLE_TRANSCRIPT,
@@ -250,6 +251,24 @@ def test_chunk_plan_is_deterministic_and_plans_four_calls_per_chunk():
         (6, 6),
     ]
     assert len(chunks) * 4 == 8
+
+
+def test_request_fingerprint_binds_preflight_price_caps():
+    client = LunaTranscriptClient(classification="synthetic")
+    client._provider_max_price = {
+        "prompt": 0.22,
+        "completion": 1.32,
+        "request": 0.0,
+    }
+    first = request_sha256(client, SPECIALIST_SPECS[0], SAMPLE_TRANSCRIPT.splitlines())
+    client._provider_max_price = {
+        "prompt": 0.23,
+        "completion": 1.32,
+        "request": 0.0,
+    }
+    second = request_sha256(client, SPECIALIST_SPECS[0], SAMPLE_TRANSCRIPT.splitlines())
+
+    assert first != second
 
 
 def test_v1_database_upgrades_authorization_and_provenance_columns(tmp_path: Path):
@@ -927,6 +946,44 @@ def test_provider_error_cost_breach_is_preserved_and_needs_attention(service):
     stored = pilot.store.load_job(job["job_id"])
     stored_call = stored["chunks"][0]["calls"][0]
     assert stored["status"] == "needs_attention"
+    assert stored_call["error_code"] == "provider_cost_bound_exceeded"
+    assert stored_call["receipt"]["cost_usd"] == "0.5"
+
+
+def test_ambiguous_cost_breach_remains_ambiguous(service):
+    pilot, _ = service
+    _, source = _source(pilot)
+    job = _job(pilot, source)
+    assert pilot.store.claim_job(job["job_id"])
+    preflight_id = pilot.store.set_preflight(
+        job["job_id"], _preflight_payload(pilot, job)
+    )
+    pilot.store.begin_call(
+        job["job_id"], 0, "speaker_turn", "0" * 64, preflight_id
+    )
+    _, receipt = FakeLunaClient("synthetic").call_specialist(
+        SPECIALIST_SPECS[0],
+        pilot.store.load_job(job["job_id"])["chunks"][0]["lines"],
+    )
+    over_budget = receipt.model_dump(mode="json")
+    over_budget["cost_usd"] = "0.5"
+
+    pilot.store.complete_call(
+        job_id=job["job_id"],
+        chunk_index=0,
+        specialist_id="speaker_turn",
+        status="ambiguous",
+        result=None,
+        receipt=over_budget,
+        error_code="provider_outcome_ambiguous",
+        error_message="Uncertain provider outcome",
+    )
+
+    stored = pilot.store.load_job(job["job_id"])
+    stored_call = stored["chunks"][0]["calls"][0]
+    assert stored["status"] == "needs_attention"
+    assert stored["error_code"] == "provider_outcome_ambiguous"
+    assert stored_call["status"] == "ambiguous"
     assert stored_call["error_code"] == "provider_cost_bound_exceeded"
     assert stored_call["receipt"]["cost_usd"] == "0.5"
 

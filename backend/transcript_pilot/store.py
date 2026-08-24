@@ -1048,7 +1048,8 @@ class TranscriptPilotStore:
                     "Only a valid specialist call can persist a result",
                 )
             if cost_bound_breached:
-                status = "error"
+                if status != "ambiguous":
+                    status = "error"
                 result = None
                 error_code = "provider_cost_bound_exceeded"
                 error_message = "The provider receipt exceeded the authorized cost bound"

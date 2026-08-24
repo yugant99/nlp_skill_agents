@@ -312,13 +312,21 @@ export function ProfessorDemoApp() {
               value={`${run.receipt.provider} · ${run.receipt.endpoint} · ZDR`}
               wide
             />
+            <ReceiptFact label="Run ID" value={run.run_id} wide />
+            <ReceiptFact
+              label="Candidate SHA-256"
+              value={run.revision_state.candidate?.sha256 ?? "Unavailable"}
+              wide
+            />
             <ReceiptFact
               label="Worst-case preflight"
               value={`${formatProfessorDemoCost(run.receipt.preflight.estimated_max_cost_usd)} < $0.25`}
+              wide
             />
             <ReceiptFact
               label="Reasoning tokens"
               value={formatNumber(run.receipt.reasoning_tokens)}
+              wide
             />
           </div>
         </section>
@@ -502,7 +510,7 @@ function ReceiptFact({
   return (
     <div className={`professor-demo-receipt-fact ${wide ? "wide" : ""}`}>
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong title={value}>{value}</strong>
     </div>
   );
 }

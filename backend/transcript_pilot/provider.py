@@ -9,18 +9,27 @@ import httpx
 from pydantic import BaseModel, ConfigDict
 
 from backend.professor_demo.provider import (
+    DISABLED_PLUGIN_IDS,
     ENDPOINT_TAG,
     MAX_COMPLETION_TOKENS,
     MODEL_ID,
+    PROMPT_TOKEN_CEILING,
     PROVIDER_NAME,
     SPECIALIST_SPECS,
     LunaDemoClient,
     LunaProviderError,
     PreflightReceipt,
     SpecialistSpec,
+    _receipt_from_response as _demo_receipt_from_response,
 )
 from backend.transcript_pilot.protocol import (
+    CANONICALIZATION_VERSION,
+    CHUNK_MAX_BYTES,
+    CHUNK_MAX_LINES,
     GLOBAL_COST_CEILING_USD,
+    MAX_LINE_CHARACTERS,
+    MAX_TRANSCRIPT_BYTES,
+    MAX_TRANSCRIPT_LINES,
     MERGE_VERSION,
     PRODUCT_VERSION,
     PROMPT_VERSION,
@@ -43,8 +52,11 @@ class PilotPreflightReceipt(BaseModel):
     metadata_request_count: int
     chunk_count: int
     planned_call_count: int
+    max_prompt_tokens_per_call: int
     max_completion_tokens_per_call: int
+    request_price_per_call_usd: str
     estimated_max_cost_usd: str
+    max_cost_per_call_usd: str
     authorized_cost_usd: str
     global_cost_ceiling_usd: str
     prompt_price_per_token_usd: str
@@ -101,6 +113,10 @@ class LunaTranscriptClient(LunaDemoClient):
             ],
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
             "reasoning": {"effort": "none", "exclude": True},
+            "plugins": [
+                {"id": plugin_id, "enabled": False}
+                for plugin_id in DISABLED_PLUGIN_IDS
+            ],
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -137,6 +153,7 @@ class LunaTranscriptClient(LunaDemoClient):
         largest = max(chunks, key=lambda item: len("\n".join(item.lines).encode("utf-8")))
         base: PreflightReceipt = super().preflight(list(largest.lines))
         per_chunk = Decimal(base.estimated_max_cost_usd)
+        max_cost_per_call = Decimal(base.max_cost_per_call_usd)
         estimated = per_chunk * Decimal(len(chunks))
         if estimated >= authorized:
             raise LunaProviderError(
@@ -152,8 +169,11 @@ class LunaTranscriptClient(LunaDemoClient):
             metadata_request_count=base.metadata_request_count,
             chunk_count=len(chunks),
             planned_call_count=len(chunks) * len(SPECIALIST_SPECS),
+            max_prompt_tokens_per_call=base.max_prompt_tokens_per_call,
             max_completion_tokens_per_call=MAX_COMPLETION_TOKENS,
+            request_price_per_call_usd=base.request_price_per_call_usd,
             estimated_max_cost_usd=_decimal_text(estimated),
+            max_cost_per_call_usd=_decimal_text(max_cost_per_call),
             authorized_cost_usd=_decimal_text(authorized),
             global_cost_ceiling_usd=_decimal_text(global_ceiling),
             prompt_price_per_token_usd=base.prompt_price_per_token_usd,
@@ -183,9 +203,17 @@ class LunaTranscriptClient(LunaDemoClient):
                 "The Luna specialist could not connect to the pinned provider",
             ) from exc
         except httpx.HTTPStatusError as exc:
+            receipt = _receipt_from_error_response(exc.response)
+            if exc.response.status_code == 408 or exc.response.status_code >= 500:
+                raise PilotProviderAmbiguousError(
+                    "provider_outcome_ambiguous",
+                    "The provider gateway returned an uncertain Luna outcome",
+                    receipt=receipt,
+                ) from exc
             raise LunaProviderError(
                 "provider_request_failed",
                 "The pinned provider rejected the Luna specialist request",
+                receipt=receipt,
             ) from exc
         except (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError) as exc:
             raise PilotProviderAmbiguousError(
@@ -210,6 +238,16 @@ class LunaTranscriptClient(LunaDemoClient):
                 "The Luna request returned no usable accounting receipt",
             )
         return response_payload
+
+
+def _receipt_from_error_response(response: httpx.Response):
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _demo_receipt_from_response(payload, latency_ms=0)
 
 
 def request_sha256(
@@ -240,12 +278,21 @@ def provider_contract() -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "schema_sha256": hashlib.sha256(schema_encoded.encode("utf-8")).hexdigest(),
         "merge_version": MERGE_VERSION,
+        "canonicalization_version": CANONICALIZATION_VERSION,
+        "max_transcript_bytes": MAX_TRANSCRIPT_BYTES,
+        "max_transcript_lines": MAX_TRANSCRIPT_LINES,
+        "max_line_characters": MAX_LINE_CHARACTERS,
+        "chunk_max_lines": CHUNK_MAX_LINES,
+        "chunk_max_bytes": CHUNK_MAX_BYTES,
         "model": MODEL_ID,
         "provider": PROVIDER_NAME,
         "endpoint": ENDPOINT_TAG,
         "specialists": [spec.specialist_id for spec in SPECIALIST_SPECS],
+        "max_prompt_tokens_per_call": PROMPT_TOKEN_CEILING,
         "max_completion_tokens_per_call": MAX_COMPLETION_TOKENS,
         "reasoning": "none-excluded",
+        "disabled_plugins": list(DISABLED_PLUGIN_IDS),
+        "allowed_router_pipeline_stages": [],
         "fallbacks": False,
         "zdr": True,
         "data_collection": "deny",

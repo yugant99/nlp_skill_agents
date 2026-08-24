@@ -15,6 +15,14 @@ a deterministic local merge, a cost receipt, and reversible human acceptance—s
 [`docs/professor-demo.md`](docs/professor-demo.md). That lane does not mutate study
 data and does not represent completion of the broader roadmap.
 
+For the next bounded step—a loopback-only, researcher-supervised transcript
+revision pilot with deterministic chunking, four Luna specialists per chunk,
+strict receipts, line-by-line human decisions, child-revision commit, and restore—
+see [`docs/transcript-pilot.md`](docs/transcript-pilot.md). Launch it with
+`./scripts/run-transcript-pilot.sh`. It accepts only synthetic or explicitly
+authorized de-identified transcripts; it is not approved for identifiable data,
+multi-user deployment, or a claim that the broader roadmap is complete.
+
 ## What Works Today
 
 The primary workflow is source-preserving C-unit segmentation:
@@ -283,6 +291,8 @@ npm run test:agent-jobs
 npm run test:privacy
 npm run test:provenance
 npm run test:validation
+npm run test:professor-demo
+npm run test:transcript-pilot
 ```
 
 Every feature follows the branch, commit, test, pull-request, merge, and cleanup

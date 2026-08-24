@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -198,30 +199,44 @@ class TranscriptPilotService:
             raise TranscriptPilotError("source_validation_failed", message) from exc
 
         transcript_identity = transcript_evidence_identity(canonical_text)
-        import_identity = source_import_identity(
-            canonical_text,
-            source_bytes=source_bytes,
-            source_media_type=source_media_type,
+        safe_filename = _safe_filename(source_filename)
+        source_blob_sha256 = hashlib.sha256(source_bytes).hexdigest()
+        intake_request_sha256 = _json_sha256(
+            {
+                "study_id": study_id,
+                "researcher_id": researcher_id,
+                "source_filename": safe_filename,
+                "source_media_type": source_media_type,
+                "source_blob_sha256": source_blob_sha256,
+                "transcript_sha256": transcript_identity.transcript_sha256,
+                "data_classification": data_classification,
+                "authorization_basis": authorization_basis.strip(),
+                "protocol_version": PROTOCOL_VERSION,
+            }
         )
-        imported_at = _utc_now()
-        run_id = f"tpi_{uuid4().hex}"
         try:
-            self.source_blobs.store(source_bytes, import_identity.source_blob_sha256)
+            intake = self.store.reserve_intake(
+                request_sha256=intake_request_sha256,
+                study_id=study_id,
+                researcher_id=researcher_id,
+            )
+            imported_at = str(intake["created_at"])
+            self.source_blobs.store(source_bytes, source_blob_sha256)
             self.text_blobs.store(
                 canonical_text,
                 transcript_identity.transcript_sha256,
             )
             self.evidence_catalog.record_import(
                 EvidenceImportRecord(
-                    import_id=import_identity.import_id,
-                    run_id=run_id,
+                    import_id=str(intake["import_id"]),
+                    run_id=str(intake["run_id"]),
                     pipeline="transcript_revision_pilot_intake",
-                    project_source_id=import_identity.project_source_id,
+                    project_source_id=str(intake["source_id"]),
                     workspace_id=study_id,
                     source_id=transcript_identity.source_id,
-                    source_filename=_safe_filename(source_filename),
+                    source_filename=safe_filename,
                     source_media_type=source_media_type,
-                    source_blob_sha256=import_identity.source_blob_sha256,
+                    source_blob_sha256=source_blob_sha256,
                     transcript_revision_id=transcript_identity.transcript_revision_id,
                     transcript_sha256=transcript_identity.transcript_sha256,
                     parent_transcript_revision_id="",
@@ -230,13 +245,13 @@ class TranscriptPilotService:
             )
             source = self.store.create_source(
                 {
-                    "source_id": import_identity.project_source_id,
+                    "source_id": intake["source_id"],
                     "study_id": study_id,
                     "researcher_id": researcher_id,
                     "researcher_name": researcher.display_name,
-                    "source_filename": _safe_filename(source_filename),
+                    "source_filename": safe_filename,
                     "source_media_type": source_media_type,
-                    "source_blob_sha256": import_identity.source_blob_sha256,
+                    "source_blob_sha256": source_blob_sha256,
                     "original_transcript_sha256": transcript_identity.transcript_sha256,
                     "original_revision_id": transcript_identity.transcript_revision_id,
                     "data_classification": data_classification,
@@ -248,6 +263,10 @@ class TranscriptPilotService:
                     "created_at": imported_at,
                 }
             )
+            self.store.complete_intake(
+                request_sha256=intake_request_sha256,
+                source_id=str(source["source_id"]),
+            )
         except TranscriptPilotStoreError as exc:
             raise TranscriptPilotError(exc.code, exc.public_message) from exc
         except (OSError, RuntimeError, ValueError) as exc:
@@ -255,16 +274,20 @@ class TranscriptPilotService:
                 "source_persistence_failed",
                 "The transcript source could not be stored safely",
             ) from exc
-        return source
+        return self.load_source(str(source["source_id"]), include_active_text=True)
 
     def load_source(self, source_id: str, *, include_active_text: bool = False) -> dict[str, Any]:
         try:
             source = self.store.load_source(source_id)
             if include_active_text:
                 revision = _revision(source, source["active_revision_id"])
-                source["active_transcript"] = self.text_blobs.read_verified(
+                active_transcript = self.text_blobs.read_verified(
                     revision["transcript_sha256"]
                 )
+                chunks = chunk_transcript(active_transcript)
+                source["active_transcript"] = active_transcript
+                source["chunk_count"] = len(chunks)
+                source["planned_call_count"] = len(chunks) * len(SPECIALIST_SPECS)
             return source
         except TranscriptPilotStoreError as exc:
             raise TranscriptPilotError(exc.code, exc.public_message) from exc
@@ -282,7 +305,19 @@ class TranscriptPilotService:
         input_revision_id: str,
         idempotency_key: str,
         authorized_cost_usd: str,
+        confirmation: str,
     ) -> dict[str, Any]:
+        code_commit, code_dirty = _current_code_identity()
+        if not _code_identity_is_verified(code_commit, code_dirty):
+            raise TranscriptPilotError(
+                "executable_contract_unverified",
+                "Transcript egress requires a clean, committed pilot checkout",
+            )
+        if confirmation != "authorize-four-specialists-per-chunk":
+            raise TranscriptPilotError(
+                "egress_confirmation_invalid",
+                "Explicit four-specialist egress confirmation is required",
+            )
         source = self.load_source(source_id)
         if source["researcher_id"] != researcher_id:
             raise TranscriptPilotError(
@@ -296,7 +331,9 @@ class TranscriptPilotService:
                 transcript=transcript,
                 classification=cast(DataClassification, source["data_classification"]),
                 contains_direct_identifiers=False,
-                remote_egress_authorized=True,
+                remote_egress_authorized=(
+                    confirmation == "authorize-four-specialists-per-chunk"
+                ),
                 authorization_basis=str(source["authorization_basis"]),
             )
             chunks = chunk_transcript(transcript)
@@ -312,6 +349,7 @@ class TranscriptPilotService:
             "input_transcript_sha256": revision["transcript_sha256"],
             "researcher_id": researcher_id,
             "authorized_cost_usd": authorized_cost_usd,
+            "authorization_confirmation": confirmation,
             "protocol_sha256": protocol_fingerprint(),
             "provider_contract": contract,
         }
@@ -319,9 +357,12 @@ class TranscriptPilotService:
         authorization_digest = _json_sha256(
             {
                 "source_id": source_id,
-                "transcript_sha256": source["original_transcript_sha256"],
+                "revision_id": input_revision_id,
+                "transcript_sha256": revision["transcript_sha256"],
                 "classification": source["data_classification"],
                 "authorization_basis": source["authorization_basis"],
+                "authorization_actor_id": researcher_id,
+                "authorization_confirmation": confirmation,
                 "protocol_version": source["protocol_version"],
             }
         )
@@ -329,10 +370,14 @@ class TranscriptPilotService:
             **contract,
             "protocol_sha256": protocol_fingerprint(),
             "authorization_sha256": authorization_digest,
+            "authorization_revision_id": input_revision_id,
+            "authorization_transcript_sha256": revision["transcript_sha256"],
+            "authorization_actor_id": researcher_id,
+            "authorization_confirmation": confirmation,
             "input_transcript_sha256": revision["transcript_sha256"],
             "source_blob_sha256": source["source_blob_sha256"],
-            "code_commit": os.environ.get("TRANSCRIPT_PILOT_CODE_COMMIT", "unknown"),
-            "code_dirty": os.environ.get("TRANSCRIPT_PILOT_CODE_DIRTY", "unknown"),
+            "code_commit": code_commit,
+            "code_dirty": code_dirty,
             "product_version": PRODUCT_VERSION,
         }
         try:
@@ -343,6 +388,8 @@ class TranscriptPilotService:
                 idempotency_key=idempotency_key,
                 request_sha256=request_digest,
                 authorized_cost_usd=authorized_cost_usd,
+                authorization_confirmation=confirmation,
+                authorization_transcript_sha256=revision["transcript_sha256"],
                 chunks=chunks,
                 provenance=provenance,
             )
@@ -358,18 +405,15 @@ class TranscriptPilotService:
             client = self.client_factory(classification)
             chunks = [_chunk_from_payload(item) for item in job["chunks"]]
 
-            if job["preflight"] is None:
-                try:
-                    preflight = client.preflight_job(
-                        chunks,
-                        authorized_cost_usd=job["authorized_cost_usd"],
-                    ).model_dump(mode="json")
-                except LunaProviderError as exc:
-                    self.store.fail_job(job_id, exc.code, exc.public_message)
-                    return
-            else:
-                preflight = dict(job["preflight"])
-            self.store.set_preflight(job_id, preflight)
+            try:
+                preflight = client.preflight_job(
+                    chunks,
+                    authorized_cost_usd=job["authorized_cost_usd"],
+                ).model_dump(mode="json")
+            except LunaProviderError as exc:
+                self.store.fail_job(job_id, exc.code, exc.public_message)
+                return
+            preflight_id = self.store.set_preflight(job_id, preflight)
 
             if self.store.cancellation_requested(job_id):
                 self.store.mark_cancelled(job_id)
@@ -391,7 +435,9 @@ class TranscriptPilotService:
                         chunk.chunk_index,
                         spec.specialist_id,
                         fingerprint,
+                        preflight_id,
                     )
+                    receipt: ProviderCallReceipt | None = None
                     try:
                         result, receipt = client.call_specialist(spec, list(chunk.lines))
                         _validate_product_result(result, receipt, len(chunk.lines))
@@ -415,13 +461,6 @@ class TranscriptPilotService:
                             error_code=exc.code,
                             error_message=exc.public_message,
                         )
-                        self.store.finish_chunk(
-                            job_id,
-                            chunk.chunk_index,
-                            merged_lines=None,
-                            error_code=exc.code,
-                            error_message=exc.public_message,
-                        )
                         return
                     except LunaProviderError as exc:
                         receipt = exc.receipt or _unknown_receipt()
@@ -442,7 +481,7 @@ class TranscriptPilotService:
                             specialist_id=spec.specialist_id,
                             status="error",
                             result=None,
-                            receipt=receipt.model_dump(mode="json"),
+                            receipt=(receipt or _unknown_receipt()).model_dump(mode="json"),
                             error_code="specialist_result_invalid",
                             error_message=f"{spec.label} failed strict pilot validation",
                         )
@@ -500,19 +539,46 @@ class TranscriptPilotService:
             proposals = _build_proposals(finished)
             self.store.create_proposals(job_id, proposals)
         except TranscriptPilotStoreError as exc:
-            try:
-                self.store.fail_job(job_id, exc.code, exc.public_message)
-            except Exception:
-                pass
+            self._fail_or_cancel_job(job_id, exc.code, exc.public_message)
         except Exception:
-            try:
-                self.store.fail_job(
-                    job_id,
-                    "worker_failed",
-                    "The local transcript worker stopped unexpectedly",
-                )
-            except Exception:
-                pass
+            self._fail_or_cancel_job(
+                job_id,
+                "worker_failed",
+                "The local transcript worker stopped unexpectedly",
+            )
+
+    def recover_interrupted_jobs(self) -> list[str]:
+        queued_job_ids = self.store.recover_interrupted_jobs()
+        code_commit, code_dirty = _current_code_identity()
+        current_contract = {
+            **provider_contract(),
+            "protocol_sha256": protocol_fingerprint(),
+            "code_commit": code_commit,
+            "code_dirty": code_dirty,
+        }
+        compatible: list[str] = []
+        for job_id in queued_job_ids:
+            job = self.store.load_job(job_id)
+            provenance = job.get("provenance")
+            contract_matches = isinstance(provenance, dict) and all(
+                provenance.get(key) == value
+                for key, value in current_contract.items()
+            )
+            clean_code_identity = _code_identity_is_verified(
+                code_commit,
+                code_dirty,
+            )
+            if contract_matches and clean_code_identity:
+                compatible.append(job_id)
+            else:
+                self.store.mark_recovery_contract_attention(job_id)
+        return compatible
+
+    def _fail_or_cancel_job(self, job_id: str, code: str, message: str) -> None:
+        try:
+            self.store.fail_job(job_id, code, message)
+        except Exception:
+            pass
 
     def save_decision(
         self,
@@ -569,6 +635,14 @@ class TranscriptPilotService:
             else:
                 raise TranscriptPilotError("decision_invalid", "Stored review decision is invalid")
         final_transcript = "\n".join(final_lines)
+        try:
+            if canonical_transcript_lines(final_transcript) != final_lines:
+                raise ValueError("reviewed transcript changed during canonicalization")
+        except ValueError as exc:
+            raise TranscriptPilotError(
+                "reviewed_transcript_invalid",
+                "The reviewed transcript does not satisfy the versioned line protocol",
+            ) from exc
         identity = transcript_evidence_identity(final_transcript)
         if identity.transcript_revision_id == expected_active_revision_id:
             raise TranscriptPilotError(
@@ -576,11 +650,16 @@ class TranscriptPilotService:
                 "The reviewed transcript matches the active revision; there is nothing to commit",
             )
         source = job["source"]
-        reserved_import = source_import_identity(
-            final_transcript,
-            source_bytes=final_transcript.encode("utf-8"),
-            source_media_type="text/plain",
-            project_source_id=source["source_id"],
+        existing_commit = job.get("commit")
+        reserved_import_id = (
+            str(existing_commit["import_id"])
+            if isinstance(existing_commit, dict)
+            else source_import_identity(
+                final_transcript,
+                source_bytes=final_transcript.encode("utf-8"),
+                source_media_type="text/plain",
+                project_source_id=source["source_id"],
+            ).import_id
         )
         try:
             commit = self.store.prepare_commit(
@@ -589,23 +668,26 @@ class TranscriptPilotService:
                 expected_active_revision_id=expected_active_revision_id,
                 revision_id=identity.transcript_revision_id,
                 transcript_sha256=identity.transcript_sha256,
-                import_id=reserved_import.import_id,
+                import_id=reserved_import_id,
+                review_snapshot_sha256=str(job["review_snapshot_sha256"]),
             )
+            if commit["status"] == "completed":
+                return self.store.load_job(job_id)
             self.text_blobs.store(final_transcript, identity.transcript_sha256)
             self.evidence_catalog.record_import(
                 EvidenceImportRecord(
                     import_id=commit["import_id"],
                     run_id=job_id,
                     pipeline="transcript_revision_pilot",
-                    project_source_id=source["source_id"],
+                    project_source_id=commit["source_id"],
                     workspace_id=job["study_id"],
                     source_id=identity.source_id,
                     source_filename=source["source_filename"],
                     source_media_type=source["source_media_type"],
                     source_blob_sha256=source["source_blob_sha256"],
-                    transcript_revision_id=identity.transcript_revision_id,
-                    transcript_sha256=identity.transcript_sha256,
-                    parent_transcript_revision_id=expected_active_revision_id,
+                    transcript_revision_id=commit["revision_id"],
+                    transcript_sha256=commit["transcript_sha256"],
+                    parent_transcript_revision_id=commit["parent_revision_id"],
                     imported_at=commit["created_at"],
                 )
             )
@@ -674,7 +756,21 @@ class TranscriptPilotRuntime:
         self._thread.start()
 
     def recover(self) -> None:
-        for job_id in self.service.store.recover_interrupted_jobs():
+        queued_job_ids = self.service.recover_interrupted_jobs()
+        for commit in self.service.store.publishing_commits():
+            try:
+                self.service.commit(
+                    job_id=str(commit["job_id"]),
+                    researcher_id=str(commit["created_by"]),
+                    expected_active_revision_id=str(commit["parent_revision_id"]),
+                )
+            except TranscriptPilotError as exc:
+                self.service.store.mark_commit_recovery_attention(
+                    str(commit["job_id"]),
+                    code="commit_recovery_failed",
+                    message=exc.public_message,
+                )
+        for job_id in queued_job_ids:
             self.submit(job_id)
 
     def submit(self, job_id: str) -> None:
@@ -740,14 +836,28 @@ def _validate_product_result(
     indexes = [item.line_index for item in result.lines]
     if len(indexes) != line_count or set(indexes) != set(range(line_count)):
         raise ValueError("specialist result does not cover the chunk exactly once")
+    if _contains_line_break(result.model_dump(mode="json")):
+        raise ValueError("specialist result contains a line-breaking field")
     if receipt.router_attempt_count != 1:
         raise ValueError("pilot requires exactly one proven provider attempt")
     if receipt.cache_hit is not False:
         raise ValueError("pilot requires a proven non-cached response")
+    if receipt.router_pipeline_stages:
+        raise ValueError("pilot forbids router pipeline stages")
     if receipt.reasoning_tokens != 0:
         raise ValueError("pilot requires zero reasoning tokens")
     if not receipt.accounting_complete:
         raise ValueError("pilot usage accounting is incomplete")
+
+
+def _contains_line_break(value: Any) -> bool:
+    if isinstance(value, str):
+        return "\n" in value or "\r" in value
+    if isinstance(value, dict):
+        return any(_contains_line_break(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_line_break(item) for item in value)
+    return False
 
 
 def _chunk_from_payload(payload: dict[str, Any]) -> TranscriptChunk:
@@ -810,6 +920,19 @@ def _json_sha256(value: Any) -> str:
         ensure_ascii=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _current_code_identity() -> tuple[str, str]:
+    return (
+        os.environ.get("TRANSCRIPT_PILOT_CODE_COMMIT", "unknown").strip(),
+        os.environ.get("TRANSCRIPT_PILOT_CODE_DIRTY", "unknown").strip(),
+    )
+
+
+def _code_identity_is_verified(code_commit: str, code_dirty: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", code_commit)) and (
+        code_dirty == "false"
+    )
 
 
 def _utc_now() -> str:

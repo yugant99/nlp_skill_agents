@@ -113,10 +113,14 @@ else
   TRANSCRIPT_PILOT_CODE_DIRTY="unknown"
 fi
 
+[[ "$TRANSCRIPT_PILOT_CODE_COMMIT" != "unknown" ]] || pilot_fail "pilot egress requires a Git commit identity"
+[[ "$TRANSCRIPT_PILOT_CODE_DIRTY" == "false" ]] || pilot_fail "pilot egress requires a clean checkout; commit or stash local changes first"
+
 export TRANSCRIPT_PILOT_CODE_COMMIT
 export TRANSCRIPT_PILOT_CODE_DIRTY
 export NLP_SKILL_AGENTS_DATA_DIR="$PILOT_DATA_ROOT"
 export VITE_API_BASE="http://$PILOT_HOST:$PILOT_BACKEND_PORT"
+export NLP_SKILL_AGENTS_CORS_ORIGINS="http://$PILOT_HOST:$PILOT_FRONTEND_PORT"
 
 mkdir -p "$PILOT_LOG_DIR"
 

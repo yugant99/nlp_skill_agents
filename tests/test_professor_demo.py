@@ -45,6 +45,11 @@ def test_payload_hard_pins_the_four_call_contract() -> None:
         assert payload["model"] == MODEL_ID
         assert payload["max_completion_tokens"] == MAX_COMPLETION_TOKENS
         assert payload["reasoning"] == {"effort": "none", "exclude": True}
+        assert payload["plugins"] == [
+            {"id": "web", "enabled": False},
+            {"id": "response-healing", "enabled": False},
+            {"id": "context-compression", "enabled": False},
+        ]
         assert payload["provider"] == {
             "only": [ENDPOINT_TAG],
             "order": [ENDPOINT_TAG],
@@ -94,13 +99,131 @@ def test_provider_accepts_only_plain_strict_json_and_does_not_retry(monkeypatch)
     assert len(calls) == 1
 
 
+def test_provider_rejects_cache_replay_without_router_metadata(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
+    client = LunaDemoClient()
+    content = (
+        '{"specialist_id":"speaker_turn","lines":['
+        '{"line_index":0,"speaker":"Interviewer"},'
+        '{"line_index":1,"speaker":"Participant"}]}'
+    )
+    response = _provider_response(content)
+    response.pop("openrouter_metadata")
+    response["cached"] = True
+    monkeypatch.setattr(client, "_post_json", lambda *args, **kwargs: response)
+
+    with pytest.raises(LunaProviderError) as caught:
+        client.call_specialist(SPECIALIST_SPECS[0], LINES)
+
+    assert caught.value.receipt is not None
+    assert caught.value.receipt.cache_hit is True
+    assert caught.value.receipt.router_attempt_count is None
+
+
+def test_provider_rejects_explicit_cache_hit_even_with_router_metadata(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
+    client = LunaDemoClient()
+    content = (
+        '{"specialist_id":"speaker_turn","lines":['
+        '{"line_index":0,"speaker":"Interviewer"},'
+        '{"line_index":1,"speaker":"Participant"}]}'
+    )
+    response = _provider_response(content)
+    response["cached"] = True
+    monkeypatch.setattr(client, "_post_json", lambda *args, **kwargs: response)
+
+    with pytest.raises(LunaProviderError) as caught:
+        client.call_specialist(SPECIALIST_SPECS[0], LINES)
+
+    assert caught.value.receipt is not None
+    assert caught.value.receipt.cache_hit is True
+
+
+def test_provider_rejects_any_router_pipeline_stage(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
+    client = LunaDemoClient()
+    content = (
+        '{"specialist_id":"speaker_turn","lines":['
+        '{"line_index":0,"speaker":"Interviewer"},'
+        '{"line_index":1,"speaker":"Participant"}]}'
+    )
+    response = _provider_response(content)
+    response["openrouter_metadata"]["pipeline"] = [
+        {"type": "plugin", "name": "response-healing", "data": {}}
+    ]
+    monkeypatch.setattr(client, "_post_json", lambda *args, **kwargs: response)
+
+    with pytest.raises(LunaProviderError) as caught:
+        client.call_specialist(SPECIALIST_SPECS[0], LINES)
+
+    assert caught.value.receipt is not None
+    assert caught.value.receipt.router_pipeline_stages == [
+        "plugin:response-healing"
+    ]
+
+
+def test_provider_rejects_attempt_metadata_that_disagrees_with_selection(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
+    client = LunaDemoClient()
+    content = (
+        '{"specialist_id":"speaker_turn","lines":['
+        '{"line_index":0,"speaker":"Interviewer"},'
+        '{"line_index":1,"speaker":"Participant"}]}'
+    )
+    response = _provider_response(content)
+    response["openrouter_metadata"]["attempts"] = [
+        {"provider": "Other", "model": "other/model", "status": 500}
+    ]
+    monkeypatch.setattr(client, "_post_json", lambda *args, **kwargs: response)
+
+    with pytest.raises(LunaProviderError) as caught:
+        client.call_specialist(SPECIALIST_SPECS[0], LINES)
+
+    assert caught.value.receipt is not None
+    assert caught.value.receipt.router_attempt_count is None
+
+
+def test_provider_rejects_unpinned_model_suffix_and_reasoning_usage(monkeypatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
+    client = LunaDemoClient()
+    content = (
+        '{"specialist_id":"speaker_turn","lines":['
+        '{"line_index":0,"speaker":"Interviewer"},'
+        '{"line_index":1,"speaker":"Participant"}]}'
+    )
+    wrong_model = _provider_response(content)
+    wrong_model["model"] = "openai/gpt-5.6-luna-pro"
+    wrong_model["openrouter_metadata"]["endpoints"]["available"][0]["model"] = (
+        "openai/gpt-5.6-luna-pro"
+    )
+    wrong_model["openrouter_metadata"]["attempts"][0]["model"] = (
+        "openai/gpt-5.6-luna-pro"
+    )
+    monkeypatch.setattr(client, "_post_json", lambda *args, **kwargs: wrong_model)
+    with pytest.raises(LunaProviderError):
+        client.call_specialist(SPECIALIST_SPECS[0], LINES)
+
+    reasoning = _provider_response(content)
+    reasoning["usage"]["completion_tokens_details"]["reasoning_tokens"] = 1
+    monkeypatch.setattr(client, "_post_json", lambda *args, **kwargs: reasoning)
+    with pytest.raises(LunaProviderError):
+        client.call_specialist(SPECIALIST_SPECS[0], LINES)
+
+
 def test_cost_preflight_aborts_before_any_completion_call(monkeypatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("backend.llm.openrouter._DOTENV_LOADED", True)
     client = LunaDemoClient()
     completion_calls = []
+    metadata_headers = []
 
     def fake_get(url, *, headers=None):
+        metadata_headers.append(headers)
         if url.endswith("/key"):
             return {"data": {"label": "demo"}}
         if url.endswith("/endpoints/zdr"):
@@ -135,6 +258,11 @@ def test_cost_preflight_aborts_before_any_completion_call(monkeypatch) -> None:
         client.preflight(LINES)
 
     assert completion_calls == []
+    assert metadata_headers == [
+        {"Authorization": "Bearer test-key"},
+        {"Authorization": "Bearer test-key"},
+        {"Authorization": "Bearer test-key"},
+    ]
 
 
 def test_service_makes_exactly_four_calls_then_accepts_and_reverts(tmp_path) -> None:
@@ -278,8 +406,26 @@ def _provider_response(content: str) -> dict:
             "completion_tokens_details": {"reasoning_tokens": 0},
         },
         "openrouter_metadata": {
-            "provider_attempts": [{"provider": "Azure"}],
-            "cache_hit": False,
+            "requested": MODEL_ID,
+            "strategy": "direct",
+            "attempt": 1,
+            "endpoints": {
+                "total": 1,
+                "available": [
+                    {
+                        "provider": "Azure",
+                        "model": "openai/gpt-5.6-luna-20260709",
+                        "selected": True,
+                    }
+                ],
+            },
+            "attempts": [
+                {
+                    "provider": "Azure",
+                    "model": "openai/gpt-5.6-luna-20260709",
+                    "status": 200,
+                }
+            ],
         },
     }
 
@@ -314,8 +460,10 @@ def _preflight_receipt() -> PreflightReceipt:
         metadata_request_count=3,
         max_prompt_tokens_per_call=8_000,
         max_completion_tokens_per_call=MAX_COMPLETION_TOKENS,
+        request_price_per_call_usd="0",
         prompt_price_per_token_usd="0.00000022",
         completion_price_per_token_usd="0.00000132",
+        max_cost_per_call_usd="0.002816",
         estimated_max_cost_usd="0.011264",
         cost_ceiling_usd="0.25",
         checked_at="2026-08-23T00:00:00+00:00",

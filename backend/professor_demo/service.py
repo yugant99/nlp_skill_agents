@@ -241,6 +241,7 @@ class ProfessorDemoService:
         results: dict[SpecialistId, SpecialistResult] = {}
 
         for spec in SPECIALIST_SPECS:
+            call_receipt: ProviderCallReceipt | None = None
             try:
                 result, call_receipt = self.client.call_specialist(
                     spec,
@@ -281,7 +282,7 @@ class ProfessorDemoService:
                         status="error",
                         schema_valid=False,
                         output=None,
-                        receipt=_unknown_call_receipt(),
+                        receipt=call_receipt or _unknown_call_receipt(),
                         error_code="specialist_result_invalid",
                         error_message=f"{spec.label} failed local validation",
                     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -129,12 +130,22 @@ from backend.storage.study_store import (
 )
 
 
+def _loopback_cors_origins() -> list[str]:
+    origins = {"http://localhost:5173", "http://127.0.0.1:5173"}
+    for candidate in os.environ.get("NLP_SKILL_AGENTS_CORS_ORIGINS", "").split(","):
+        origin = candidate.strip()
+        match = re.fullmatch(r"http://(localhost|127\.0\.0\.1):([0-9]{1,5})", origin)
+        if match is not None and 1 <= int(match.group(2)) <= 65535:
+            origins.add(origin)
+    return sorted(origins)
+
+
 app = FastAPI(title="NLP Skill Agents", version="0.1.0")
 app.include_router(professor_demo_router)
 app.include_router(transcript_pilot_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=_loopback_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -2,12 +2,13 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
-const isProfessorDemo = window.location.pathname.startsWith("/professor-demo");
-
 async function renderRoot() {
-  const RootComponent = isProfessorDemo
-    ? (await import("./ProfessorDemoApp")).ProfessorDemoApp
-    : (await import("./App")).App;
+  const pathname = window.location.pathname;
+  const RootComponent = pathname.startsWith("/transcript-pilot")
+    ? (await import("./TranscriptPilotApp")).TranscriptPilotApp
+    : pathname.startsWith("/professor-demo")
+      ? (await import("./ProfessorDemoApp")).ProfessorDemoApp
+      : (await import("./App")).App;
 
   createRoot(document.getElementById("root")!).render(
     <StrictMode>

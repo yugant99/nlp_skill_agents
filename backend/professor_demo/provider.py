@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from backend.llm.openrouter import is_openrouter_configured
 
@@ -20,6 +20,7 @@ CANONICAL_MODEL_PREFIX = "openai/gpt-5.6-luna"
 ENDPOINT_TAG = "azure/eu"
 PROVIDER_NAME = "Azure"
 MAX_COMPLETION_TOKENS = 800
+DISABLED_PLUGIN_IDS = ("web", "response-healing", "context-compression")
 PROMPT_TOKEN_CEILING = 8_000
 COST_CEILING_USD = Decimal("0.25")
 CHAT_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -199,6 +200,7 @@ class ProviderCallReceipt(BaseModel):
     provider_returned: str | None
     router_attempt_count: int | None
     cache_hit: bool | None
+    router_pipeline_stages: list[str] = Field(default_factory=list)
     finish_reason: str | None
     prompt_tokens: int | None
     completion_tokens: int | None
@@ -218,8 +220,10 @@ class PreflightReceipt(BaseModel):
     metadata_request_count: int
     max_prompt_tokens_per_call: int
     max_completion_tokens_per_call: int
+    request_price_per_call_usd: str
     prompt_price_per_token_usd: str
     completion_price_per_token_usd: str
+    max_cost_per_call_usd: str
     estimated_max_cost_usd: str
     cost_ceiling_usd: str
     checked_at: str
@@ -247,8 +251,14 @@ class LunaDemoClient:
         api_key = _api_key_from_env()
         auth_headers = {"Authorization": f"Bearer {api_key}"}
         self._get_json(KEY_STATUS_URL, headers=auth_headers)
-        endpoint_payload = self._get_json(MODEL_ENDPOINTS_URL)
-        zdr_payload = self._get_json(ZDR_ENDPOINTS_URL)
+        endpoint_payload = self._get_json(
+            MODEL_ENDPOINTS_URL,
+            headers=auth_headers,
+        )
+        zdr_payload = self._get_json(
+            ZDR_ENDPOINTS_URL,
+            headers=auth_headers,
+        )
 
         endpoints = endpoint_payload.get("data", {}).get("endpoints", [])
         if not isinstance(endpoints, list):
@@ -307,10 +317,16 @@ class LunaDemoClient:
             )
         prompt_price = _decimal_value(pricing.get("prompt"))
         completion_price = _decimal_value(pricing.get("completion"))
-        if prompt_price < 0 or completion_price < 0:
+        request_price = _decimal_value(pricing.get("request", "0"))
+        if prompt_price < 0 or completion_price < 0 or request_price < 0:
             raise LunaProviderError(
                 "preflight_pricing_invalid",
                 "Luna pricing metadata was invalid",
+            )
+        if request_price != 0:
+            raise LunaProviderError(
+                "preflight_pricing_unsupported",
+                "The pinned endpoint has an unsupported per-request charge",
             )
 
         for spec in SPECIALIST_SPECS:
@@ -326,10 +342,13 @@ class LunaDemoClient:
                     "The synthetic transcript exceeds the bounded demo prompt",
                 )
 
-        estimated_max = Decimal(len(SPECIALIST_SPECS)) * (
+        max_cost_per_call = (
+            request_price
+            +
             Decimal(PROMPT_TOKEN_CEILING) * prompt_price
             + Decimal(MAX_COMPLETION_TOKENS) * completion_price
         )
+        estimated_max = Decimal(len(SPECIALIST_SPECS)) * max_cost_per_call
         if estimated_max >= COST_CEILING_USD:
             raise LunaProviderError(
                 "preflight_cost_too_high",
@@ -345,8 +364,10 @@ class LunaDemoClient:
             metadata_request_count=3,
             max_prompt_tokens_per_call=PROMPT_TOKEN_CEILING,
             max_completion_tokens_per_call=MAX_COMPLETION_TOKENS,
+            request_price_per_call_usd=_decimal_text(request_price),
             prompt_price_per_token_usd=_decimal_text(prompt_price),
             completion_price_per_token_usd=_decimal_text(completion_price),
+            max_cost_per_call_usd=_decimal_text(max_cost_per_call),
             estimated_max_cost_usd=_decimal_text(estimated_max),
             cost_ceiling_usd=_decimal_text(COST_CEILING_USD),
             checked_at=datetime.now(UTC).isoformat(),
@@ -432,6 +453,10 @@ class LunaDemoClient:
             ],
             "max_completion_tokens": MAX_COMPLETION_TOKENS,
             "reasoning": {"effort": "none", "exclude": True},
+            "plugins": [
+                {"id": plugin_id, "enabled": False}
+                for plugin_id in DISABLED_PLUGIN_IDS
+            ],
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
@@ -540,12 +565,96 @@ def _receipt_from_response(
     choices = payload.get("choices")
     first_choice = choices[0] if isinstance(choices, list) and choices else {}
     first_choice = first_choice if isinstance(first_choice, dict) else {}
-    metadata = payload.get("openrouter_metadata")
-    metadata = metadata if isinstance(metadata, dict) else {}
-    attempts = metadata.get("provider_attempts")
-    router_attempt_count = len(attempts) if isinstance(attempts, list) else None
-    cache_hit_value = metadata.get("cache_hit", payload.get("cached"))
-    cache_hit = cache_hit_value if isinstance(cache_hit_value, bool) else None
+    metadata_value = payload.get("openrouter_metadata")
+    metadata_present = isinstance(metadata_value, dict)
+    metadata = metadata_value if metadata_present else {}
+    attempts = metadata.get("attempts")
+    attempt_number = _strict_optional_int(metadata.get("attempt"))
+    routing_identity_valid = (
+        metadata.get("requested") == MODEL_ID
+        and metadata.get("strategy") == "direct"
+    )
+    attempt_provider: str | None = None
+    attempt_model: str | None = None
+    attempt_identity_valid = attempts is None
+    if isinstance(attempts, list):
+        attempt = attempts[0] if len(attempts) == 1 else None
+        if isinstance(attempt, dict):
+            attempt_provider = (
+                attempt.get("provider")
+                if isinstance(attempt.get("provider"), str)
+                else None
+            )
+            attempt_model = (
+                attempt.get("model")
+                if isinstance(attempt.get("model"), str)
+                else None
+            )
+            attempt_identity_valid = (
+                attempt_provider == PROVIDER_NAME
+                and attempt_model is not None
+                and is_canonical_luna_model(attempt_model)
+                and attempt.get("status") == 200
+            )
+    router_attempt_count = 1 if attempt_number == 1 else None
+    if not routing_identity_valid or not attempt_identity_valid:
+        router_attempt_count = None
+
+    endpoints = metadata.get("endpoints")
+    endpoints = endpoints if isinstance(endpoints, dict) else {}
+    available = endpoints.get("available")
+    available = available if isinstance(available, list) else []
+    selected = [
+        item
+        for item in available
+        if isinstance(item, dict) and item.get("selected") is True
+    ]
+    selected_provider = (
+        selected[0].get("provider")
+        if len(selected) == 1 and isinstance(selected[0].get("provider"), str)
+        else None
+    )
+    selected_model = (
+        selected[0].get("model")
+        if len(selected) == 1 and isinstance(selected[0].get("model"), str)
+        else None
+    )
+    response_model = payload.get("model")
+    provider_returned = (
+        selected_provider
+        if routing_identity_valid
+        and attempt_identity_valid
+        and (attempt_provider is None or attempt_provider == selected_provider)
+        and (attempt_model is None or attempt_model == selected_model)
+        and selected_model is not None
+        and is_canonical_luna_model(selected_model)
+        and isinstance(response_model, str)
+        and is_canonical_luna_model(response_model)
+        else None
+    )
+    cached_value = payload.get("cached")
+    cache_hit = (
+        True
+        if cached_value is True
+        else False
+        if metadata_present
+        else None
+    )
+    pipeline = metadata.get("pipeline", [])
+    if not isinstance(pipeline, list):
+        router_pipeline_stages = ["invalid"]
+    else:
+        router_pipeline_stages = []
+        for stage in pipeline:
+            if not isinstance(stage, dict):
+                router_pipeline_stages.append("invalid")
+                continue
+            stage_type = stage.get("type")
+            stage_name = stage.get("name")
+            if not isinstance(stage_type, str) or not isinstance(stage_name, str):
+                router_pipeline_stages.append("invalid")
+                continue
+            router_pipeline_stages.append(f"{stage_type}:{stage_name}")
 
     accounting_complete = (
         prompt_tokens is not None
@@ -557,16 +666,11 @@ def _receipt_from_response(
         model_requested=MODEL_ID,
         endpoint_requested=ENDPOINT_TAG,
         generation_id=(payload.get("id") if isinstance(payload.get("id"), str) else None),
-        model_returned=(
-            payload.get("model") if isinstance(payload.get("model"), str) else None
-        ),
-        provider_returned=(
-            payload.get("provider")
-            if isinstance(payload.get("provider"), str)
-            else None
-        ),
+        model_returned=(response_model if isinstance(response_model, str) else None),
+        provider_returned=provider_returned,
         router_attempt_count=router_attempt_count,
         cache_hit=cache_hit,
+        router_pipeline_stages=router_pipeline_stages,
         finish_reason=(
             first_choice.get("finish_reason")
             if isinstance(first_choice.get("finish_reason"), str)
@@ -588,21 +692,42 @@ def _validate_response_envelope(
 ) -> None:
     if receipt.finish_reason != "stop":
         raise ValueError("completion did not finish cleanly")
-    if receipt.model_returned is None or not receipt.model_returned.startswith(
-        CANONICAL_MODEL_PREFIX
+    if receipt.model_returned is None or not is_canonical_luna_model(
+        receipt.model_returned
     ):
         raise ValueError("returned model does not match Luna")
     if receipt.provider_returned != PROVIDER_NAME:
         raise ValueError("returned provider does not match the pin")
-    if receipt.cache_hit is True:
+    if receipt.cache_hit is not False:
         raise ValueError("cached response is not a fresh specialist call")
-    if receipt.router_attempt_count not in (None, 1):
-        raise ValueError("router used more than one provider attempt")
+    if receipt.router_pipeline_stages:
+        raise ValueError("router pipeline altered the bounded specialist request")
+    if receipt.router_attempt_count != 1:
+        raise ValueError("router attempt provenance is incomplete")
     if not receipt.accounting_complete:
         raise ValueError("native usage accounting is incomplete")
+    if receipt.reasoning_tokens != 0:
+        raise ValueError("reasoning usage violates the bounded request")
+    if (
+        receipt.prompt_tokens is None
+        or receipt.prompt_tokens > PROMPT_TOKEN_CEILING
+        or receipt.completion_tokens is None
+        or receipt.completion_tokens > MAX_COMPLETION_TOKENS
+        or receipt.total_tokens != receipt.prompt_tokens + receipt.completion_tokens
+    ):
+        raise ValueError("native token accounting violates the bounded request")
     choices = payload.get("choices")
     if not isinstance(choices, list) or len(choices) != 1:
         raise ValueError("expected exactly one completion choice")
+
+
+def is_canonical_luna_model(value: str) -> bool:
+    return bool(
+        re.fullmatch(
+            rf"{re.escape(MODEL_ID)}(?:-[0-9]{{8}})?",
+            value,
+        )
+    )
 
 
 def _strict_optional_int(value: Any) -> int | None:

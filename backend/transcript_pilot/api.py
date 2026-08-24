@@ -4,6 +4,8 @@ import json
 import os
 import tempfile
 import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -29,7 +31,18 @@ from backend.transcript_pilot.service import (
 from backend.transcript_pilot.store import TranscriptPilotStoreError
 
 
-router = APIRouter(prefix="/api/transcript-pilot", tags=["transcript-pilot"])
+
+@asynccontextmanager
+async def _pilot_lifespan(_app: object) -> AsyncIterator[None]:
+    _runtime().recover()
+    yield
+
+
+router = APIRouter(
+    prefix="/api/transcript-pilot",
+    tags=["transcript-pilot"],
+    lifespan=_pilot_lifespan,
+)
 MAX_SOURCE_FILE_BYTES = 5_000_000
 _RUNTIME_LOCK = threading.Lock()
 
@@ -79,11 +92,6 @@ class RestoreRequest(StrictRequest):
     researcher_id: str
     expected_active_revision_id: str
     confirmation: Literal["restore-immutable-original"]
-
-
-@router.on_event("startup")
-def recover_transcript_pilot_jobs() -> None:
-    _runtime().recover()
 
 
 @router.get("/config")
@@ -183,7 +191,7 @@ def get_transcript_pilot_source(source_id: str) -> dict:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def create_transcript_pilot_job(source_id: str, request: JobCreateRequest) -> dict:
-    payload = request.model_dump(exclude={"confirmation"})
+    payload = request.model_dump()
     try:
         job = _service().create_job(source_id=source_id, **payload)
         if job["status"] == "queued":

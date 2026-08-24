@@ -71,6 +71,12 @@ re-identification risks. `authorized-deidentified` input fails closed when the
 screen finds a possible direct identifier, but passing the screen does not create
 authorization.
 
+Source intake authorization is not silently reused as job authorization. Every job
+requires the named researcher to confirm the exact active revision and the fixed
+four-specialists-per-chunk egress plan. The store binds that confirmation, actor,
+time, revision ID, and transcript SHA-256 to the job, and the exact revision is read
+from the verified local text store and screened again before it can be queued.
+
 All four specialists receive the same source chunk remotely through OpenRouter.
 The redaction specialist runs after egress; its output cannot make the input safe
 to send. The remote path is pinned to `openai/gpt-5.6-luna` on `azure/eu`, requires
@@ -162,19 +168,22 @@ unchanged. A cancelled job cannot be reviewed or committed.
 On local restart:
 
 - interrupted `preflight` or `running` work with no in-flight call can return to
-  the durable queue and continue only its still-pending plan;
+  the durable queue and continue only its still-pending plan, but its old preflight
+  is expired and all three provider metadata checks must pass again first;
 - a call stored as `calling` has an unknowable provider outcome and becomes
   `ambiguous`;
 - any job containing an ambiguous call becomes `needs_attention` and is never
   automatically reissued; and
-- an interrupted publish must reconcile its stored commit identity and active
-  parent revision before finalization. It must not invent a second revision or
-  silently advance a stale source.
+- an interrupted publish is replayed locally from its stored commit identity; it
+  must reconcile the stored parent, revision, hash, import ID, job state, and active
+  source before finalization, or remain visibly `needs_attention`.
 
 The ambiguity rule is essential: after a crash between provider acceptance and
 local receipt persistence, the application cannot prove whether the remote call
 ran or was billed. Starting a replacement is a new explicit researcher decision,
-not a hidden retry.
+not a hidden retry. Read timeouts, transport loss, HTTP 408, and provider-gateway
+5xx responses are treated as ambiguous; definite router 4xx rejections are stored
+as failed attempts instead.
 
 ## Provenance And Stored Evidence
 
@@ -186,6 +195,8 @@ stable identifiers and hashes. The job provenance record includes:
 - a protocol fingerprint and strict-schema digest;
 - source blob, input transcript revision, request, and chunk digests;
 - planned call count and researcher-authorized cost;
+- exact-revision egress confirmation, authorization actor and time, revision ID,
+  transcript SHA-256, and authorization digest;
 - requested and returned model, provider, endpoint, ZDR preflight, generation ID,
   finish reason, latency, tokens, cost, and accounting status when returned;
 - call, chunk, cancellation, failure, and recovery states;
@@ -268,4 +279,3 @@ Do not continue the live demonstration when:
 - the planned call count differs from four times the chunk count;
 - any call is ambiguous, missing a receipt, or schema-invalid; or
 - any changed line remains unreviewed.
-

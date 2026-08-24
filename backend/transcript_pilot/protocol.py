@@ -13,6 +13,7 @@ PROMPT_VERSION = "four-luna-supervised-v1"
 SCHEMA_VERSION = "strict-specialist-json-v1"
 MERGE_VERSION = "deterministic-line-merge-v1"
 PRODUCT_VERSION = "transcript-revision-pilot-v1"
+CANONICALIZATION_VERSION = "crlf-normalize-strip-drop-blank-lines-v1"
 
 MAX_TRANSCRIPT_BYTES = 1_000_000
 MAX_TRANSCRIPT_LINES = 5_000
@@ -148,8 +149,12 @@ def protocol_fingerprint() -> str:
         "prompt_version": PROMPT_VERSION,
         "schema_version": SCHEMA_VERSION,
         "merge_version": MERGE_VERSION,
+        "canonicalization_version": CANONICALIZATION_VERSION,
         "instructions": SPECIALIST_INSTRUCTIONS,
         "schemas": schema_rows,
+        "max_transcript_bytes": MAX_TRANSCRIPT_BYTES,
+        "max_transcript_lines": MAX_TRANSCRIPT_LINES,
+        "max_line_characters": MAX_LINE_CHARACTERS,
         "chunk_max_lines": CHUNK_MAX_LINES,
         "chunk_max_bytes": CHUNK_MAX_BYTES,
     }

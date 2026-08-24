@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -432,7 +433,14 @@ def merge_specialist_results(
 
         timestamp = "--:--" if timing_line.timestamp == "unknown" else timing_line.timestamp
         annotations: list[str] = []
-        cues = sorted(set(redaction_line.nonverbal_cues), key=str.casefold)
+        cues = sorted(
+            {
+                cue
+                for raw_cue in redaction_line.nonverbal_cues
+                if (cue := _normalize_nonverbal_cue(raw_cue)) is not None
+            },
+            key=str.casefold,
+        )
         if cues:
             annotations.append(f"[nonverbal: {'; '.join(cues)}]")
         if timing_line.pause != "none":
@@ -450,6 +458,16 @@ def _validate_line_coverage(result: SpecialistResult, line_count: int) -> None:
     indexes = [item.line_index for item in lines]
     if len(indexes) != line_count or set(indexes) != set(range(line_count)):
         raise ValueError("specialist result must cover each line exactly once")
+
+
+def _normalize_nonverbal_cue(value: str) -> str | None:
+    cue = " ".join(value.strip().split())
+    matching_wrappers = {("[", "]"), ("(", ")"), ("{", "}")}
+    while len(cue) >= 2 and (cue[0], cue[-1]) in matching_wrappers:
+        cue = " ".join(cue[1:-1].strip().split())
+    if not cue or re.search(r"\bpause\b", cue, flags=re.IGNORECASE):
+        return None
+    return cue
 
 
 def _build_usage_receipt(

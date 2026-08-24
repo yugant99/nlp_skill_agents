@@ -183,8 +183,9 @@ SPECIALIST_SPECS: tuple[SpecialistSpec, ...] = (
         instruction=(
             "Identify direct personal identifiers and explicit nonverbal cues per line. "
             "Each source_text must be copied exactly from the spoken content. Do not "
-            "redact ordinary times or durations. Return one item per line, using empty "
-            "arrays when nothing applies."
+            "redact ordinary times or durations. Do not list pauses as nonverbal cues, "
+            "and return cue text without surrounding brackets or parentheses. Return "
+            "one item per line, using empty arrays when nothing applies."
         ),
     ),
 )

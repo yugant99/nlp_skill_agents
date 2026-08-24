@@ -152,6 +152,10 @@ def test_service_makes_exactly_four_calls_then_accepts_and_reverts(tmp_path) -> 
     assert run.revision_state.active_revision_number == 0
     assert run.revision_state.candidate is not None
     assert "[PERSON]" in (run.merged_transcript or "")
+    assert "[nonverbal: door closes] [pause: long]" in (
+        run.merged_transcript or ""
+    )
+    assert "[nonverbal: [door closes]]" not in (run.merged_transcript or "")
     original_digest = run.revision_state.original.sha256
 
     accepted = service.store.accept(run.run_id)
@@ -248,7 +252,7 @@ def _valid_results():
                             replacement="[PERSON]",
                         )
                     ],
-                    nonverbal_cues=["door closes"],
+                    nonverbal_cues=["[door closes]", "(long pause)"],
                 ),
             ],
         ),

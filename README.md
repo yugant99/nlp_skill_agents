@@ -10,6 +10,11 @@ phase gates live in
 The product supports research workflows; it is not clinical decision support and
 must not be used to diagnose or recommend treatment.
 
+For the isolated synthetic classroom proof—exactly four Luna calls, strict JSON,
+a deterministic local merge, a cost receipt, and reversible human acceptance—see
+[`docs/professor-demo.md`](docs/professor-demo.md). That lane does not mutate study
+data and does not represent completion of the broader roadmap.
+
 ## What Works Today
 
 The primary workflow is source-preserving C-unit segmentation:

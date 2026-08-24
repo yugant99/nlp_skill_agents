@@ -128,7 +128,10 @@ export const PROFESSOR_DEMO_SPECIALISTS: ReadonlyArray<{
   }
 ];
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+const runtimeEnvironment = (
+  import.meta as ImportMeta & { readonly env?: { readonly VITE_API_BASE?: string } }
+).env;
+const API_BASE = runtimeEnvironment?.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
 export function canAcceptProfessorDemoRun(run: ProfessorDemoRun | null): boolean {
   if (
